@@ -1792,3 +1792,46 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod new_tab_wiring_tests {
+    use super::*;
+
+    /// The end the earlier tests never checked: that `new_tab` actually changes
+    /// the command that gets spawned, not just the AppleScript builder in
+    /// isolation. A flag that never reaches `build_spawn_command` would look
+    /// correct in every unit test and still open a new window every time.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn new_tab_changes_the_spawned_ghostty_command() {
+        let cwd = Path::new("/tmp");
+        let base = TerminalCommand::new("/usr/local/bin/jcode", vec!["--version".to_string()]);
+
+        let window = build_spawn_command("ghostty", &base, cwd).expect("window spawn");
+        let window_program = window.get_program().to_string_lossy().into_owned();
+
+        let tab =
+            build_spawn_command("ghostty", &base.clone().new_tab(true), cwd).expect("tab spawn");
+        let tab_program = tab.get_program().to_string_lossy().into_owned();
+
+        assert!(
+            window_program.ends_with("open"),
+            "a window spawn should shell out to `open`, got {window_program}"
+        );
+        assert!(
+            tab_program.ends_with("osascript"),
+            "a tab spawn must go through AppleScript (open -na always makes a \
+             new window), got {tab_program}"
+        );
+
+        let tab_args: Vec<String> = tab
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let script = tab_args.join(" ");
+        assert!(
+            script.contains("new tab in front window"),
+            "the tab spawn must ask Ghostty for a tab: {script}"
+        );
+    }
+}
