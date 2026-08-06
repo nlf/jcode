@@ -1738,3 +1738,64 @@ fn test_clicking_a_reasoning_stub_reveals_the_hidden_trace() {
 
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
+
+/// Expansion is keyed by transcript index, so loading older history (which
+/// prepends messages and shifts every index) must drop expansions. Otherwise
+/// scrolling up to load history silently reopens whatever unrelated rows land
+/// on the previously expanded indices.
+#[test]
+fn test_loading_older_history_clears_expansions() {
+    use crate::message::ToolCall;
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, _terminal) = create_copy_test_app();
+    let tool = |id: &str, out: &str| DisplayMessage {
+        role: "tool".to_string(),
+        content: out.to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo x" }),
+            intent: Some("probe".to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    app.display_messages = vec![tool("c0", "ORIGINAL_ROW")];
+    app.bump_display_messages_version();
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+    );
+    assert!(crate::tui::ui::expand_state::is_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail
+    ));
+
+    // Older history arrives above the existing row: index 0 is now a
+    // different message entirely.
+    app.apply_compacted_history_window(
+        vec![tool("older", "OLDER_ROW"), tool("c0", "ORIGINAL_ROW")],
+        Vec::new(),
+        2,
+        2,
+        0,
+        0,
+    );
+
+    assert!(
+        !crate::tui::ui::expand_state::is_expanded(
+            0,
+            crate::tui::ui::expand_state::ExpandKind::ToolDetail
+        ),
+        "prepending history must not leave an expansion pointing at a \
+         different message"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
