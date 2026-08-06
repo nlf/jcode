@@ -2492,3 +2492,46 @@ fn hidden_reasoning_renders_as_a_stub_carrying_the_trace() {
         );
     }
 }
+
+/// The stub must not leak into consumers that do not understand its marker.
+/// `render_messages` also feeds remote history sync, the session-picker
+/// preview, and review flows; only the TUI transcript opts in.
+#[test]
+fn reasoning_stubs_are_absent_unless_explicitly_requested() {
+    let mut session = Session::create_with_id(
+        "session_reasoning_stub_scope_test".to_string(),
+        None,
+        Some("reasoning stub scope test".to_string()),
+    );
+    session.add_message(
+        Role::Assistant,
+        vec![
+            ContentBlock::ReasoningTrace {
+                text: "LEAKPROBE thinking".to_string(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    // Default path: no stub, and the trace text appears nowhere.
+    let plain = render_messages(&session);
+    assert!(
+        plain.iter().all(|m| m.role != "reasoning_stub"),
+        "the default render must not emit stubs: {plain:?}"
+    );
+    assert!(
+        plain.iter().all(|m| !m.content.contains("LEAKPROBE")),
+        "reasoning text must not leak into the default render: {plain:?}"
+    );
+
+    // The opt-in must also not persist past its scope.
+    let _ = crate::session::with_reasoning_stubs(|| render_messages(&session));
+    let after = render_messages(&session);
+    assert!(
+        after.iter().all(|m| m.role != "reasoning_stub"),
+        "the opt-in must not leak into later renders: {after:?}"
+    );
+}
