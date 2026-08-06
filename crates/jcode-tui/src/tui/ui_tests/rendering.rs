@@ -916,7 +916,10 @@ fn column_mode_visual_smoke() {
     for y in column.y..column.bottom().min(column.y + 16) {
         println!("|{}|", row_text(y, column.x, column.right()));
     }
-    println!("--- transcript right edge = {} ---", layout.messages_area.right());
+    println!(
+        "--- transcript right edge = {} ---",
+        layout.messages_area.right()
+    );
 }
 
 /// The headline visual contract: widgets on top, a separator rule, then the
@@ -1073,7 +1076,10 @@ fn column_mode_toggle_off_returns_space_to_transcript() {
 
     let _ = draw_state(&state, 120, 30);
     let on = crate::tui::ui::last_layout_snapshot().expect("layout");
-    assert!(on.diff_pane_area.is_some(), "expected a column while enabled");
+    assert!(
+        on.diff_pane_area.is_some(),
+        "expected a column while enabled"
+    );
     let on_width = on.messages_area.width;
 
     // `WIDGETS_STATE` is process-global, so restore it before asserting and
@@ -1101,5 +1107,81 @@ fn column_mode_toggle_off_returns_space_to_transcript() {
         "transcript must reclaim the column width ({} -> {})",
         on_width,
         off.messages_area.width
+    );
+}
+
+/// Locate rendered session-fact rows, returning `(row, first_non_blank_column)`.
+///
+/// Scoped to the right-hand region so the welcome banner (which also prints the
+/// model name) cannot be mistaken for a docked fact.
+fn session_fact_rows(buffer: &ratatui::buffer::Buffer, from_x: u16) -> Vec<(u16, u16)> {
+    (0..buffer.area.height)
+        .filter_map(|y| {
+            let row: String = (from_x..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            // "Anthropic" (provider) and "Test 1" (prettified model) are the
+            // facts this fixture produces.
+            if !(row.contains("Anthropic") || row.contains("Test 1")) {
+                return None;
+            }
+            let first = (from_x..buffer.area.width)
+                .find(|&x| !buffer[(x, y)].symbol().trim().is_empty())?;
+            Some((y, first))
+        })
+        .collect()
+}
+
+/// The session facts (provider / model / context) belong with the widgets. In
+/// column mode they must dock inside the reserved column rather than float in
+/// the composer chrome, so all the session metadata reads as one object.
+#[test]
+fn column_mode_docks_session_facts_inside_the_column() {
+    let state = column_mode_state();
+    let buffer = draw_state(&state, 120, 30);
+    let column = crate::tui::ui::last_layout_snapshot()
+        .expect("layout")
+        .diff_pane_area
+        .expect("column mode reserves a column");
+
+    // Search the whole width: a fact leaking left of the column must be caught.
+    let facts = session_fact_rows(&buffer, 0);
+    let below_banner: Vec<_> = facts
+        .into_iter()
+        .filter(|&(y, _)| y >= buffer.area.height / 2)
+        .collect();
+    assert!(
+        !below_banner.is_empty(),
+        "expected the session facts to render in the lower half in column mode"
+    );
+    for (row, first_x) in below_banner {
+        assert!(
+            first_x >= column.x,
+            "session fact on row {row} starts at x={first_x}, left of the widget \
+             column (x={}); it should be docked inside the column",
+            column.x
+        );
+    }
+}
+
+/// Docking must not silently drop facts: column mode should show at least as
+/// many fact rows as the composer-anchored path would have produced.
+#[test]
+fn column_mode_docking_preserves_every_fact_row() {
+    let column_buf = draw_state(&column_mode_state(), 120, 30);
+    let column_facts = session_fact_rows(&column_buf, 60).len();
+
+    let mut margin_state = column_mode_state();
+    margin_state.widget_placement_mode = crate::config::WidgetPlacementMode::Margin;
+    let margin_buf = draw_state(&margin_state, 120, 30);
+    let margin_facts = session_fact_rows(&margin_buf, 60).len();
+
+    assert!(
+        column_facts >= margin_facts,
+        "column docking lost fact rows (column={column_facts} margin={margin_facts})"
+    );
+    assert!(
+        column_facts >= 2,
+        "expected at least the provider and model rows, got {column_facts}"
     );
 }

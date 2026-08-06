@@ -498,7 +498,10 @@ fn column_split_caps_stack_when_content_is_below() {
     let column = Rect::new(50, 0, 30, 40);
 
     let (full, sep) = split_widget_column(column, false);
-    assert_eq!(full, column, "no content below means the stack owns the column");
+    assert_eq!(
+        full, column,
+        "no content below means the stack owns the column"
+    );
     assert!(sep.is_none(), "no separator without content below");
 
     let (capped, sep) = split_widget_column(column, true);
@@ -557,5 +560,8 @@ fn column_placements_have_no_dead_rows() {
     }
 
     let sum: u16 = placements.iter().map(|p| p.rect.height).sum();
-    assert_eq!(sum, used, "stack extent must equal the sum of widget heights");
+    assert_eq!(
+        sum, used,
+        "stack extent must equal the sum of widget heights"
+    );
 }

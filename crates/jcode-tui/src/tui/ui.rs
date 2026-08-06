@@ -2855,7 +2855,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let widget_column_mode = matches!(
         app.widget_placement_mode(),
         crate::config::WidgetPlacementMode::Column
-    ) && !(!app.onboarding_welcome_active() && super::idle_donut_active(app))
+    ) && !(!app.onboarding_welcome_active()
+        && super::idle_donut_active(app))
         && !swarm_page_active
         && app.info_widget_overlays_enabled()
         && crate::tui::info_widget::is_enabled();
@@ -3359,20 +3360,26 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // they paint over the panel's border region rather than under it.
     let mut column_widget_placements: Vec<info_widget::WidgetPlacement> = Vec::new();
     let mut column_separator_y: Option<u16> = None;
+    // The full shared column, kept so the session-fact stack can dock at its
+    // bottom in column mode instead of floating beside the composer.
+    let mut widget_column_rect: Option<Rect> = None;
     let diff_pane_area = if widget_column_mode && let Some(column) = diff_pane_area {
+        widget_column_rect = Some(column);
         let widget_data = app.info_widget_data();
-        let (stack_budget, _) =
-            crate::tui::info_widget_layout::split_widget_column(column, has_right_side_pane_content);
-        let (placements, used) = info_widget::calculate_placements_column(stack_budget, &widget_data);
+        let (stack_budget, _) = crate::tui::info_widget_layout::split_widget_column(
+            column,
+            has_right_side_pane_content,
+        );
+        let (placements, used) =
+            info_widget::calculate_placements_column(stack_budget, &widget_data);
         column_widget_placements = placements;
         if used == 0 {
             Some(column)
         } else if has_right_side_pane_content {
             let sep_y = column.y.saturating_add(used);
             column_separator_y = Some(sep_y);
-            let consumed = used.saturating_add(
-                crate::tui::info_widget_layout::COLUMN_SEPARATOR_HEIGHT,
-            );
+            let consumed =
+                used.saturating_add(crate::tui::info_widget_layout::COLUMN_SEPARATOR_HEIGHT);
             Some(Rect {
                 x: column.x,
                 y: column.y.saturating_add(consumed),
@@ -3616,17 +3623,26 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         overlays::draw_debug_overlay(frame, &placements, &chunks);
     }
 
-    // Session facts use actual final-frame cells for collision detection. They
-    // prefer the composer chrome and may climb into a few transcript-tail rows
-    // only when the right suffix is genuinely unused.
-    input_ui::draw_right_fact_stack(
-        frame,
-        app,
-        messages_area,
-        chunks[7],
-        chat_scrollbar_visible,
-        input_cursor,
-    );
+    // Session facts use actual final-frame cells for collision detection. In
+    // `column` widget mode they dock to the bottom of the widget column, next
+    // to the widgets they belong with; otherwise they prefer the composer
+    // chrome and may climb into a few transcript-tail rows only when the right
+    // suffix is genuinely unused.
+    match widget_column_rect {
+        Some(column) if widget_column_mode => {
+            input_ui::draw_column_fact_stack(frame, app, column);
+        }
+        _ => {
+            input_ui::draw_right_fact_stack(
+                frame,
+                app,
+                messages_area,
+                chunks[7],
+                chat_scrollbar_visible,
+                input_cursor,
+            );
+        }
+    }
 
     // Command-suggestion popover: a late overlay pass so the palette floats
     // over existing rows (blank space, pinned footer, or the transcript tail)

@@ -2306,6 +2306,51 @@ struct RightFactPlacement {
     area: Rect,
 }
 
+/// Draw the session facts docked to the **bottom of the widget column**.
+///
+/// In `widget_placement = "column"` mode the info widgets already live in a
+/// dedicated right-hand column, so floating the same facts beside the composer
+/// scatters related information across two places. This anchors them to the
+/// column's last rows instead, keeping the composer clean.
+///
+/// Collision detection still runs against the final rendered buffer, so the
+/// facts stand down rather than overwrite panel content that reaches the
+/// bottom of the column.
+pub(super) fn draw_column_fact_stack(frame: &mut Frame, app: &dyn TuiState, column: Rect) {
+    if column.width == 0 || column.height == 0 {
+        return;
+    }
+    let lines = right_fact_lines(app);
+    if lines.is_empty() {
+        return;
+    }
+
+    let placements = {
+        let buffer = frame.buffer_mut();
+        right_fact_placements(
+            buffer,
+            lines,
+            column.y,
+            column.bottom(),
+            column.x,
+            column.right(),
+            // No transcript is involved here, so pass an empty rect: the
+            // transcript-specific scrollbar/edge rules do not apply inside the
+            // column.
+            Rect::default(),
+            false,
+            None,
+        )
+    };
+
+    for placement in placements {
+        frame.render_widget(
+            Paragraph::new(Line::from(placement.line.spans)),
+            placement.area,
+        );
+    }
+}
+
 /// Draw session facts as a bottom-anchored stack in otherwise unused cells on
 /// the right side of the composer chrome. When chrome rows are occupied, the
 /// stack may climb into at most the last few transcript rows, but only where
