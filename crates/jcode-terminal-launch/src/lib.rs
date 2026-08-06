@@ -24,6 +24,9 @@ pub struct TerminalCommand {
     /// and are also exported under a `JCODE_CLIENT_*` prefix so spawn/focus
     /// hooks can target the terminal the user is actually attached to (#405).
     pub client_terminal_env: Vec<(String, String)>,
+    /// Open the spawn as a tab in the existing terminal window instead of a
+    /// new window, where the terminal supports it (macOS Ghostty/iTerm2).
+    pub new_tab: bool,
 }
 
 impl TerminalCommand {
@@ -37,6 +40,7 @@ impl TerminalCommand {
             session_id: None,
             extra_env: Vec::new(),
             client_terminal_env: Vec::new(),
+            new_tab: false,
         }
     }
 
@@ -47,6 +51,14 @@ impl TerminalCommand {
 
     pub fn fresh_spawn(mut self) -> Self {
         self.fresh_spawn = true;
+        self
+    }
+
+    /// Request that the spawn open as a tab in the existing terminal window
+    /// rather than a new window. Only honored by terminals that support it
+    /// (macOS Ghostty/iTerm2); others fall back to a new window.
+    pub fn new_tab(mut self, new_tab: bool) -> Self {
+        self.new_tab = new_tab;
         self
     }
 
@@ -725,26 +737,31 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
         }
         #[cfg(target_os = "macos")]
         "ghostty" => {
-            // Ghostty 1.3+ exposes a native AppleScript API. Use it instead of
-            // `open -na`, which always creates a separate app instance/window
-            // and therefore made `/fork` ignore Ghostty's tabbed workflow.
-            // Run AppleScript synchronously inside a detached helper so errors
-            // (Ghostty <1.3, disabled AppleScript, denied Automation access)
-            // can fall back to the older, universally supported new-window
-            // launch. Spawning `osascript` directly reports success before the
-            // script runs and would silently lose the fork on those versions.
-            cmd = Command::new("sh");
-            cmd.current_dir(cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .args([
-                    "-c",
-                    macos_ghostty_spawn_wrapper(),
-                    "jcode-ghostty-spawn",
-                    &macos_ghostty_applescript(command, cwd),
-                    &macos_terminal_inner_script(command, cwd),
-                ]);
+            if command.new_tab {
+                cmd = Command::new("osascript");
+                cmd.args(["-e", &ghostty_new_tab_applescript(command, cwd)]);
+            } else {
+                // Ghostty 1.3+ exposes a native AppleScript API. Use it instead of
+                // `open -na`, which always creates a separate app instance/window
+                // and therefore made `/fork` ignore Ghostty's tabbed workflow.
+                // Run AppleScript synchronously inside a detached helper so errors
+                // (Ghostty <1.3, disabled AppleScript, denied Automation access)
+                // can fall back to the older, universally supported new-window
+                // launch. Spawning `osascript` directly reports success before the
+                // script runs and would silently lose the fork on those versions.
+                cmd = Command::new("sh");
+                cmd.current_dir(cwd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .args([
+                        "-c",
+                        macos_ghostty_spawn_wrapper(),
+                        "jcode-ghostty-spawn",
+                        &macos_ghostty_applescript(command, cwd),
+                        &macos_terminal_inner_script(command, cwd),
+                    ]);
+            }
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         "ghostty" => {
@@ -783,15 +800,19 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
         "iterm2" => {
             let shell = shell_command(&command_parts(command));
             cmd = Command::new("osascript");
-            cmd.args([
-                "-e",
-                &format!(
-                    r#"tell application "iTerm2"
+            if command.new_tab {
+                cmd.args(["-e", &iterm_new_tab_applescript(&shell)]);
+            } else {
+                cmd.args([
+                    "-e",
+                    &format!(
+                        r#"tell application "iTerm2"
                         create window with default profile command "{}"
                     end tell"#,
-                    shell.replace('"', "\\\"")
-                ),
-            ]);
+                        shell.replace('"', "\\\"")
+                    ),
+                ]);
+            }
         }
         #[cfg(target_os = "macos")]
         "terminal" => {
@@ -907,6 +928,41 @@ fn macos_ghostty_applescript(command: &TerminalCommand, cwd: &Path) -> String {
     )
 }
 
+/// Escape a Rust string for embedding in an AppleScript double-quoted literal.
+#[cfg(any(target_os = "macos", test))]
+fn applescript_quote(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// AppleScript that opens the command as a **tab** in Ghostty's frontmost
+/// window, falling back to a new window when Ghostty has none open yet.
+///
+/// Ghostty's scripting dictionary (1.2+) exposes `new tab in <window> with
+/// configuration {...}`, which is the only way to land in an existing window;
+/// `open -na Ghostty` always creates a separate window.
+#[cfg(any(target_os = "macos", test))]
+fn ghostty_new_tab_applescript(command: &TerminalCommand, cwd: &Path) -> String {
+    let shell = shell_command(&command_parts(command));
+    let inner = if command.fresh_spawn {
+        format!("env JCODE_FRESH_SPAWN=1 {shell}")
+    } else {
+        shell
+    };
+    let cmd_literal = applescript_quote(&format!("/bin/bash -lc {}", sh_escape(&inner)));
+    let cwd_literal = applescript_quote(&cwd.to_string_lossy());
+    format!(
+        "tell application \"Ghostty\"\n\
+         \tactivate\n\
+         \tset cfg to {{command:\"{cmd_literal}\", initial working directory:\"{cwd_literal}\"}}\n\
+         \tif (count of windows) > 0 then\n\
+         \t\tnew tab in front window with configuration cfg\n\
+         \telse\n\
+         \t\tnew window with configuration cfg\n\
+         \tend if\n\
+         end tell"
+    )
+}
+
 /// Shell wrapper for the macOS Ghostty launch. Positional arguments keep both
 /// AppleScript and shell commands opaque, including quotes and spaces.
 #[cfg(any(target_os = "macos", test))]
@@ -914,6 +970,23 @@ fn macos_ghostty_spawn_wrapper() -> &'static str {
     concat!(
         "if osascript -e \"$1\"; then exit 0; fi; ",
         "exec open -na Ghostty --args -e /bin/bash -lc \"$2\""
+    )
+}
+
+/// AppleScript that opens the command as a tab in iTerm2's current window,
+/// falling back to a new window when none is open.
+#[cfg(any(target_os = "macos", test))]
+fn iterm_new_tab_applescript(shell: &str) -> String {
+    let cmd_literal = applescript_quote(shell);
+    format!(
+        "tell application \"iTerm2\"\n\
+         \tactivate\n\
+         \tif (count of windows) > 0 then\n\
+         \t\ttell current window to create tab with default profile command \"{cmd_literal}\"\n\
+         \telse\n\
+         \t\tcreate window with default profile command \"{cmd_literal}\"\n\
+         \tend if\n\
+         end tell"
     )
 }
 
@@ -936,6 +1009,35 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn ghostty_new_tab_applescript_targets_front_window_with_fallback() {
+        let command = TerminalCommand::new("/usr/local/bin/jcode", vec!["--spawn-hotkey".into()])
+            .fresh_spawn()
+            .new_tab(true);
+        let script = ghostty_new_tab_applescript(&command, Path::new("/Users/me/proj"));
+        assert!(script.contains("new tab in front window with configuration cfg"));
+        assert!(script.contains("new window with configuration cfg"));
+        assert!(
+            script.contains("initial working directory:\\\"/Users/me/proj\\\"")
+                || script.contains("/Users/me/proj")
+        );
+        assert!(script.contains("/bin/bash -lc"));
+        assert!(script.contains("JCODE_FRESH_SPAWN=1"));
+    }
+
+    #[test]
+    fn iterm_new_tab_applescript_creates_tab_in_current_window() {
+        let script = iterm_new_tab_applescript("/usr/local/bin/jcode --resume x");
+        assert!(script.contains("tell current window to create tab with default profile"));
+        assert!(script.contains("create window with default profile"));
+    }
+
+    #[test]
+    fn terminal_command_defaults_to_new_window() {
+        let command = TerminalCommand::new("/bin/jcode", vec![]);
+        assert!(!command.new_tab, "spawns must default to a new window");
+    }
 
     #[test]
     fn client_terminal_env_replaces_inherited_identity_and_exports_aliases() {

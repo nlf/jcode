@@ -31,9 +31,23 @@ pub fn spawn_command_in_new_terminal(command: &TerminalCommand, cwd: &Path) -> R
     if try_spawn_via_configured_hook(command, cwd) {
         return Ok(true);
     }
-    jcode_terminal_launch::spawn_command_in_new_terminal_with(command, cwd, |cmd| {
+    // Honour `[terminal] new_tab` for in-app spawns unless the caller already
+    // opted in explicitly. The macOS hotkey listener reads the config itself
+    // (it runs outside the normal config-loading startup path).
+    let command = if command.new_tab {
+        command.clone()
+    } else {
+        command.clone().new_tab(configured_new_tab())
+    };
+    jcode_terminal_launch::spawn_command_in_new_terminal_with(&command, cwd, |cmd| {
         crate::platform::spawn_detached(cmd).map(|_| ())
     })
+}
+
+/// Whether `[terminal] new_tab` asks spawns to open as tabs in the existing
+/// terminal window instead of new windows.
+pub fn configured_new_tab() -> bool {
+    crate::config::config().terminal.new_tab
 }
 
 /// Try launching via the configured spawn hook.
