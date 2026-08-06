@@ -14,6 +14,59 @@ use std::collections::HashMap;
 /// entire compacted prefix with a marker.
 pub const DEFAULT_VISIBLE_COMPACTED_HISTORY_MESSAGES: usize = 64;
 
+/// Marker prefix for a collapsed reasoning stub.
+///
+/// When `reasoning_display` hides reasoning, the text is still persisted (see
+/// `ContentBlock::ReasoningTrace`), so rather than dropping it at render time we
+/// emit a one-line stub carrying the full trace after the marker. The TUI shows
+/// the stub and reveals the trace when it is clicked; anything that does not
+/// understand the marker simply sees an ordinary line.
+pub const REASONING_STUB_MARKER: &str = "\u{1}jcode:reasoning-stub\u{1}";
+
+thread_local! {
+    static EMIT_REASONING_STUBS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Render `f` with hidden-reasoning stubs enabled.
+///
+/// Opt-in because `render_messages` feeds more than the transcript: the remote
+/// history sync, the session-picker preview, and review flows all consume it,
+/// and none of them understand the stub marker. Only the TUI's own transcript
+/// build asks for stubs, so every other consumer keeps seeing reasoning simply
+/// omitted, exactly as before.
+pub fn with_reasoning_stubs<T>(f: impl FnOnce() -> T) -> T {
+    EMIT_REASONING_STUBS.with(|flag| flag.set(true));
+    let result = f();
+    EMIT_REASONING_STUBS.with(|flag| flag.set(false));
+    result
+}
+
+fn reasoning_stubs_enabled() -> bool {
+    EMIT_REASONING_STUBS.with(std::cell::Cell::get)
+}
+
+/// Split a rendered message body into `(stub_summary, hidden_trace)` when it is
+/// a collapsed reasoning stub.
+pub fn parse_reasoning_stub(content: &str) -> Option<(&str, &str)> {
+    let rest = content.strip_prefix(REASONING_STUB_MARKER)?;
+    let (summary, trace) = rest.split_once('\n')?;
+    Some((summary, trace))
+}
+
+/// Build the one-line stub shown in place of hidden reasoning, carrying the
+/// full trace after a newline so a click can reveal it.
+fn reasoning_stub_message(trace: &str) -> RenderedMessage {
+    let words = trace.split_whitespace().count();
+    let summary = format!("thought for {words} words");
+    RenderedMessage {
+        role: "reasoning_stub".to_string(),
+        content: format!("{REASONING_STUB_MARKER}{summary}\n{}", trace.trim_end()),
+        tool_calls: Vec::new(),
+        tool_data: None,
+        stored_index: None,
+    }
+}
+
 /// Format persisted reasoning/thinking text into the dim+italic markdown used
 /// by the live streaming path. Each line is wrapped via the shared `reasoning_line_markup` so resumed
 /// sessions render reasoning identically to how it streamed, terminated by a
@@ -438,6 +491,9 @@ pub fn render_messages_and_images_with_compacted_history(
         // reasoning into `text` in block order would otherwise show the thinking
         // *after* the answer on resume/re-render.
         let mut reasoning = String::new();
+        // Reasoning text that `reasoning_display` hides. Kept so it can be
+        // emitted as a clickable stub rather than dropped.
+        let mut hidden_reasoning = String::new();
         let mut tool_calls: Vec<String> = Vec::new();
         let mut current_tool: Option<ToolCall> = None;
         let mut last_image_idx: Option<usize> = None;
@@ -488,6 +544,10 @@ pub fn render_messages_and_images_with_compacted_history(
                     content,
                     ..
                 } => {
+                    if !hidden_reasoning.is_empty() {
+                        rendered.push(reasoning_stub_message(&hidden_reasoning));
+                        hidden_reasoning.clear();
+                    }
                     let combined = format!("{}{}", reasoning, text);
                     if !combined.is_empty() {
                         if role == "user" && !is_attached_image_label_text(&text) {
@@ -524,7 +584,18 @@ pub fn render_messages_and_images_with_compacted_history(
                     });
                 }
                 ContentBlock::Reasoning { text: t } | ContentBlock::ReasoningTrace { text: t } => {
-                    reasoning.push_str(&format_reasoning_markup(t));
+                    let markup = format_reasoning_markup(t);
+                    if markup.is_empty() && reasoning_stubs_enabled() && !t.trim().is_empty() {
+                        // Reasoning is hidden by config, but the text is still
+                        // here. Emit a collapsed stub carrying it so the UI can
+                        // reveal it on demand instead of discarding it.
+                        hidden_reasoning.push_str(t);
+                        if !hidden_reasoning.ends_with('\n') {
+                            hidden_reasoning.push('\n');
+                        }
+                    } else {
+                        reasoning.push_str(&markup);
+                    }
                 }
                 ContentBlock::AnthropicThinking { .. } | ContentBlock::OpenAIReasoning { .. } => {}
                 ContentBlock::Image { media_type, data } => {
@@ -552,6 +623,10 @@ pub fn render_messages_and_images_with_compacted_history(
             }
         }
 
+        if !hidden_reasoning.is_empty() {
+            rendered.push(reasoning_stub_message(&hidden_reasoning));
+            hidden_reasoning.clear();
+        }
         let combined = format!("{}{}", reasoning, text);
         if !combined.is_empty() {
             if role == "user" && !is_attached_image_label_text(&text) {

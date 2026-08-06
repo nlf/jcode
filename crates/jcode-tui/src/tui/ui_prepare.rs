@@ -1613,6 +1613,18 @@ fn render_message_into(
                 acc.push_blank();
             }
         }
+        "reasoning_stub" => {
+            // Reasoning that `reasoning_display` hides. The stub is one dim
+            // line; clicking it reveals the trace the config would otherwise
+            // have discarded.
+            let expanded = crate::tui::ui::expand_state::is_expanded(
+                msg_global_idx,
+                crate::tui::ui::expand_state::ExpandKind::Reasoning,
+            );
+            for line in crate::tui::ui::render_reasoning_stub_message(msg, width, expanded) {
+                acc.push_auto(align_if_unset(line, align));
+            }
+        }
         "reasoning" => {
             let content_width = width.saturating_sub(4);
             let cached = get_cached_message_lines(

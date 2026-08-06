@@ -2446,3 +2446,49 @@ fn test_rewind_after_undo_uses_the_new_target_not_the_previous_one() {
     assert_eq!(after.last().unwrap(), "prompt-6");
     assert_eq!(session.rewind_target_count(), 11);
 }
+
+/// With reasoning hidden by config, a persisted trace must survive as a
+/// clickable stub rather than being dropped. This is the premise of the
+/// feature: the text is already in the session, only its rendering was
+/// suppressed.
+#[test]
+fn hidden_reasoning_renders_as_a_stub_carrying_the_trace() {
+    let mut session = Session::create_with_id(
+        "session_reasoning_stub_test".to_string(),
+        None,
+        Some("reasoning stub test".to_string()),
+    );
+    session.add_message(
+        Role::Assistant,
+        vec![
+            ContentBlock::ReasoningTrace {
+                text: "STUBPROBE thinking body".to_string(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    let rendered = crate::session::with_reasoning_stubs(|| render_messages(&session));
+    assert!(
+        rendered.iter().any(|m| m.content.contains("the answer")),
+        "the answer must still render: {rendered:?}"
+    );
+
+    // Only meaningful when the active mode hides reasoning.
+    if !crate::config::config().display.reasoning_enabled() {
+        let stub = rendered
+            .iter()
+            .find(|m| m.role == "reasoning_stub")
+            .expect("hidden reasoning should emit a stub");
+        let (summary, trace) =
+            crate::session::parse_reasoning_stub(&stub.content).expect("the stub should parse");
+        assert!(summary.contains("thought for"), "summary={summary}");
+        assert!(
+            trace.contains("STUBPROBE thinking body"),
+            "the stub must carry the full trace: {trace}"
+        );
+    }
+}

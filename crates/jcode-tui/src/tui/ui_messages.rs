@@ -4414,3 +4414,48 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
 #[cfg(test)]
 #[path = "ui_messages/tests.rs"]
 mod tests;
+
+/// Render a collapsed reasoning stub: one dim line when closed, the full
+/// persisted trace when the user has clicked it open.
+///
+/// `reasoning_display = "off"` hides thinking, but the text is still persisted,
+/// so the stub keeps it one click away instead of discarding it.
+pub(crate) fn render_reasoning_stub_message(
+    msg: &DisplayMessage,
+    width: u16,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    let Some((summary, trace)) = crate::session::parse_reasoning_stub(&msg.content) else {
+        return Vec::new();
+    };
+    let style = Style::default()
+        .fg(dim_color())
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  ", style),
+        Span::styled(
+            if expanded {
+                format!("▾ {summary}")
+            } else {
+                format!("▸ {summary}")
+            },
+            style,
+        ),
+    ])];
+    if expanded {
+        let body_width = (width as usize).saturating_sub(6).max(8);
+        for raw in trace.lines() {
+            if raw.trim().is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
+            for chunk in split_by_display_width(raw, body_width) {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(chunk, style),
+                ]));
+            }
+        }
+    }
+    lines
+}

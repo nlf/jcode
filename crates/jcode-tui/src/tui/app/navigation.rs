@@ -202,6 +202,30 @@ impl App {
         true
     }
 
+    /// If a left-click landed on a collapsed reasoning stub, reveal (or hide)
+    /// the persisted thinking text it carries.
+    pub(super) fn try_toggle_reasoning_expand_at(&mut self, column: u16, row: u16) -> bool {
+        let messages = &self.display_messages;
+        let Some(msg_idx) = super::super::ui::tool_expand_target_from_screen(column, row, |idx| {
+            messages
+                .get(idx)
+                .is_some_and(|m| m.role == "reasoning_stub")
+        }) else {
+            return false;
+        };
+        let expanded = super::super::ui::expand_state::toggle_expanded(
+            msg_idx,
+            super::super::ui::expand_state::ExpandKind::Reasoning,
+        );
+        self.set_status_notice(if expanded {
+            "Reasoning expanded"
+        } else {
+            "Reasoning collapsed"
+        });
+        self.bump_display_messages_version();
+        true
+    }
+
     /// If a left-click landed inside a truncated edit diff, show every change
     /// instead of the elided view. Returns `false` when the click was
     /// elsewhere.
@@ -1623,6 +1647,12 @@ impl App {
             && self.try_open_link_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "open_link");
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && self.try_toggle_reasoning_expand_at(mouse.column, mouse.row)
+        {
+            finish_mouse_event!(false, "toggle_reasoning_expand");
         }
 
         // Diff before tool row: a diff is rendered *inside* the tool message,

@@ -134,7 +134,6 @@ use memory_ui::{
 };
 use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
-pub(crate) use messages::get_cached_message_lines_expanded;
 #[cfg_attr(test, allow(unused_imports))]
 pub(crate) use messages::{
     SWARM_AGENT_SNAPSHOT_TITLE, compact_swarm_await_summary, encode_swarm_agent_snapshot,
@@ -142,6 +141,7 @@ pub(crate) use messages::{
     render_reasoning_message, render_swarm_message, render_system_message, render_tool_message,
     render_usage_message, tool_row_can_expand,
 };
+pub(crate) use messages::{get_cached_message_lines_expanded, render_reasoning_stub_message};
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
     SidePanelDebugStats, SidePanelMermaidProbe, SidePanelMermaidProbeRect,

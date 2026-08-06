@@ -1685,3 +1685,56 @@ fn test_a_complete_diff_is_not_a_click_target() {
 
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
+
+/// `reasoning_display = "off"` hides thinking, but the text is still persisted.
+/// The stub keeps it one click away instead of discarding it.
+#[test]
+fn test_clicking_a_reasoning_stub_reveals_the_hidden_trace() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "reasoning_stub".to_string(),
+        content: format!(
+            "{}thought for 6 words\nHIDDEN_TRACE_ALPHA and more thinking here",
+            crate::session::REASONING_STUB_MARKER
+        ),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    assert!(
+        before.contains("thought for 6 words"),
+        "the stub summary should render:\n{before}"
+    );
+    assert!(
+        !before.contains("HIDDEN_TRACE_ALPHA"),
+        "the trace must stay hidden until clicked:\n{before}"
+    );
+
+    let row = before
+        .lines()
+        .position(|line| line.contains("thought for 6 words"))
+        .expect("expected the stub row") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        after.contains("HIDDEN_TRACE_ALPHA"),
+        "clicking the stub should reveal the persisted trace:\n{after}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}

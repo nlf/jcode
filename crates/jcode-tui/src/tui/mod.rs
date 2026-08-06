@@ -1557,8 +1557,10 @@ pub use ui::{
 };
 
 pub fn display_messages_from_session(session: &crate::session::Session) -> Vec<DisplayMessage> {
+    // The transcript is the one consumer that understands reasoning stubs, so
+    // it is the only place that asks for them.
     let mut messages = jcode_tui_messages::display_messages_from_rendered_messages(
-        crate::session::render_messages(session),
+        crate::session::with_reasoning_stubs(|| crate::session::render_messages(session)),
     );
     app::compact_display_messages_for_storage(&mut messages);
     messages
