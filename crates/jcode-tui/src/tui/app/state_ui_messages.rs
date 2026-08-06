@@ -455,6 +455,10 @@ impl App {
         hidden_user_prompts: usize,
     ) {
         compact_display_messages_for_storage(&mut messages);
+        // Prepending older history shifts every existing transcript index, and
+        // click-to-expand is keyed by index, so surviving expansions would
+        // reopen unrelated rows further down.
+        crate::tui::ui::expand_state::clear_expanded_regions();
         self.display_messages = messages;
         self.remote_side_pane_images = images;
         self.invalidate_side_pane_images_signature();

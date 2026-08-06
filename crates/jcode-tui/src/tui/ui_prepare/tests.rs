@@ -81,8 +81,11 @@ fn matching_suffix_len_detects_prepended_history() {
         copy_targets: Vec::new(),
         message_boundaries: old
             .iter()
-            .map(|m| MessageBoundary {
-                msg_hash: m.stable_cache_hash(),
+            .enumerate()
+            .map(|(i, m)| MessageBoundary {
+                // Must match what the production path records, which folds in
+                // click-to-expand state.
+                msg_hash: super::message_hash_with_expansion(m, i),
                 wrapped_len: 0,
                 raw_len: 0,
                 user_prompt_len: 0,
@@ -138,5 +141,89 @@ fn header_cache_ttl_is_not_sized_to_the_frame_rate() {
         "header TTL {HEADER_PREP_CACHE_TTL:?} is short enough to rebuild on a \
          render-loop cadence; user-visible changes are covered by the \
          signature, so the TTL should only bound slow background drift"
+    );
+}
+
+/// Prefix/suffix reuse compares message hashes to decide what can be reused
+/// verbatim. Expansion is keyed by transcript index and lives outside the
+/// message, so a hash that ignores it makes an expanded row keep its collapsed
+/// lines: the status notice fires and nothing on screen changes. This is the
+/// bug the user hit ("says tool detail expanded but never expands anything").
+#[test]
+fn expansion_changes_the_reuse_hash() {
+    use crate::message::ToolCall;
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "some output".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo x" }),
+            intent: None,
+            thought_signature: None,
+        }),
+    };
+
+    let collapsed = super::message_hash_with_expansion(&msg, 0);
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+    );
+    let expanded = super::message_hash_with_expansion(&msg, 0);
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    assert_ne!(
+        collapsed, expanded,
+        "toggling expansion must change the reuse hash, or the prepared body \
+         is reused verbatim and the row never visibly expands"
+    );
+
+    // The underlying message hash is deliberately unchanged: expansion is not
+    // part of the message, which is exactly why the fold is needed.
+    assert_eq!(
+        msg.stable_cache_hash(),
+        msg.stable_cache_hash(),
+        "sanity: the message itself did not change"
+    );
+}
+
+/// Two different rows must not collide just because one of them is expanded.
+#[test]
+fn expansion_hash_is_per_message_index() {
+    use crate::message::ToolCall;
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "same content".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "c1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo x" }),
+            intent: None,
+            thought_signature: None,
+        }),
+    };
+
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+    );
+    let idx0 = super::message_hash_with_expansion(&msg, 0);
+    let idx1 = super::message_hash_with_expansion(&msg, 1);
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    assert_ne!(
+        idx0, idx1,
+        "identical content at different indices must hash differently when only \
+         one is expanded"
     );
 }

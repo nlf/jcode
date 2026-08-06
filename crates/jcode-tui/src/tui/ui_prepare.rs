@@ -1761,7 +1761,7 @@ fn render_message_into(
     }
 
     acc.segments.push((
-        msg.stable_cache_hash(),
+        message_hash_with_expansion(msg, msg_global_idx),
         acc.lines.len(),
         acc.raw_plain_lines.len(),
         acc.user_prompt_texts.len(),
@@ -2017,6 +2017,28 @@ pub(super) fn truncate_prepared_to_boundary(prepared: &mut PreparedMessages, kee
     }
 }
 
+/// `stable_cache_hash` folded together with this message's click-to-expand
+/// state.
+///
+/// Expansion is keyed by transcript index and lives outside the message, so the
+/// message hash alone is identical before and after a toggle. Prefix/suffix
+/// reuse compares exactly that hash to decide what can be reused verbatim, so
+/// without this an expanded row keeps its collapsed lines: the status notice
+/// fires and nothing on screen changes.
+fn message_hash_with_expansion(msg: &DisplayMessage, msg_global_idx: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    msg.stable_cache_hash().hash(&mut hasher);
+    for kind in [
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+        crate::tui::ui::expand_state::ExpandKind::Diff,
+        crate::tui::ui::expand_state::ExpandKind::Reasoning,
+    ] {
+        crate::tui::ui::expand_state::is_expanded(msg_global_idx, kind).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 /// Longest message prefix length `k` such that `base.message_boundaries[..k]`
 /// hashes match the first `k` messages of `messages`. Returns `0` when nothing
 /// matches (caller then does a full rebuild). Bounded by the shorter of the two
@@ -2024,7 +2046,9 @@ pub(super) fn truncate_prepared_to_boundary(prepared: &mut PreparedMessages, kee
 pub(super) fn matching_prefix_len(base: &PreparedMessages, messages: &[DisplayMessage]) -> usize {
     let limit = base.message_boundaries.len().min(messages.len());
     let mut k = 0;
-    while k < limit && base.message_boundaries[k].msg_hash == messages[k].stable_cache_hash() {
+    while k < limit
+        && base.message_boundaries[k].msg_hash == message_hash_with_expansion(&messages[k], k)
+    {
         k += 1;
     }
     k
@@ -2040,7 +2064,7 @@ pub(super) fn matching_suffix_len(base: &PreparedMessages, messages: &[DisplayMe
     let mut s = 0;
     while s < limit
         && base.message_boundaries[base_n - 1 - s].msg_hash
-            == messages[msg_n - 1 - s].stable_cache_hash()
+            == message_hash_with_expansion(&messages[msg_n - 1 - s], msg_n - 1 - s)
     {
         s += 1;
     }
