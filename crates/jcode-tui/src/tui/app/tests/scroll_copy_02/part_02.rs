@@ -1560,3 +1560,128 @@ fn test_expansion_survives_new_messages_arriving() {
 
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
+
+/// Clicking a non-tool message must not expand anything. The tool hit-test
+/// resolves *any* clicked line to its owning message, so without the role
+/// check a click on ordinary assistant prose would toggle whatever message it
+/// landed in.
+#[test]
+fn test_clicking_a_non_tool_message_expands_nothing() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![
+        DisplayMessage {
+            role: "assistant".to_string(),
+            content: "PROSE_MARKER ordinary assistant text".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        },
+        DisplayMessage {
+            role: "tool".to_string(),
+            content: "TOOLOUT_MARKER".to_string(),
+            tool_calls: vec![],
+            duration_secs: None,
+            title: None,
+            tool_data: Some(ToolCall {
+                id: "c1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({ "command": "echo x" }),
+                intent: Some("toolprobe".to_string()),
+                thought_signature: None,
+            }),
+        },
+    ];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    let prose_row = before
+        .lines()
+        .position(|line| line.contains("PROSE_MARKER"))
+        .expect("expected the assistant line to render") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row: prose_row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        !after.contains("TOOLOUT_MARKER"),
+        "clicking prose must not expand the neighbouring tool row:\n{after}"
+    );
+    assert_ne!(
+        app.status_notice(),
+        Some("Tool detail expanded".to_string()),
+        "clicking prose should not report an expansion"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+
+/// A diff short enough to render in full is not a click target, so the click
+/// stays available for selection rather than redrawing identical lines.
+#[test]
+fn test_a_complete_diff_is_not_a_click_target() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "Edited file".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_small".to_string(),
+            name: "edit".to_string(),
+            input: serde_json::json!({
+                "file_path": "/tmp/small.rs",
+                "old_string": "short_old",
+                "new_string": "short_new",
+            }),
+            intent: Some("tinyedit".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+    let before = render_and_snap(&app, &mut terminal);
+    assert!(
+        !before.contains("more changes"),
+        "this diff should already be complete:\n{before}"
+    );
+
+    let diff_row = before
+        .lines()
+        .position(|line| line.contains("short_old"))
+        .expect("expected the diff to render") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row: diff_row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    assert_ne!(
+        app.status_notice(),
+        Some("Diff expanded".to_string()),
+        "a complete diff must not report a diff expansion"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
