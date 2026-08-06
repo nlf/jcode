@@ -1358,3 +1358,109 @@ fn test_toggling_expansion_defeats_body_reuse() {
          the cached collapsed lines:\n{rebuilt_text}"
     );
 }
+
+/// Diff and reasoning expansion must survive the reuse layer too. Tools were
+/// verified above; these are the other two kinds, and nothing about the fix is
+/// specific to tool rows, so a regression here would be silent.
+#[test]
+fn test_diff_and_reasoning_expansion_also_defeat_body_reuse() {
+    use crate::tui::ui::prepare::{build_body_from_base, prepare_body};
+    use std::sync::Arc;
+
+    // --- reasoning stub ---
+    crate::tui::ui::expand_state::clear_expanded_regions();
+    let reasoning_state = TestState {
+        display_messages: vec![DisplayMessage {
+            role: "reasoning_stub".to_string(),
+            content: format!(
+                "{}thought for 4 words\nSTUBREUSE hidden trace body",
+                crate::session::REASONING_STUB_MARKER
+            ),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        }],
+        ..Default::default()
+    };
+    let base = Arc::new(prepare_body(&reasoning_state, 110, false));
+    let count = base.message_boundaries.len();
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::Reasoning,
+    );
+    let (rebuilt, reason) = build_body_from_base(&reasoning_state, 110, base, count, 0, 1);
+    let text = rebuilt
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::tui::ui::expand_state::clear_expanded_regions();
+    assert_ne!(
+        reason, "prefix_exact",
+        "reasoning expansion must defeat reuse"
+    );
+    assert!(
+        text.contains("STUBREUSE"),
+        "expanded reasoning must render through the reuse layer:\n{text}"
+    );
+
+    // --- diff ---
+    let mut old_lines = Vec::new();
+    let mut new_lines = Vec::new();
+    for i in 0..30 {
+        old_lines.push(format!("dold_{i}"));
+        new_lines.push(format!("dnew_{i}"));
+    }
+    let diff_state = TestState {
+        display_messages: vec![DisplayMessage {
+            role: "tool".to_string(),
+            content: "Edited file".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(ToolCall {
+                id: "call-diff-reuse".to_string(),
+                name: "edit".to_string(),
+                input: serde_json::json!({
+                    "file_path": "/tmp/reuse.rs",
+                    "old_string": old_lines.join("\n"),
+                    "new_string": new_lines.join("\n"),
+                }),
+                intent: Some("diff reuse probe".to_string()),
+                thought_signature: None,
+            }),
+        }],
+        ..Default::default()
+    };
+    let base = Arc::new(prepare_body(&diff_state, 110, false));
+    let count = base.message_boundaries.len();
+    let base_text = base
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        base_text.contains("more changes"),
+        "expected a truncated diff base:\n{base_text}"
+    );
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::Diff,
+    );
+    let (rebuilt, reason) = build_body_from_base(&diff_state, 110, base, count, 0, 1);
+    let text = rebuilt
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::tui::ui::expand_state::clear_expanded_regions();
+    assert_ne!(reason, "prefix_exact", "diff expansion must defeat reuse");
+    assert!(
+        !text.contains("more changes"),
+        "expanded diff must drop the truncation marker:\n{text}"
+    );
+}
