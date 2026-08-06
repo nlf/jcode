@@ -1607,6 +1607,10 @@ pub struct App {
     /// When to show the overscroll status line: off, always on, or the elastic
     /// overscroll reveal (default). From `display.overscroll_status` config.
     overscroll_status_mode: crate::config::OverscrollStatusMode,
+    /// Where info widgets are placed: floating in the transcript margin
+    /// (default), stacked in a dedicated right-hand column, or off entirely.
+    /// From `display.widget_placement` config.
+    widget_placement_mode: crate::config::WidgetPlacementMode,
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,

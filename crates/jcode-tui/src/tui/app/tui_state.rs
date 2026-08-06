@@ -1781,6 +1781,10 @@ impl crate::tui::TuiState for App {
         self.diagram_pane_ratio_user_adjusted
     }
 
+    fn widget_placement_mode(&self) -> crate::config::WidgetPlacementMode {
+        self.widget_placement_mode
+    }
+
     fn diagram_pane_animating(&self) -> bool {
         self.diagram_pane_anim_start
             .map(|s| s.elapsed().as_secs_f32() < Self::DIAGRAM_PANE_ANIM_DURATION)

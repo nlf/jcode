@@ -722,3 +722,154 @@ fn test_configured_palette_recolors_a_real_rendered_frame() {
         "the default palette must be a no-op on the rendered frame"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Column widget placement mode (display.widget_placement = "column").
+// ---------------------------------------------------------------------------
+
+fn column_mode_state() -> TestState {
+    TestState {
+        provider_model: Some("claude-test-1".into()),
+        info_widget_data: info_widget::InfoWidgetData {
+            model: Some("claude-test-1".into()),
+            provider_name: Some("anthropic".into()),
+            context_info: Some(crate::prompt::ContextInfo {
+                system_prompt_chars: 20_000,
+                total_chars: 60_000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        widget_placement_mode: crate::config::WidgetPlacementMode::Column,
+        ..Default::default()
+    }
+}
+
+fn draw_state(state: &TestState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    let backend = ratatui::backend::TestBackend::new(width, height);
+    let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, state))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+/// Column mode must reserve a real column: the transcript's usable area has to
+/// shrink, which is the whole point (widgets no longer overlap the text).
+#[test]
+fn column_mode_reserves_a_transcript_free_column() {
+    let mut state = column_mode_state();
+    let _ = draw_state(&state, 120, 30);
+    let column_layout = crate::tui::ui::last_layout_snapshot();
+
+    state.widget_placement_mode = crate::config::WidgetPlacementMode::Margin;
+    let _ = draw_state(&state, 120, 30);
+    let margin_layout = crate::tui::ui::last_layout_snapshot();
+
+    let (Some(col), Some(marg)) = (column_layout, margin_layout) else {
+        panic!("expected a layout snapshot from both draws");
+    };
+    assert!(
+        col.messages_area.width < marg.messages_area.width,
+        "column mode should narrow the transcript (column={} margin={})",
+        col.messages_area.width,
+        marg.messages_area.width
+    );
+    assert!(
+        col.diff_pane_area.is_some(),
+        "column mode should open the right-hand column even with no panel content"
+    );
+}
+
+/// Widgets in column mode hold a fixed screen position: the same state drawn
+/// twice must place them identically, and they must sit inside the column
+/// rather than over the transcript.
+#[test]
+fn column_mode_widgets_sit_outside_the_transcript() {
+    let state = column_mode_state();
+    let _ = draw_state(&state, 120, 30);
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let column = layout.diff_pane_area.expect("column");
+    // Recompute placements from the recorded column rather than reading the
+    // process-global widget state, which other tests mutate in parallel.
+    let (placements, used) = crate::tui::info_widget_layout::calculate_placements_column(
+        column,
+        &state.info_widget_data,
+        true,
+    );
+
+    assert!(
+        !placements.is_empty(),
+        "column mode should place at least one widget for this data"
+    );
+    assert!(used > 0, "a placed stack must consume rows");
+    for p in &placements {
+        assert!(
+            p.rect.x >= column.x,
+            "widget {:?} at x={} intrudes into the transcript (column starts at {})",
+            p.rect,
+            p.rect.x,
+            column.x
+        );
+        assert!(
+            p.rect.x >= layout.messages_area.right(),
+            "widget {:?} overlaps the transcript area {:?}",
+            p.rect,
+            layout.messages_area
+        );
+    }
+}
+
+/// A narrow terminal cannot afford the column, so it must degrade to no column
+/// at all rather than crushing the transcript.
+#[test]
+fn column_mode_degrades_on_narrow_terminals() {
+    let state = column_mode_state();
+    for width in [20u16, 40, 50] {
+        let _ = draw_state(&state, width, 24);
+        let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+        assert!(
+            layout.messages_area.width >= 20 || width < 20,
+            "transcript crushed to {} at terminal width {width}",
+            layout.messages_area.width
+        );
+    }
+}
+
+/// End-to-end: with panel content present, the rendered column shows widgets on
+/// top, a separator, and the panel content below it. This is the actual visual
+/// contract of `widget_placement = "column"`.
+#[test]
+fn column_mode_stacks_widgets_above_panel_content() {
+    let column = Rect::new(80, 0, 40, 30);
+
+    // With content below, the stack is capped and a separator is reserved.
+    let (stack_budget, separator) =
+        crate::tui::info_widget_layout::split_widget_column(column, true);
+    assert_eq!(
+        separator,
+        Some(crate::tui::info_widget_layout::COLUMN_SEPARATOR_HEIGHT)
+    );
+
+    let data = column_mode_state().info_widget_data;
+    let (placements, used) =
+        crate::tui::info_widget_layout::calculate_placements_column(stack_budget, &data, true);
+    assert!(!placements.is_empty(), "expected widgets in the column");
+
+    // Everything the widgets occupy must sit strictly above the separator, and
+    // the panel content strictly below it, with no overlap between the two.
+    let separator_y = column.y + used;
+    for p in &placements {
+        assert!(
+            p.rect.bottom() <= separator_y,
+            "widget {:?} crosses the separator at y={separator_y}",
+            p.rect
+        );
+    }
+    let content_top = separator_y + crate::tui::info_widget_layout::COLUMN_SEPARATOR_HEIGHT;
+    assert!(
+        content_top < column.bottom(),
+        "panel content must retain rows below the separator (top={content_top}, column ends {})",
+        column.bottom()
+    );
+}

@@ -117,6 +117,7 @@ struct TestState {
     working_dir: Option<String>,
     info_widget_data: info_widget::InfoWidgetData,
     suppress_info_widgets: bool,
+    widget_placement_mode: crate::config::WidgetPlacementMode,
     display_messages: Vec<DisplayMessage>,
     messages_version: u64,
     streaming_text: String,
@@ -362,6 +363,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn info_widget_overlays_enabled(&self) -> bool {
         !self.suppress_info_widgets
+    }
+    fn widget_placement_mode(&self) -> crate::config::WidgetPlacementMode {
+        self.widget_placement_mode
     }
     fn client_update_available(&self) -> bool {
         false

@@ -506,6 +506,10 @@ pub trait TuiState {
     fn diagram_scroll(&self) -> (i32, i32);
     /// Diagram pane width ratio percentage
     fn diagram_pane_ratio(&self) -> u8;
+    /// Where info widgets are placed (margin / dedicated column / off).
+    fn widget_placement_mode(&self) -> crate::config::WidgetPlacementMode {
+        crate::config::WidgetPlacementMode::Margin
+    }
     /// Whether the user has manually resized the diagram/side pane width.
     fn diagram_pane_ratio_user_adjusted(&self) -> bool;
     /// Whether the diagram pane ratio is currently animating

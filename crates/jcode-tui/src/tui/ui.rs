@@ -2847,7 +2847,20 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         (area, None)
     };
 
-    let needs_side_pane = has_right_side_pane_content;
+    // In `column` mode the info widgets share the right-hand column with the
+    // side panel: they stack at its top, above a separator, and panel content
+    // (if any) takes the remainder. That means the column must exist whenever
+    // there are widgets to show, even with no panel content at all, in which
+    // case it collapses to a narrow gutter rather than the full panel ratio.
+    let widget_column_mode = matches!(
+        app.widget_placement_mode(),
+        crate::config::WidgetPlacementMode::Column
+    ) && !(!app.onboarding_welcome_active() && super::idle_donut_active(app))
+        && !swarm_page_active
+        && app.info_widget_overlays_enabled()
+        && crate::tui::info_widget::is_enabled();
+    let widget_column_wanted = widget_column_mode && !app.info_widget_data().is_empty();
+    let needs_side_pane = has_right_side_pane_content || widget_column_wanted;
 
     let (chat_area, diff_pane_area) = if needs_side_pane {
         const MIN_DIFF_WIDTH: u16 = 30;
@@ -2868,9 +2881,15 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         };
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
         if max_diff >= MIN_DIFF_WIDTH {
-            let diff_width = (((chat_area.width as u32 * effective_ratio) / 100) as u16)
-                .max(MIN_DIFF_WIDTH)
-                .min(max_diff);
+            // Widgets alone only justify a narrow gutter. Panel content widens
+            // the shared column to the usual ratio.
+            let diff_width = if has_right_side_pane_content {
+                (((chat_area.width as u32 * effective_ratio) / 100) as u16)
+                    .max(MIN_DIFF_WIDTH)
+                    .min(max_diff)
+            } else {
+                crate::tui::info_widget_layout::COLUMN_GUTTER_WIDTH.min(max_diff)
+            };
             let new_chat_width = chat_area.width.saturating_sub(diff_width);
             let chat = Rect {
                 x: chat_area.x,
@@ -3334,6 +3353,55 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     crate::tui::clear_side_panel_debug_snapshot();
+    // In `column` mode, carve the widget stack off the top of the shared column
+    // and hand the remainder to whichever panel renderer owns the content. The
+    // widgets themselves are drawn later (with the rest of the widget pass) so
+    // they paint over the panel's border region rather than under it.
+    let mut column_widget_placements: Vec<info_widget::WidgetPlacement> = Vec::new();
+    let mut column_separator_y: Option<u16> = None;
+    let diff_pane_area = if widget_column_mode && let Some(column) = diff_pane_area {
+        let widget_data = app.info_widget_data();
+        let (stack_budget, _) =
+            crate::tui::info_widget_layout::split_widget_column(column, has_right_side_pane_content);
+        let (placements, used) = info_widget::calculate_placements_column(stack_budget, &widget_data);
+        column_widget_placements = placements;
+        if used == 0 {
+            Some(column)
+        } else if has_right_side_pane_content {
+            let sep_y = column.y.saturating_add(used);
+            column_separator_y = Some(sep_y);
+            let consumed = used.saturating_add(
+                crate::tui::info_widget_layout::COLUMN_SEPARATOR_HEIGHT,
+            );
+            Some(Rect {
+                x: column.x,
+                y: column.y.saturating_add(consumed),
+                width: column.width,
+                height: column.height.saturating_sub(consumed),
+            })
+        } else {
+            // Widgets own the whole column; there is nothing below them.
+            None
+        }
+    } else {
+        diff_pane_area
+    };
+    if let Some(sep_y) = column_separator_y
+        && let Some(area) = diff_pane_area
+    {
+        let sep = Rect {
+            x: area.x,
+            y: sep_y,
+            width: area.width,
+            height: 1,
+        };
+        frame.render_widget(
+            ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::TOP)
+                .border_style(Style::default().fg(rgb(70, 70, 80)).dim()),
+            sep,
+        );
+    }
     if let Some(diff_area) = diff_pane_area {
         if has_side_panel_content {
             if let Some(ref mut capture) = debug_capture {
@@ -3432,10 +3500,46 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let mut widget_render_ms: Option<f32> = None;
     let mut placements: Vec<info_widget::WidgetPlacement> = Vec::new();
     let widget_bounds = messages_area;
-    if app.info_widget_overlays_enabled()
+    if widget_column_mode {
+        // Column mode: placements were already computed above (the panel split
+        // depends on them). Just draw them.
+        if !column_widget_placements.is_empty() {
+            if let Some(ref mut capture) = debug_capture {
+                capture.render_order.push("render_info_widgets".to_string());
+                let placement_captures = capture_widget_placements(&column_widget_placements);
+                capture.layout.widget_placements = placement_captures.clone();
+                capture.info_widgets = Some(InfoWidgetCapture {
+                    summary: build_info_widget_summary(&widget_data),
+                    placements: placement_captures,
+                });
+                for placement in &column_widget_placements {
+                    if !rect_within_bounds(placement.rect, area) {
+                        capture.anomaly(format!(
+                            "Info widget {:?} out of bounds {:?}",
+                            placement.kind, placement.rect
+                        ));
+                    }
+                    if rects_overlap(placement.rect, messages_area) {
+                        capture.anomaly(format!(
+                            "Column info widget {:?} overlaps transcript",
+                            placement.kind
+                        ));
+                    }
+                }
+            }
+            let widget_start = Instant::now();
+            info_widget::render_all(frame, &column_widget_placements, &widget_data);
+            widget_render_ms = Some(widget_start.elapsed().as_secs_f32() * 1000.0);
+        }
+        placements = column_widget_placements;
+    } else if app.info_widget_overlays_enabled()
         && !widget_data.is_empty()
         && !show_donut
         && !swarm_page_active
+        && !matches!(
+            app.widget_placement_mode(),
+            crate::config::WidgetPlacementMode::Off
+        )
     {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("render_info_widgets".to_string());

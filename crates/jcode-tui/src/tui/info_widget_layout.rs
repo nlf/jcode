@@ -11,6 +11,17 @@ const MIN_WIDGET_WIDTH: u16 = 24;
 const MAX_WIDGET_WIDTH: u16 = 40;
 /// Minimum height needed to show the widget.
 const MIN_WIDGET_HEIGHT: u16 = 5;
+/// Preferred width of the bare widget gutter when no side panel content is
+/// present to widen the column. Wide enough to clear [`MIN_WIDGET_WIDTH`] plus
+/// the borders the widgets draw for themselves.
+pub(crate) const COLUMN_GUTTER_WIDTH: u16 = 30;
+/// Rows the column reserves for the separator between the widget stack and the
+/// side panel content below it.
+pub(crate) const COLUMN_SEPARATOR_HEIGHT: u16 = 1;
+/// Largest share of the column's height the widget stack may consume, in
+/// percent, when there is panel content below it. Without a cap a tall widget
+/// set would push the panel content off screen entirely.
+const COLUMN_STACK_MAX_PERCENT: u16 = 60;
 /// How many consecutive frames a widget may stay hidden-in-place before its
 /// anchor is abandoned and Phase 2 is allowed to re-home it elsewhere.
 ///
@@ -41,6 +52,87 @@ pub(crate) struct WidgetAnchor {
 pub(crate) struct PlacementOutcome {
     pub visible: Vec<WidgetPlacement>,
     pub anchors: Vec<WidgetAnchor>,
+}
+
+/// Stack widgets top-down in a dedicated column.
+///
+/// Unlike [`calculate_placements_anchored`], this holds a fixed screen position:
+/// the column is not part of the transcript, so nothing scrolls under the
+/// widgets and none of the anchor/settlement machinery is needed. Widgets are
+/// taken in priority order until the height budget runs out.
+///
+/// `budget` is the rectangle available to the stack (already excluding the
+/// separator and any panel content below). Returns the placements plus the
+/// number of rows actually consumed, so the caller can place the separator
+/// tight against the stack rather than at a fixed offset.
+pub(crate) fn calculate_placements_column(
+    budget: Rect,
+    data: &InfoWidgetData,
+    enabled: bool,
+) -> (Vec<WidgetPlacement>, u16) {
+    if !enabled || budget.width < MIN_WIDGET_WIDTH || budget.height < MIN_WIDGET_HEIGHT {
+        return (Vec::new(), 0);
+    }
+
+    // The column is exactly as wide as it is; widgets fill it rather than
+    // sizing to a ragged margin. Cap at MAX_WIDGET_WIDTH so a wide panel does
+    // not stretch widget content past what its renderers expect.
+    let width = budget.width.min(MAX_WIDGET_WIDTH);
+    let mut placements = Vec::new();
+    let mut used = 0u16;
+    let mut overview_placed = false;
+
+    for kind in data.available_widgets() {
+        // Overview subsumes its mergeable widgets, exactly as in margin mode,
+        // so the column does not repeat the same numbers twice.
+        if overview_placed && is_overview_mergeable(kind) {
+            continue;
+        }
+        let remaining = budget.height.saturating_sub(used);
+        if remaining < MIN_WIDGET_HEIGHT {
+            break;
+        }
+        let height = calculate_widget_height(kind, data, width, remaining);
+        if height == 0 {
+            continue;
+        }
+        // `calculate_widget_height` reports content rows; add the border back.
+        let total = height.saturating_add(2).min(remaining);
+        if total < MIN_WIDGET_HEIGHT {
+            continue;
+        }
+        placements.push(WidgetPlacement {
+            kind,
+            rect: Rect::new(budget.x, budget.y + used, width, total),
+            side: Side::Right,
+        });
+        used = used.saturating_add(total);
+        if kind == WidgetKind::Overview {
+            overview_placed = true;
+        }
+    }
+
+    (placements, used)
+}
+
+/// Split a right-hand column into the widget stack band and the remainder for
+/// side panel content.
+///
+/// Returns `(stack_budget, separator_row, content_area)`. When there is no
+/// panel content below, the stack gets the whole column and there is no
+/// separator. When there is, the stack is capped so the content keeps a usable
+/// share of the height.
+pub(crate) fn split_widget_column(column: Rect, has_content_below: bool) -> (Rect, Option<u16>) {
+    if !has_content_below {
+        return (column, None);
+    }
+    let cap = (column.height.saturating_mul(COLUMN_STACK_MAX_PERCENT) / 100)
+        .saturating_sub(COLUMN_SEPARATOR_HEIGHT);
+    let stack = Rect {
+        height: cap.min(column.height),
+        ..column
+    };
+    (stack, Some(COLUMN_SEPARATOR_HEIGHT))
 }
 
 /// Margin information for layout calculation.

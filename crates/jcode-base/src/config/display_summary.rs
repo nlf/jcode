@@ -62,6 +62,7 @@ impl Config {
 - Copy badge Alt label: {}
 - Show agentgrep output: {}
 - Tool call details: {}
+- Widget placement: {}
 - Theme: {}
 - Custom colors: {}
 
@@ -194,6 +195,11 @@ impl Config {
             },
             self.display.show_agentgrep_output,
             self.display.tool_call_details,
+            match self.display.widget_placement {
+                crate::config::WidgetPlacementMode::Margin => "margin",
+                crate::config::WidgetPlacementMode::Column => "column",
+                crate::config::WidgetPlacementMode::Off => "off",
+            },
             if self.display.theme.trim().is_empty() {
                 "auto"
             } else {

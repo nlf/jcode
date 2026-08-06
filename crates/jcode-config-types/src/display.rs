@@ -2,7 +2,8 @@
 
 use crate::{
     DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
-    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
+    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, WidgetPlacementMode,
+    default_true,
 };
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +121,12 @@ pub struct DisplayConfig {
     /// reveal when scrolling past the bottom, "on" keeps it always visible.
     #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub overscroll_status: OverscrollStatusMode,
+    /// Where info widgets are placed (margin/column/off, default: margin).
+    /// `margin` floats them in the transcript's negative space; `column`
+    /// stacks them at the top of the right-hand side panel column, above a
+    /// separator, where they hold a fixed position instead of scrolling.
+    #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
+    pub widget_placement: WidgetPlacementMode,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -158,6 +165,7 @@ impl Default for DisplayConfig {
             active_sessions_manager: false,
             external_sessions: true,
             overscroll_status: OverscrollStatusMode::default(),
+            widget_placement: WidgetPlacementMode::default(),
         }
     }
 }

@@ -403,3 +403,112 @@ fn stale_anchor_above_shifted_area_is_rehomed_not_drawn_out_of_bounds() {
     );
     assert_placements_sane("shifted area", area1, &second.visible);
 }
+
+// ---------------------------------------------------------------------------
+// Column mode: widgets stacked in a dedicated right-hand column.
+// ---------------------------------------------------------------------------
+
+/// Column placements stack top-down without gaps or overlaps, and stay inside
+/// the column they were given.
+#[test]
+fn column_placements_stack_without_overlap() {
+    let data = contended_data();
+    let column = Rect::new(50, 0, 30, 40);
+    let (placements, used) = calculate_placements_column(column, &data, true);
+
+    assert!(
+        !placements.is_empty(),
+        "contended data should place at least one widget in a 30x40 column"
+    );
+    assert!(used <= column.height, "stack {used} overflowed {column:?}");
+
+    let mut expected_y = column.y;
+    for p in &placements {
+        assert_eq!(p.rect.x, column.x, "widget {:?} left the column", p.kind);
+        assert_eq!(
+            p.rect.y, expected_y,
+            "widget {:?} is not stacked tight against the previous one",
+            p.kind
+        );
+        assert!(
+            p.rect.right() <= column.right() && p.rect.bottom() <= column.bottom(),
+            "widget {:?} overflowed the column: {:?}",
+            p.kind,
+            p.rect
+        );
+        expected_y = p.rect.bottom();
+    }
+    assert_eq!(
+        expected_y,
+        column.y + used,
+        "reported used rows disagree with the stack extent"
+    );
+}
+
+/// The whole point of column mode: placements do not depend on scroll, so the
+/// same data yields byte-identical geometry every frame.
+#[test]
+fn column_placements_are_scroll_invariant() {
+    let data = contended_data();
+    let column = Rect::new(50, 0, 30, 40);
+    let (first, used_a) = calculate_placements_column(column, &data, true);
+    let (second, used_b) = calculate_placements_column(column, &data, true);
+
+    assert_eq!(used_a, used_b);
+    assert_eq!(first.len(), second.len());
+    for (a, b) in first.iter().zip(second.iter()) {
+        assert_eq!(a.kind, b.kind);
+        assert_eq!(a.rect, b.rect, "column placement moved between frames");
+    }
+}
+
+/// Degenerate columns must not panic and must not emit unrenderable widgets.
+#[test]
+fn column_placements_handle_degenerate_sizes() {
+    let data = contended_data();
+    for width in [0u16, 1, 5, 23, 24, 30, 200] {
+        for height in [0u16, 1, 4, 5, 40] {
+            let column = Rect::new(0, 0, width, height);
+            let (placements, used) = calculate_placements_column(column, &data, true);
+            assert!(used <= height, "used {used} > height {height}");
+            for p in &placements {
+                assert!(p.rect.width >= MIN_WIDGET_WIDTH);
+                assert!(p.rect.height >= MIN_WIDGET_HEIGHT);
+                assert!(p.rect.bottom() <= column.bottom());
+            }
+        }
+    }
+}
+
+/// Disabled widgets place nothing, so the column collapses and the caller can
+/// give the space back to the transcript.
+#[test]
+fn column_placements_respect_disabled() {
+    let data = contended_data();
+    let column = Rect::new(50, 0, 30, 40);
+    let (placements, used) = calculate_placements_column(column, &data, false);
+    assert!(placements.is_empty());
+    assert_eq!(used, 0);
+}
+
+/// With panel content below, the stack is capped so the content keeps a usable
+/// share of the column. With nothing below, the stack may use the whole column.
+#[test]
+fn column_split_caps_stack_when_content_is_below() {
+    let column = Rect::new(50, 0, 30, 40);
+
+    let (full, sep) = split_widget_column(column, false);
+    assert_eq!(full, column, "no content below means the stack owns the column");
+    assert!(sep.is_none(), "no separator without content below");
+
+    let (capped, sep) = split_widget_column(column, true);
+    assert_eq!(sep, Some(COLUMN_SEPARATOR_HEIGHT));
+    assert!(
+        capped.height < column.height,
+        "stack should be capped to leave room for panel content"
+    );
+    assert!(
+        capped.height > 0,
+        "cap should still leave the stack some rows"
+    );
+}

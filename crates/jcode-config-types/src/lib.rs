@@ -179,6 +179,24 @@ pub enum DiagramPanePosition {
     Top,
 }
 
+/// Where info widgets are placed on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WidgetPlacementMode {
+    /// Opportunistic placement into the ragged negative space beside the
+    /// transcript. Widgets are anchored to transcript lines and scroll with
+    /// them, so they cost no horizontal space but do move.
+    #[default]
+    Margin,
+    /// Stack widgets at the top of a dedicated right-hand column, above a
+    /// horizontal separator, with side panel content below. The column is a
+    /// narrow gutter when no panel content exists and widens to the panel
+    /// ratio when it does. Widgets hold a fixed screen position.
+    Column,
+    /// Never place info widgets.
+    Off,
+}
+
 /// How much vertical spacing to use when rendering markdown blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

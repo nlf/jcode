@@ -12,7 +12,7 @@ pub use jcode_config_types::{
     NamedProviderType, NativeScrollbarConfig, NotificationsConfig, OverscrollStatusMode,
     PowerConfig, ProviderConfig, ReasoningDisplayMode, SafetyConfig, SessionPickerResumeAction,
     SponsorsConfig, SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel,
-    WebSearchConfig, WebSearchEngine,
+    WebSearchConfig, WebSearchEngine, WidgetPlacementMode,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

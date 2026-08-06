@@ -109,6 +109,7 @@ fn reported_display_config_survives_a_real_config_file_round_trip() {
             "show_thinking = true\n",
             "reasoning_display = \"current\"\n",
             "diagram_mode = \"inline\"\n",
+            "widget_placement = \"column\"\n",
         ),
     )
     .expect("write user config");
@@ -126,6 +127,11 @@ fn reported_display_config_survives_a_real_config_file_round_trip() {
     assert_eq!(
         loaded.display.diagram_mode,
         jcode_config_types::DiagramDisplayMode::None
+    );
+    assert_eq!(
+        loaded.display.widget_placement,
+        jcode_config_types::WidgetPlacementMode::Column,
+        "widget_placement must survive a real config file round trip"
     );
 
     // The summary the user reads must agree, or the setting looks ignored.

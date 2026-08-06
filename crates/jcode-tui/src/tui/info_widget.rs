@@ -921,6 +921,15 @@ pub fn toggle_enabled() {
     }
 }
 
+/// Placements from the most recent layout pass. Used by tests and by
+/// diagnostics that need to know what the widget layer actually drew.
+pub fn last_placements() -> Vec<WidgetPlacement> {
+    get_or_init_state()
+        .as_ref()
+        .map(|s| s.placements.clone())
+        .unwrap_or_default()
+}
+
 /// Check if widget is enabled by user
 pub fn is_enabled() -> bool {
     get_or_init_state()
@@ -991,6 +1000,34 @@ pub fn calculate_placements(
         state.swarm_dock_last_engaged = Some(Instant::now());
     }
     outcome.visible
+}
+
+/// Calculate widget placements for `column` mode: a fixed stack at the top of
+/// the right-hand column. Returns the placements plus the rows consumed.
+///
+/// Anchors are irrelevant here (nothing scrolls under a docked widget) but the
+/// remembered `placements` are still updated, because downstream consumers such
+/// as the inline swarm strip stand-down check what the dock is showing.
+pub fn calculate_placements_column(
+    column: Rect,
+    data: &InfoWidgetData,
+) -> (Vec<WidgetPlacement>, u16) {
+    let mut guard = get_or_init_state();
+    let state = match guard.as_mut() {
+        Some(s) => s,
+        None => return (Vec::new(), 0),
+    };
+
+    let (visible, used) =
+        super::info_widget_layout::calculate_placements_column(column, data, state.enabled);
+    // Margin-mode anchor memory must not survive into column mode, or a later
+    // switch back would try to restore slots against a different geometry.
+    state.anchors.clear();
+    state.placements = visible.clone();
+    if swarm_dock_engaged(state) {
+        state.swarm_dock_last_engaged = Some(Instant::now());
+    }
+    (visible, used)
 }
 
 /// How long the inline swarm strip keeps standing down after the SwarmStatus
