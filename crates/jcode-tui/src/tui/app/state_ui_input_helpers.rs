@@ -172,6 +172,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Cycle or set diff display mode (off/inline/full/pinned/file)",
     ),
     RegisteredCommand::public(
+        "/widgets",
+        "Cycle or set info widget placement (margin/column/off)",
+    ),
+    RegisteredCommand::public(
         "/onboarding-preview",
         "Preview the first-run onboarding screen",
     ),

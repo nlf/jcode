@@ -3535,3 +3535,76 @@ pub(super) fn handle_telemetry_command(app: &mut App, trimmed: &str) -> bool {
 #[cfg(test)]
 #[path = "commands_tests.rs"]
 mod tests;
+
+/// Human-readable label for a widget placement mode.
+pub(super) fn widget_placement_label(mode: crate::config::WidgetPlacementMode) -> &'static str {
+    match mode {
+        crate::config::WidgetPlacementMode::Margin => "margin",
+        crate::config::WidgetPlacementMode::Column => "column",
+        crate::config::WidgetPlacementMode::Off => "off",
+    }
+}
+
+fn parse_widget_placement_name(arg: &str) -> Option<crate::config::WidgetPlacementMode> {
+    match arg.to_ascii_lowercase().as_str() {
+        "margin" | "float" | "inline" => Some(crate::config::WidgetPlacementMode::Margin),
+        "column" | "dock" | "side" => Some(crate::config::WidgetPlacementMode::Column),
+        "off" | "none" | "hide" => Some(crate::config::WidgetPlacementMode::Off),
+        _ => None,
+    }
+}
+
+fn next_widget_placement(
+    mode: crate::config::WidgetPlacementMode,
+) -> crate::config::WidgetPlacementMode {
+    match mode {
+        crate::config::WidgetPlacementMode::Margin => crate::config::WidgetPlacementMode::Column,
+        crate::config::WidgetPlacementMode::Column => crate::config::WidgetPlacementMode::Off,
+        crate::config::WidgetPlacementMode::Off => crate::config::WidgetPlacementMode::Margin,
+    }
+}
+
+fn apply_widget_placement(app: &mut App, mode: crate::config::WidgetPlacementMode) {
+    app.widget_placement_mode = mode;
+    // The column carves real estate out of the transcript, so every wrapped line
+    // changes width. Force a clean relayout rather than letting stale anchors
+    // and cached wraps bleed across the mode change.
+    app.request_full_repaint();
+    app.set_status_notice(format!("Widgets: {}", widget_placement_label(mode)));
+}
+
+/// `/widgets [margin|column|off|cycle|status]`
+///
+/// Switches info-widget placement at runtime. Without this the setting is only
+/// reachable by editing `config.toml` and restarting, which makes a display
+/// mode that is meant to be tried out effectively undiscoverable.
+pub(super) fn handle_widgets_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(rest) = slash_command_rest(trimmed, "/widgets") else {
+        return false;
+    };
+    let arg = rest.trim();
+
+    if arg.is_empty() || arg.eq_ignore_ascii_case("cycle") || arg.eq_ignore_ascii_case("next") {
+        let next = next_widget_placement(app.widget_placement_mode);
+        apply_widget_placement(app, next);
+        return true;
+    }
+
+    if arg.eq_ignore_ascii_case("status") {
+        app.push_display_message(DisplayMessage::system(format!(
+            "Widget placement: {} (use /widgets [margin|column|off] or /widgets to cycle). \
+             margin floats widgets in the transcript's free space; column stacks them above \
+             the side panel where they hold a fixed position.",
+            widget_placement_label(app.widget_placement_mode)
+        )));
+        return true;
+    }
+
+    match parse_widget_placement_name(arg) {
+        Some(mode) => apply_widget_placement(app, mode),
+        None => app.push_display_message(DisplayMessage::error(
+            "Usage: /widgets [margin|column|off|cycle|status]".to_string(),
+        )),
+    }
+    true
+}

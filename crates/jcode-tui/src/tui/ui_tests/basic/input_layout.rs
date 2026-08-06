@@ -233,8 +233,12 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
 
     reserve_copy_badge_margins(&mut margins, 10, 13, &[(11, 'a')], &copy_badge_ui, Instant::now());
 
+    // The Alt label is platform-dependent ("⌥" on macOS, "Alt" elsewhere), so
+    // derive the expected reservation rather than hardcoding one platform's
+    // badge width.
+    let reserved = copy_badge_reserved_width('a', &copy_badge_ui, Instant::now());
     assert_eq!(margins.right_widths[0], 30);
-    assert_eq!(margins.right_widths[1], 16);
+    assert_eq!(margins.right_widths[1], 30 - reserved as u16);
     assert_eq!(margins.right_widths[2], 30);
 }
 
@@ -270,8 +274,13 @@ fn test_copy_badge_truncates_full_width_line_before_appending_shortcut() {
 
     truncate_copy_badge_line_to_width(&mut line, viewport_width.saturating_sub(reserved));
     // Matches the render path: one separator space, then the shortcut badges.
+    // Build the badge from the same helper the renderer uses so this holds on
+    // macOS ("⌥") as well as elsewhere ("Alt").
     line.spans.push(Span::raw(" "));
-    line.spans.push(Span::raw("[Alt] [⇧] [A]"));
+    line.spans.push(Span::raw(format!(
+        "{} [⇧] [A]",
+        crate::tui::ui::viewport::copy_badge_alt_badge()
+    )));
 
     assert_eq!(line.width(), viewport_width);
     assert!(line.width() <= viewport_width);

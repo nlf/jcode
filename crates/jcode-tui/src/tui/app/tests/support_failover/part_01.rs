@@ -632,3 +632,53 @@ fn widget_placement_config_reaches_the_live_app() {
         });
     }
 }
+
+/// `/widgets` must switch placement at runtime, so the mode is reachable
+/// without editing config.toml and restarting.
+#[test]
+fn widgets_command_sets_and_cycles_placement() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+
+        // Explicit modes, including aliases.
+        for (input, expected) in [
+            ("/widgets column", crate::config::WidgetPlacementMode::Column),
+            ("/widgets off", crate::config::WidgetPlacementMode::Off),
+            ("/widgets margin", crate::config::WidgetPlacementMode::Margin),
+            ("/widgets dock", crate::config::WidgetPlacementMode::Column),
+            ("/widgets none", crate::config::WidgetPlacementMode::Off),
+        ] {
+            assert!(
+                crate::tui::app::commands::handle_widgets_command(&mut app, input),
+                "{input} should be handled"
+            );
+            assert_eq!(app.widget_placement_mode, expected, "after {input}");
+        }
+
+        // Bare /widgets cycles margin -> column -> off -> margin.
+        app.widget_placement_mode = crate::config::WidgetPlacementMode::Margin;
+        for expected in [
+            crate::config::WidgetPlacementMode::Column,
+            crate::config::WidgetPlacementMode::Off,
+            crate::config::WidgetPlacementMode::Margin,
+        ] {
+            crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets");
+            assert_eq!(app.widget_placement_mode, expected, "cycle");
+        }
+
+        // An unknown argument must not silently change the mode.
+        app.widget_placement_mode = crate::config::WidgetPlacementMode::Column;
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets bogus");
+        assert_eq!(
+            app.widget_placement_mode,
+            crate::config::WidgetPlacementMode::Column,
+            "an invalid argument must leave the mode untouched"
+        );
+
+        // A non-matching command must not be claimed.
+        assert!(!crate::tui::app::commands::handle_widgets_command(
+            &mut app,
+            "/widgetsomething"
+        ));
+    });
+}
