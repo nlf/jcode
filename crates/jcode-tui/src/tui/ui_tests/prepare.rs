@@ -1283,3 +1283,78 @@ fn test_prepare_messages_renders_anchored_reasoning_message_in_flow() {
         joined[reasoning_idx]
     );
 }
+
+/// The loop that mattered and was missing: prove a toggle changes the lines the
+/// **body-reuse layer** produces.
+///
+/// `prepare_messages` and `get_cached_message_lines` both short-circuit under
+/// `cfg!(test)`, so no test that goes through them can reach caching at all.
+/// That is how a feature which expanded nothing passed every check: the state
+/// flipped, the notice fired, and production handed back cached collapsed
+/// lines from a layer the tests never touched. This calls
+/// `build_body_from_base` directly, the function that decides reuse.
+#[test]
+fn test_toggling_expansion_defeats_body_reuse() {
+    use crate::tui::ui::prepare::{build_body_from_base, prepare_body};
+    use std::sync::Arc;
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let state = TestState {
+        display_messages: vec![DisplayMessage {
+            role: "tool".to_string(),
+            content: "REUSEPROBE_OUTPUT line one\nREUSEPROBE_OUTPUT line two".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: Some(ToolCall {
+                id: "call-reuse".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({ "command": "echo reuseprobe" }),
+                intent: Some("reuse probe".to_string()),
+                thought_signature: None,
+            }),
+        }],
+        ..Default::default()
+    };
+
+    // Build the collapsed base the reuse path will be offered.
+    let base = Arc::new(prepare_body(&state, 110, false));
+    let base_count = base.message_boundaries.len();
+    assert_eq!(base_count, 1, "expected one message boundary");
+
+    let base_text = base
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !base_text.contains("REUSEPROBE_OUTPUT"),
+        "collapsed base should hide output:\n{base_text}"
+    );
+
+    // Expand, then ask the reuse layer to build from that collapsed base.
+    crate::tui::ui::expand_state::toggle_expanded(
+        0,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+    );
+    let (rebuilt, reason) = build_body_from_base(&state, 110, base, base_count, 0, 1);
+    let rebuilt_text = rebuilt
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    assert_ne!(
+        reason, "prefix_exact",
+        "an expanded row must not be treated as an exact reuse of its collapsed body"
+    );
+    assert!(
+        rebuilt_text.contains("REUSEPROBE_OUTPUT"),
+        "the reuse layer must re-render the expanded row instead of returning \
+         the cached collapsed lines:\n{rebuilt_text}"
+    );
+}
