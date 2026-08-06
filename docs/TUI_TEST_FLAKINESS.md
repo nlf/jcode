@@ -3,6 +3,58 @@
 `cargo test -p jcode-tui --lib` fails 1-4 tests per run, with a varying set.
 This is a parallelism race on process-global state, not a logic bug.
 
+## Update 2026-08-06: it now deadlocks, it does not just flake
+
+At the default thread count the suite no longer finishes at all. Sampling a
+hung run (`sample <pid>`) shows a **lock-order inversion** between the two test
+mutexes:
+
+- `jcode_base::storage::lock_test_env` (env lock), taken by tests that scope
+  their own `JCODE_HOME`.
+- `tui::ui::render_state_test_lock` (render lock), taken by rendering tests.
+
+Both orders exist in the suite:
+
+| Order | Taken by |
+|---|---|
+| env → render | tests holding `lock_test_env` that then call `create_test_app` (→ `clear_test_render_state_for_tests` → render lock) |
+| render → env | rendering tests holding the render lock whose body then calls `lock_test_env` |
+
+One sampled run had one thread holding render and blocked on env, while three
+held env and blocked on render. Every test worker was parked; no thread was
+running.
+
+### What does not work (measured, reverted)
+
+**Making the render lock acquire the env lock first** to force a single global
+order. The env lock must then be reentrant, because test bodies call
+`lock_test_env` again after the render lock already took it. Faking reentrancy
+by handing back a guard over a *different* mutex reintroduces the deadlock:
+that substitute mutex is itself global, so two threads on the reentrant path
+block on each other. Verified by sampling: the suite advanced further (from the
+`test_a*` tests to the `colors::`/`helpers::` block) and then stalled with all
+12 workers parked and zero CPU growth over 45s. Reverted.
+
+A real fix needs `lock_test_env` to return an owned reentrant guard (tracking
+depth per thread and releasing only at depth zero), or the shared state removed
+per "Suggested direction" below. The latter is still preferred.
+
+### Single-threaded is also not clean any more
+
+`--test-threads=1` completes but does **not** pass 2006/2006 as recorded below.
+Measured 2026-08-06:
+
+| Commit | Result |
+|---|---|
+| `02439b492` | 2125 passed, 11 failed |
+| `4dc8e5c61` | 2147 passed, 9 failed |
+
+The 9 are a strict subset of the 11: the two `test_copy_badge_*` failures were
+platform-dependent tests hardcoding the non-macOS `[Alt]` label (14 columns)
+where macOS renders `[⌥]` (12), so they passed on Linux CI and failed on every
+macOS checkout. Fixed in `4dc8e5c61`. The remaining 9 are unrelated to widget
+or render layout and are still open.
+
 ## Evidence
 
 - `cargo test -p jcode-tui --lib -- --test-threads=1` passes **2006/2006** (16 ignored).
