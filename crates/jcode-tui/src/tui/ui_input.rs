@@ -2317,7 +2317,7 @@ struct RightFactPlacement {
 /// facts stand down rather than overwrite panel content that reaches the
 /// bottom of the column.
 pub(super) fn draw_column_fact_stack(frame: &mut Frame, app: &dyn TuiState, column: Rect) {
-    if column.width == 0 || column.height == 0 {
+    if !app.session_facts_enabled() || column.width == 0 || column.height == 0 {
         return;
     }
     let lines = right_fact_lines(app);
@@ -2368,7 +2368,11 @@ pub(super) fn draw_right_fact_stack(
     // Standing down here avoids duplicates and keeps its elastic reveal from
     // changing transcript-tail overlays mid-gesture. Users with overscroll off
     // get the compact stack continuously.
-    if app.chat_overscroll_active() || input_area.width == 0 || input_area.height == 0 {
+    if !app.session_facts_enabled()
+        || app.chat_overscroll_active()
+        || input_area.width == 0
+        || input_area.height == 0
+    {
         return;
     }
 

@@ -510,6 +510,11 @@ pub trait TuiState {
     fn widget_placement_mode(&self) -> crate::config::WidgetPlacementMode {
         crate::config::WidgetPlacementMode::Margin
     }
+    /// Whether to draw the session facts (provider, model, dir, context usage)
+    /// alongside the composer. Off when the info widgets already carry them.
+    fn session_facts_enabled(&self) -> bool {
+        true
+    }
     /// Whether the user has manually resized the diagram/side pane width.
     fn diagram_pane_ratio_user_adjusted(&self) -> bool;
     /// Whether the diagram pane ratio is currently animating

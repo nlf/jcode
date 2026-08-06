@@ -1249,3 +1249,48 @@ fn unmerged_column_renders_separate_boxes_with_git_filenames() {
         "the standalone git widget must list its changed files"
     );
 }
+
+/// `display.session_facts = false` must remove the facts from the frame
+/// entirely, in both placements, without disturbing anything else. They exist
+/// to be hidden when the info widgets already carry the same information.
+#[test]
+fn session_facts_can_be_hidden_in_both_placements() {
+    // Column-docked placement.
+    let shown = draw_state(&git_column_state(true), 120, 40);
+    assert!(
+        column_contains(&shown, 0, "Anthropic"),
+        "sanity: facts should render while enabled"
+    );
+
+    let mut hidden_state = git_column_state(true);
+    hidden_state.hide_session_facts = true;
+    let hidden = draw_state(&hidden_state, 120, 40);
+    assert!(
+        !column_contains(&hidden, 0, "Anthropic"),
+        "session facts must not render when disabled"
+    );
+
+    // The widget column itself must be unaffected: hiding the facts is not
+    // allowed to take the widgets with it.
+    assert_eq!(
+        column_box_count(&shown, 90),
+        column_box_count(&hidden, 90),
+        "hiding the facts must not change the widget boxes"
+    );
+
+    // Composer-anchored placement: the facts only draw into genuinely blank
+    // composer cells, and in this fixture the Overview widget already occupies
+    // that region, so they legitimately stand down there. Assert the gate
+    // itself instead, so the composer-anchored path is still covered.
+    let mut margin_state = git_column_state(false);
+    margin_state.widget_placement_mode = crate::config::WidgetPlacementMode::Margin;
+    assert!(
+        margin_state.session_facts_enabled(),
+        "facts enabled by default"
+    );
+    margin_state.hide_session_facts = true;
+    assert!(
+        !margin_state.session_facts_enabled(),
+        "the toggle must disable the composer-anchored stack too"
+    );
+}

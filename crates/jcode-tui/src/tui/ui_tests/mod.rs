@@ -118,6 +118,8 @@ struct TestState {
     info_widget_data: info_widget::InfoWidgetData,
     suppress_info_widgets: bool,
     widget_placement_mode: crate::config::WidgetPlacementMode,
+    /// Negated so `Default` keeps facts enabled, matching the real default.
+    hide_session_facts: bool,
     side_panel: Option<crate::side_panel::SidePanelSnapshot>,
     display_messages: Vec<DisplayMessage>,
     messages_version: u64,
@@ -367,6 +369,9 @@ impl crate::tui::TuiState for TestState {
     }
     fn widget_placement_mode(&self) -> crate::config::WidgetPlacementMode {
         self.widget_placement_mode
+    }
+    fn session_facts_enabled(&self) -> bool {
+        !self.hide_session_facts
     }
     fn client_update_available(&self) -> bool {
         false

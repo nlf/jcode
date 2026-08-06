@@ -1786,6 +1786,10 @@ impl crate::tui::TuiState for App {
         self.widget_placement_mode
     }
 
+    fn session_facts_enabled(&self) -> bool {
+        crate::config::config().display.session_facts
+    }
+
     fn diagram_pane_animating(&self) -> bool {
         self.diagram_pane_anim_start
             .map(|s| s.elapsed().as_secs_f32() < Self::DIAGRAM_PANE_ANIM_DURATION)

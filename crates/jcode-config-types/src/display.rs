@@ -143,6 +143,19 @@ pub struct DisplayConfig {
     /// off the Overview widget is not drawn at all (it would be empty).
     #[serde(default = "default_true")]
     pub widget_overview: bool,
+    /// Show the session facts (provider/auth, model, working directory and
+    /// branch, context usage) alongside the composer (default: true).
+    ///
+    /// These are drawn in otherwise-unused cells, so they cost no layout space,
+    /// but they repeat information the info widgets already show. Set false to
+    /// hide them when the widgets are carrying that load, for example with
+    /// `widget_placement = "column"` and `widget_overview = false`, where model
+    /// and context each get their own box.
+    ///
+    /// Independent of `overscroll_status`, which owns the same facts while the
+    /// elastic overscroll line is revealed.
+    #[serde(default = "default_true")]
+    pub session_facts: bool,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -183,6 +196,7 @@ impl Default for DisplayConfig {
             overscroll_status: OverscrollStatusMode::default(),
             widget_placement: WidgetPlacementMode::default(),
             widget_overview: true,
+            session_facts: true,
         }
     }
 }

@@ -235,6 +235,13 @@ prompt_entry_animation = true
 # "column", where there is dedicated space to stack them in.
 # widget_overview = true
 
+# Show the session facts (provider/auth, model, working directory + branch,
+# context usage) alongside the composer (default: true). They are drawn into
+# otherwise-unused cells so they cost no layout space, but they repeat what the
+# info widgets already show. Set false when the widgets are carrying that load,
+# e.g. with widget_placement = "column" and widget_overview = false.
+# session_facts = true
+
 # Disable specific animation variants by name.
 # Examples: ["donut"] or ["donut", "orbit_rings"]
 # Legacy aliases such as "three_rings" and "gyroscope" are still accepted.
