@@ -1185,3 +1185,67 @@ fn column_mode_docking_preserves_every_fact_row() {
         "expected at least the provider and model rows, got {column_facts}"
     );
 }
+
+/// Count bordered widget boxes in the column by counting top-border rows.
+fn column_box_count(buffer: &ratatui::buffer::Buffer, column_x: u16) -> usize {
+    (0..buffer.area.height)
+        .filter(|&y| {
+            let row: String = (column_x..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            row.trim_start().starts_with('\u{256d}')
+        })
+        .count()
+}
+
+fn column_contains(buffer: &ratatui::buffer::Buffer, column_x: u16, needle: &str) -> bool {
+    (0..buffer.area.height).any(|y| {
+        let row: String = (column_x..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        row.contains(needle)
+    })
+}
+
+fn git_column_state(merge_disabled: bool) -> TestState {
+    let mut state = column_mode_state();
+    state.info_widget_data.overview_merge_disabled = merge_disabled;
+    state.info_widget_data.git_info = Some(crate::tui::info_widget::GitInfo {
+        branch: "master".into(),
+        modified: 2,
+        staged: 0,
+        untracked: 0,
+        ahead: 8,
+        behind: 0,
+        dirty_files: vec!["README.md".into(), "src/tui/ui.rs".into()],
+    });
+    state
+}
+
+/// End-to-end on the rendered frame (not just placement math): merging off must
+/// draw several separate widget boxes and, critically, surface the git widget's
+/// per-file list. Merging on collapses everything into one box and drops the
+/// filenames, which is the behavior `display.widget_overview = false` exists to
+/// escape.
+#[test]
+fn unmerged_column_renders_separate_boxes_with_git_filenames() {
+    let merged = draw_state(&git_column_state(false), 120, 40);
+    let merged_boxes = column_box_count(&merged, 90);
+    assert!(
+        !column_contains(&merged, 90, "README.md"),
+        "merged Overview uses the compact git line, so filenames should not appear"
+    );
+
+    let unmerged = draw_state(&git_column_state(true), 120, 40);
+    let unmerged_boxes = column_box_count(&unmerged, 90);
+
+    assert!(
+        unmerged_boxes > merged_boxes,
+        "merging off should draw more widget boxes (merged={merged_boxes} unmerged={unmerged_boxes})"
+    );
+    assert!(
+        column_contains(&unmerged, 90, "README.md")
+            && column_contains(&unmerged, 90, "src/tui/ui.rs"),
+        "the standalone git widget must list its changed files"
+    );
+}
