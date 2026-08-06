@@ -17,6 +17,7 @@ struct MessageCacheKey {
     mermaid_aspect_bucket: Option<u16>,
     show_agentgrep_output: bool,
     tool_call_details: bool,
+    expanded: bool,
 }
 
 #[derive(Default)]
@@ -67,6 +68,12 @@ pub struct MessageCacheContext {
     pub mermaid_aspect_bucket: Option<u16>,
     pub show_agentgrep_output: bool,
     pub tool_call_details: bool,
+    /// Whether this specific message's detail is currently expanded by a click.
+    ///
+    /// Part of the key because expansion changes the rendered lines: without it
+    /// an expanded row would be served its stale collapsed rendering (and vice
+    /// versa) for as long as the entry lived.
+    pub expanded: bool,
 }
 
 pub fn left_pad_lines_for_centered_mode(lines: &mut [Line<'static>], width: u16) {
@@ -117,6 +124,7 @@ where
         mermaid_aspect_bucket: context.mermaid_aspect_bucket,
         show_agentgrep_output: context.show_agentgrep_output,
         tool_call_details: context.tool_call_details,
+        expanded: context.expanded,
     };
 
     let mut cache = match message_cache().lock() {

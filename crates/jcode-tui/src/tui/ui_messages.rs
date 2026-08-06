@@ -7,6 +7,7 @@ use crate::message::{
     parse_background_task_progress_notification_markdown, strip_ansi_escape_sequences,
 };
 pub(super) use cache_support::get_cached_message_lines;
+pub(crate) use cache_support::get_cached_message_lines_expanded;
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
@@ -3724,6 +3725,96 @@ fn render_discovery_card(
     }
 
     Some(content)
+}
+
+/// Render the detail a collapsed tool row hides: the full command/arguments
+/// and the tool's untruncated output.
+///
+/// Appended below the summary row when the user clicks it open. The collapsed
+/// row deliberately elides both (the command to one line, the output entirely),
+/// so this is the only place either is shown in full.
+pub(crate) fn render_expanded_tool_detail(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let indent = "    ";
+    let body_width = (width as usize).saturating_sub(indent.len() + 2).max(8);
+    let label_style = Style::default().fg(dim_color());
+    let body_style = Style::default().fg(dim_color());
+
+    if let Some(tc) = msg.tool_data.as_ref() {
+        // Full arguments, one key per line. `get_tool_summary_with_budget` on
+        // the collapsed row squeezes these into a single elided string, which
+        // is exactly what the user clicked to get past.
+        if let Some(obj) = tc.input.as_object().filter(|obj| !obj.is_empty()) {
+            lines.push(Line::from(vec![
+                Span::raw(indent),
+                Span::styled("arguments", label_style),
+            ]));
+            for (key, value) in obj {
+                let rendered = match value {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                for (i, chunk) in split_by_display_width(&rendered, body_width)
+                    .into_iter()
+                    .enumerate()
+                {
+                    let prefix = if i == 0 {
+                        format!("{indent}  {key}: ")
+                    } else {
+                        format!("{indent}    ")
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, label_style),
+                        Span::styled(chunk, body_style),
+                    ]));
+                }
+            }
+        }
+    }
+
+    let output = strip_ansi_escape_sequences(msg.content.trim_end());
+    if !output.trim().is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(vec![
+            Span::raw(indent),
+            Span::styled("output", label_style),
+        ]));
+        for raw_line in output.lines() {
+            if raw_line.is_empty() {
+                lines.push(Line::from(""));
+                continue;
+            }
+            for chunk in split_by_display_width(raw_line, body_width) {
+                lines.push(Line::from(vec![
+                    Span::raw(format!("{indent}  ")),
+                    Span::styled(chunk, body_style),
+                ]));
+            }
+        }
+    }
+
+    lines
+}
+
+/// Whether a tool row has anything worth revealing on click.
+///
+/// The collapsed row shows an icon, a name, and an elided one-line summary; the
+/// tool's actual output lives in `content` and is not rendered at all. A row
+/// with no output (or output already shown in full, such as a short todo card)
+/// must not be clickable: toggling it would redraw an identical frame and eat a
+/// click the user meant as a selection or a focus change.
+pub(crate) fn tool_row_can_expand(msg: &DisplayMessage) -> bool {
+    if msg.role != "tool" {
+        return false;
+    }
+    // Rows without structured tool data render through other paths (todo cards,
+    // scheduled-tool notices) that are not summary rows.
+    if msg.tool_data.is_none() {
+        return false;
+    }
+    !msg.content.trim().is_empty()
 }
 
 pub(crate) fn render_tool_message(

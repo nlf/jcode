@@ -49,6 +49,8 @@ mod changelog;
 mod debug_capture;
 #[path = "ui_diagram_pane.rs"]
 mod diagram_pane;
+#[path = "expand_state.rs"]
+pub(crate) mod expand_state;
 #[path = "ui_file_diff.rs"]
 mod file_diff_ui;
 #[path = "ui_frame_metrics.rs"]
@@ -132,11 +134,13 @@ use memory_ui::{
 };
 use memory_ui::{group_into_tiles, render_memory_tiles, split_by_display_width};
 use messages::get_cached_message_lines;
+pub(crate) use messages::get_cached_message_lines_expanded;
 #[cfg_attr(test, allow(unused_imports))]
 pub(crate) use messages::{
     SWARM_AGENT_SNAPSHOT_TITLE, compact_swarm_await_summary, encode_swarm_agent_snapshot,
-    render_assistant_message, render_background_task_message, render_reasoning_message,
-    render_swarm_message, render_system_message, render_tool_message, render_usage_message,
+    render_assistant_message, render_background_task_message, render_expanded_tool_detail,
+    render_reasoning_message, render_swarm_message, render_system_message, render_tool_message,
+    render_usage_message, tool_row_can_expand,
 };
 pub(crate) use output_style::adapt_buffer_for_emoji_preference;
 pub use pinned_ui::{
@@ -2450,6 +2454,33 @@ pub(crate) fn inline_image_expand_target_from_screen(column: u16, row: u16) -> O
     let point = copy_point_from_screen(column, row)?;
     let snapshot = copy_snapshot_for_pane(point.pane)?;
     snapshot.inline_image_id_for_label_line(point.abs_line)
+}
+
+/// If a screen click landed on a collapsed tool row, return the transcript
+/// message index so the caller can expand that tool's full command and output.
+///
+/// Unlike the swarm badge (which reserves a trailing token so the tldr text
+/// stays selectable), the whole tool row is the target: it is a summary row
+/// rather than prose, and its text is already elided, so there is little worth
+/// selecting and a lot worth revealing. A plain click with no drag reaches this
+/// path; press-and-drag still starts a selection, because `copy_selection`
+/// consumes drags before the click handlers run.
+pub(crate) fn tool_expand_target_from_screen(
+    column: u16,
+    row: u16,
+    is_tool_message: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let point = copy_point_from_screen(column, row)?;
+    if point.pane != crate::tui::CopySelectionPane::Chat {
+        return None;
+    }
+    let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let prepared = match &snapshot.data {
+        CopyViewportData::ChatFrame { prepared } => prepared.clone(),
+        CopyViewportData::Dense { .. } => return None,
+    };
+    let msg_idx = prepared.message_index_at_line(point.abs_line)?;
+    is_tool_message(msg_idx).then_some(msg_idx)
 }
 
 /// If a screen click landed on a collapsed/expanded swarm notification's

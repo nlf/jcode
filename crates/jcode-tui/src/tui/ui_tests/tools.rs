@@ -1350,3 +1350,95 @@ fn test_activity_detail_without_intent_matches_summary() {
     assert_eq!(detail, summary);
     assert!(!detail.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Click-to-expand: collapsed tool rows reveal their full command and output.
+// ---------------------------------------------------------------------------
+
+fn bash_tool_message(command: &str, output: &str) -> DisplayMessage {
+    DisplayMessage {
+        role: "tool".to_string(),
+        content: output.to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_expand_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": command }),
+            intent: Some("check the thing".to_string()),
+            thought_signature: None,
+        }),
+    }
+}
+
+/// The collapsed row is a summary: it must not contain the tool's output. This
+/// pins the premise of the whole feature, so a change that starts rendering
+/// output inline would surface here rather than silently making the click a
+/// no-op.
+#[test]
+fn collapsed_tool_row_hides_the_output() {
+    let msg = bash_tool_message("echo hello", "line one\nline two\nline three");
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    let rendered = lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !rendered.contains("line two"),
+        "collapsed row should hide output, got:\n{rendered}"
+    );
+}
+
+/// Expanding shows the full command and every line of output, including lines
+/// the collapsed row never had room for.
+#[test]
+fn expanded_tool_detail_shows_full_command_and_output() {
+    let msg = bash_tool_message(
+        "echo hello && echo a very long command that would be elided on one row",
+        "line one\nline two\nline three",
+    );
+    let detail = crate::tui::ui::render_expanded_tool_detail(&msg, 120);
+    let rendered = detail
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    for needle in ["line one", "line two", "line three"] {
+        assert!(
+            rendered.contains(needle),
+            "expanded detail should contain {needle:?}, got:\n{rendered}"
+        );
+    }
+    assert!(
+        rendered.contains("a very long command that would be elided"),
+        "expanded detail should contain the untruncated command, got:\n{rendered}"
+    );
+}
+
+/// Only rows that actually hide something are clickable, so a click on an
+/// empty-output tool row stays available for selection instead of toggling
+/// between two identical frames.
+#[test]
+fn only_rows_with_hidden_content_are_expandable() {
+    assert!(crate::tui::ui::tool_row_can_expand(&bash_tool_message(
+        "echo hi",
+        "some output"
+    )));
+    assert!(
+        !crate::tui::ui::tool_row_can_expand(&bash_tool_message("echo hi", "   ")),
+        "a row with no output hides nothing"
+    );
+
+    let not_a_tool = DisplayMessage {
+        role: "assistant".to_string(),
+        content: "hello".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    };
+    assert!(!crate::tui::ui::tool_row_can_expand(&not_a_tool));
+}

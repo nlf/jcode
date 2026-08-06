@@ -1494,7 +1494,25 @@ fn render_message_into(
         }
         "tool" => {
             let tool_start_line = acc.lines.len();
-            let cached = get_cached_message_lines(msg, width, app.diff_mode(), render_tool_message);
+            // Expansion is per message, so the cache must know about it or an
+            // expanded row would be served its stale collapsed rendering.
+            let tool_expanded = crate::tui::ui::expand_state::is_expanded(
+                msg_global_idx,
+                crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+            );
+            let cached = crate::tui::ui::get_cached_message_lines_expanded(
+                msg,
+                width,
+                app.diff_mode(),
+                tool_expanded,
+                |msg, width, diff_mode| {
+                    let mut lines = render_tool_message(msg, width, diff_mode);
+                    if tool_expanded {
+                        lines.extend(crate::tui::ui::render_expanded_tool_detail(msg, width));
+                    }
+                    lines
+                },
+            );
             if let Some(target) = tool_message_copy_target(msg, cached.len()) {
                 acc.copy_targets
                     .push(offset_copy_target(target, tool_start_line));

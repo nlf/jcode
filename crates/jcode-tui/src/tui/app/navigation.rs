@@ -202,6 +202,35 @@ impl App {
         true
     }
 
+    /// If a left-click landed on a tool row, expand or collapse that tool's
+    /// full command and untruncated output in place. Returns `false` when the
+    /// click was elsewhere.
+    ///
+    /// Only rows that actually hide something are clickable: a tool whose
+    /// detail is already fully visible would otherwise flicker between two
+    /// identical renderings and swallow a click the user meant for selection.
+    pub(super) fn try_toggle_tool_expand_at(&mut self, column: u16, row: u16) -> bool {
+        let messages = &self.display_messages;
+        let Some(msg_idx) = super::super::ui::tool_expand_target_from_screen(column, row, |idx| {
+            messages
+                .get(idx)
+                .is_some_and(super::super::ui::tool_row_can_expand)
+        }) else {
+            return false;
+        };
+        let expanded = super::super::ui::expand_state::toggle_expanded(
+            msg_idx,
+            super::super::ui::expand_state::ExpandKind::ToolDetail,
+        );
+        self.set_status_notice(if expanded {
+            "Tool detail expanded"
+        } else {
+            "Tool detail collapsed"
+        });
+        self.bump_display_messages_version();
+        true
+    }
+
     /// If a left-click landed on a swarm notification's `▸ expand` /
     /// `▾ collapse` badge, toggle that notification between its tldr line and
     /// its full body. Returns `false` when the click was elsewhere.
@@ -1574,6 +1603,15 @@ impl App {
             && self.try_open_link_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "open_link");
+        }
+
+        // Checked after links so a URL inside a tool row still opens rather
+        // than being swallowed by the row's expand target, which covers the
+        // whole line.
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && self.try_toggle_tool_expand_at(mouse.column, mouse.row)
+        {
+            finish_mouse_event!(false, "toggle_tool_expand");
         }
 
         match mouse.kind {
