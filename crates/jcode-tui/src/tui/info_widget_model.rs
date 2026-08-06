@@ -390,6 +390,7 @@ mod tests {
     fn data() -> InfoWidgetData {
         InfoWidgetData {
             overview_merge_disabled: false,
+            enabled_widgets: Vec::new(),
             todos: Vec::new(),
             todo_goals: Vec::new(),
             todos_are_swarm_plan: false,

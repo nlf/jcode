@@ -244,6 +244,23 @@ impl Config {
         Ok(())
     }
 
+    /// Update the persisted info-widget set and order (`display.widgets`).
+    /// An empty list restores the built-in priority-ordered default.
+    pub fn set_widgets(names: &[String]) -> anyhow::Result<()> {
+        let mut cfg = Self::load();
+        cfg.display.widgets = names.to_vec();
+        cfg.save()?;
+        crate::logging::info(&format!(
+            "Saved display.widgets to config: {}",
+            if names.is_empty() {
+                "(default)".to_string()
+            } else {
+                names.join(", ")
+            }
+        ));
+        Ok(())
+    }
+
     /// Update the persisted show-agentgrep-output preference.
     pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
         let mut cfg = Self::load();

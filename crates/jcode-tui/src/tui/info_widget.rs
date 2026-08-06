@@ -45,7 +45,6 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Paragraph},
 };
 use std::collections::HashMap;
-#[cfg(test)]
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -204,6 +203,50 @@ impl WidgetKind {
             WidgetKind::Tips => "tips",
             WidgetKind::GitStatus => "git",
         }
+    }
+
+    /// Parse a widget id as written in `display.widgets`. Accepts the canonical
+    /// [`WidgetKind::as_str`] id plus the obvious aliases, so a user writing
+    /// "todo" or "git-status" gets what they meant instead of silence.
+    pub fn from_name(name: &str) -> Option<WidgetKind> {
+        let normalized = name.trim().to_ascii_lowercase().replace(['_', ' '], "-");
+        Some(match normalized.as_str() {
+            "diagrams" | "diagram" | "mermaid" => WidgetKind::Diagrams,
+            "workspace" | "workspace-map" => WidgetKind::WorkspaceMap,
+            "overview" => WidgetKind::Overview,
+            "todos" | "todo" | "plan" => WidgetKind::Todos,
+            "context" | "context-usage" => WidgetKind::ContextUsage,
+            "memory" | "memory-activity" => WidgetKind::MemoryActivity,
+            "swarm" | "swarm-status" | "agents" => WidgetKind::SwarmStatus,
+            "background" | "background-tasks" | "tasks" => WidgetKind::BackgroundTasks,
+            "compaction" | "compact" => WidgetKind::Compaction,
+            "ambient" | "ambient-mode" => WidgetKind::AmbientMode,
+            "usage" | "usage-limits" | "limits" | "quota" => WidgetKind::UsageLimits,
+            "kv-cache" | "kv" | "cache" => WidgetKind::KvCache,
+            "model" | "model-info" => WidgetKind::ModelInfo,
+            "tips" | "tip" => WidgetKind::Tips,
+            "git" | "git-status" => WidgetKind::GitStatus,
+            _ => return None,
+        })
+    }
+
+    /// Resolve a configured `display.widgets` list into widget kinds, dropping
+    /// names that do not resolve. Returning the unknown names lets a caller
+    /// (the `/widgets` command) tell the user rather than silently ignore them.
+    pub fn resolve_names<S: AsRef<str>>(names: &[S]) -> (Vec<WidgetKind>, Vec<String>) {
+        let mut kinds = Vec::new();
+        let mut unknown = Vec::new();
+        for name in names {
+            let name = name.as_ref();
+            if name.trim().is_empty() {
+                continue;
+            }
+            match WidgetKind::from_name(name) {
+                Some(kind) => kinds.push(kind),
+                None => unknown.push(name.to_string()),
+            }
+        }
+        (kinds, unknown)
     }
 }
 
@@ -595,6 +638,9 @@ pub struct InfoWidgetData {
     /// Phrased negatively so `Default` (false) keeps the historical merging
     /// behavior for every construction site that does not set it.
     pub overview_merge_disabled: bool,
+    /// Explicit widget set and order from `display.widgets`. Empty means "use
+    /// the built-in priority-ordered set".
+    pub enabled_widgets: Vec<WidgetKind>,
     pub todos: Vec<TodoItem>,
     /// Goal-level assessments (closed feedback loop and objective)
     /// keyed by todo group (`group: None` covers the ungrouped list). Empty
@@ -670,7 +716,13 @@ pub struct CompactionInfo {
 }
 
 impl InfoWidgetData {
-    fn widget_disabled(kind: WidgetKind) -> bool {
+    /// Widgets that are off unless asked for by name. Ambient status and tips
+    /// are noise for most sessions, but listing them in `display.widgets` is an
+    /// explicit request, so an explicit list overrides the suppression.
+    fn widget_disabled(&self, kind: WidgetKind) -> bool {
+        if self.enabled_widgets.contains(&kind) {
+            return false;
+        }
         matches!(kind, WidgetKind::AmbientMode | WidgetKind::Tips)
     }
 
@@ -688,7 +740,7 @@ impl InfoWidgetData {
 
     /// Check if a specific widget kind has data to display
     pub fn has_data_for(&self, kind: WidgetKind) -> bool {
-        if Self::widget_disabled(kind) {
+        if self.widget_disabled(kind) {
             return false;
         }
 
@@ -781,7 +833,10 @@ impl InfoWidgetData {
                 .map(|b| b.running_count > 0)
                 .unwrap_or(false),
             WidgetKind::Compaction => self.compaction_info.is_some(),
-            WidgetKind::AmbientMode => false,
+            // Reachable only when explicitly listed in `display.widgets`
+            // (`widget_disabled` filters it out otherwise), so it shows
+            // whenever ambient mode has reported a status.
+            WidgetKind::AmbientMode => self.ambient_info.is_some(),
             WidgetKind::UsageLimits => self
                 .usage_info
                 .as_ref()
@@ -789,7 +844,9 @@ impl InfoWidgetData {
                 .unwrap_or(false),
             WidgetKind::KvCache => self.cache_hit_info.is_some(),
             WidgetKind::ModelInfo => self.model.is_some(),
-            WidgetKind::Tips => false,
+            // Tips are static content, so once explicitly enabled there is
+            // always something to render.
+            WidgetKind::Tips => true,
             WidgetKind::GitStatus => self
                 .git_info
                 .as_ref()
@@ -859,6 +916,20 @@ impl InfoWidgetData {
     }
 
     pub fn available_widgets(&self) -> Vec<WidgetKind> {
+        // An explicit `display.widgets` list pins both the set and the order:
+        // the user asked for these, in this sequence, so the dynamic urgency
+        // re-sort is deliberately not applied. Data gating still applies, so a
+        // listed widget with nothing to say stays out of the way.
+        if !self.enabled_widgets.is_empty() {
+            let mut seen = HashSet::new();
+            return self
+                .enabled_widgets
+                .iter()
+                .copied()
+                .filter(|kind| seen.insert(*kind))
+                .filter(|&kind| self.has_data_for(kind))
+                .collect();
+        }
         let mut widgets: Vec<WidgetKind> = WidgetKind::all_by_priority()
             .iter()
             .copied()

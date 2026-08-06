@@ -1430,3 +1430,39 @@ fn column_docking_still_holds_under_the_session_facts_toggle() {
         );
     }
 }
+
+/// A configured widget order must be what the column actually stacks, top
+/// down, and must exclude widgets the user left out even when they have data.
+#[test]
+fn column_mode_honors_the_configured_widget_order() {
+    let mut state = column_mode_state();
+    state.info_widget_data.overview_merge_disabled = true;
+    state.info_widget_data.enabled_widgets = vec![
+        info_widget::WidgetKind::ContextUsage,
+        info_widget::WidgetKind::ModelInfo,
+    ];
+
+    let _ = draw_state(&state, 120, 40);
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
+    let column = layout.diff_pane_area.expect("column");
+    let (placements, _) = crate::tui::info_widget_layout::calculate_placements_column(
+        column,
+        &state.info_widget_data,
+        true,
+    );
+
+    let kinds: Vec<_> = placements.iter().map(|p| p.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            info_widget::WidgetKind::ContextUsage,
+            info_widget::WidgetKind::ModelInfo
+        ],
+        "the column stacks exactly the configured widgets, in the configured order"
+    );
+    // Top-down: the first configured widget is the topmost rect.
+    assert!(
+        placements[0].rect.y < placements[1].rect.y,
+        "configured order must be the visual top-down order"
+    );
+}

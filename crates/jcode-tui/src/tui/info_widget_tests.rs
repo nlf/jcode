@@ -1,5 +1,5 @@
 use super::{
-    BackgroundInfo, CacheHitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
+    BackgroundInfo, CacheHitInfo, GitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
     Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
     StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
     calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
@@ -1812,4 +1812,70 @@ fn compact_page_height_matches_for_cost_based_usage() {
 
     let lines = super::render_page(InfoPageKind::CompactOnly, &data, inner);
     assert_eq!(lines.len() as u16, layout.pages[0].height);
+}
+
+#[test]
+fn configured_widget_list_pins_set_and_order() {
+    let data = InfoWidgetData {
+        enabled_widgets: vec![
+            WidgetKind::GitStatus,
+            WidgetKind::Todos,
+            WidgetKind::ModelInfo,
+        ],
+        overview_merge_disabled: true,
+        model: Some("gpt-test".to_string()),
+        todos: vec![crate::todo::TodoItem {
+            content: "write the thing".to_string(),
+            status: "in_progress".to_string(),
+            ..Default::default()
+        }],
+        git_info: Some(GitInfo {
+            branch: "master".to_string(),
+            modified: 2,
+            staged: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            dirty_files: vec!["src/lib.rs".to_string()],
+        }),
+        // Present in the data but absent from the list: must not be placed.
+        context_info_stale: true,
+        ..Default::default()
+    };
+
+    let available = data.available_widgets();
+    assert_eq!(
+        available,
+        vec![
+            WidgetKind::GitStatus,
+            WidgetKind::Todos,
+            WidgetKind::ModelInfo
+        ],
+        "configured order is honored verbatim and unlisted widgets stay out"
+    );
+}
+
+#[test]
+fn configured_list_can_enable_widgets_that_are_off_by_default() {
+    let mut data = InfoWidgetData {
+        enabled_widgets: vec![WidgetKind::Tips],
+        ..Default::default()
+    };
+    assert_eq!(data.available_widgets(), vec![WidgetKind::Tips]);
+    data.enabled_widgets.clear();
+    assert!(!data.available_widgets().contains(&WidgetKind::Tips));
+}
+
+#[test]
+fn widget_names_resolve_with_aliases_and_report_unknowns() {
+    let (kinds, unknown) = WidgetKind::resolve_names(&["todo", "git-status", "nonsense", "kv"]);
+    assert_eq!(
+        kinds,
+        vec![
+            WidgetKind::Todos,
+            WidgetKind::GitStatus,
+            WidgetKind::KvCache
+        ]
+    );
+    assert_eq!(unknown, vec!["nonsense".to_string()]);
 }

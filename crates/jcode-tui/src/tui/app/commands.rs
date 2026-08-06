@@ -24,6 +24,7 @@ pub(super) use super::commands_review::{
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, LocalRewindUndoSnapshot, ProcessingStatus};
 use crate::bus::{Bus, BusEvent, GitStatusCompleted, ManualToolCompleted, ToolEvent, ToolStatus};
+use crate::tui::info_widget::WidgetKind;
 use crate::id;
 use crate::message::{ContentBlock, Message, Role};
 use std::path::PathBuf;
@@ -3573,11 +3574,14 @@ fn apply_widget_placement(app: &mut App, mode: crate::config::WidgetPlacementMod
     app.set_status_notice(format!("Widgets: {}", widget_placement_label(mode)));
 }
 
-/// `/widgets [margin|column|off|cycle|status]`
+/// `/widgets [margin|column|off|cycle|status|list|set ...|add|remove|reset]`
 ///
 /// Switches info-widget placement at runtime. Without this the setting is only
 /// reachable by editing `config.toml` and restarting, which makes a display
 /// mode that is meant to be tried out effectively undiscoverable.
+///
+/// The set/order subcommands write `display.widgets`, so the choice survives
+/// restart, and apply immediately to the current session.
 pub(super) fn handle_widgets_command(app: &mut App, trimmed: &str) -> bool {
     let Some(rest) = slash_command_rest(trimmed, "/widgets") else {
         return false;
@@ -3590,21 +3594,177 @@ pub(super) fn handle_widgets_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    if arg.eq_ignore_ascii_case("status") {
-        app.push_display_message(DisplayMessage::system(format!(
-            "Widget placement: {} (use /widgets [margin|column|off] or /widgets to cycle). \
-             margin floats widgets in the transcript's free space; column stacks them above \
-             the side panel where they hold a fixed position.",
-            widget_placement_label(app.widget_placement_mode)
-        )));
-        return true;
+    let (verb, params) = match arg.split_once(char::is_whitespace) {
+        Some((verb, params)) => (verb, params.trim()),
+        None => (arg, ""),
+    };
+
+    match verb.to_ascii_lowercase().as_str() {
+        "status" => {
+            app.push_display_message(DisplayMessage::system(format!(
+                "Widget placement: {} (use /widgets [margin|column|off] or /widgets to cycle). \
+                 margin floats widgets in the transcript's free space; column stacks them above \
+                 the side panel where they hold a fixed position.\nOrder: {}\n\
+                 Change it with /widgets set <names...>, /widgets add|remove <name>, \
+                 /widgets reset, /widgets list.",
+                widget_placement_label(app.widget_placement_mode),
+                widget_order_label(app),
+            )));
+            return true;
+        }
+        "list" | "names" | "available" => {
+            let all = WidgetKind::all_by_priority()
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            app.push_display_message(DisplayMessage::system(format!(
+                "Enabled: {}\nAvailable: {}\nUse /widgets set <names in order>.",
+                widget_order_label(app),
+                all
+            )));
+            return true;
+        }
+        "set" | "order" | "only" => {
+            let names = split_widget_names(params);
+            if names.is_empty() {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /widgets set <names...> (see /widgets list)".to_string(),
+                ));
+                return true;
+            }
+            apply_widget_order(app, names);
+            return true;
+        }
+        "reset" | "default" | "auto" => {
+            apply_widget_order(app, Vec::new());
+            return true;
+        }
+        "add" | "enable" => {
+            let mut names = current_widget_names(app);
+            let added = split_widget_names(params);
+            if added.is_empty() {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /widgets add <name> (see /widgets list)".to_string(),
+                ));
+                return true;
+            }
+            for name in added {
+                if !names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+                    names.push(name);
+                }
+            }
+            apply_widget_order(app, names);
+            return true;
+        }
+        "remove" | "disable" | "hide" => {
+            let removed = split_widget_names(params);
+            if removed.is_empty() {
+                app.push_display_message(DisplayMessage::error(
+                    "Usage: /widgets remove <name> (see /widgets list)".to_string(),
+                ));
+                return true;
+            }
+            // Removing from the implicit default has to start from the full
+            // built-in set, otherwise "remove tips" would silently do nothing.
+            let mut names = current_widget_names(app);
+            let drop: Vec<WidgetKind> = removed
+                .iter()
+                .filter_map(|n| WidgetKind::from_name(n))
+                .collect();
+            if drop.is_empty() {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Unknown widget: {} (see /widgets list)",
+                    removed.join(", ")
+                )));
+                return true;
+            }
+            names.retain(|n| {
+                WidgetKind::from_name(n)
+                    .map(|kind| !drop.contains(&kind))
+                    .unwrap_or(true)
+            });
+            apply_widget_order(app, names);
+            return true;
+        }
+        _ => {}
     }
 
     match parse_widget_placement_name(arg) {
         Some(mode) => apply_widget_placement(app, mode),
         None => app.push_display_message(DisplayMessage::error(
-            "Usage: /widgets [margin|column|off|cycle|status]".to_string(),
+            "Usage: /widgets [margin|column|off|cycle|status|list|set <names>|add <name>|remove \
+             <name>|reset]"
+                .to_string(),
         )),
     }
     true
+}
+
+/// The widget names currently in effect, expanding the implicit default to the
+/// concrete built-in list so add/remove have something to edit.
+fn current_widget_names(app: &App) -> Vec<String> {
+    if app.widget_order.is_empty() {
+        WidgetKind::all_by_priority()
+            .iter()
+            .filter(|kind| {
+                // The default suppresses these unless asked for by name, so
+                // materializing the default must not silently switch them on.
+                !matches!(kind, WidgetKind::AmbientMode | WidgetKind::Tips)
+            })
+            .map(|kind| kind.as_str().to_string())
+            .collect()
+    } else {
+        app.widget_order
+            .iter()
+            .map(|kind| kind.as_str().to_string())
+            .collect()
+    }
+}
+
+fn widget_order_label(app: &App) -> String {
+    if app.widget_order.is_empty() {
+        "default (by priority)".to_string()
+    } else {
+        app.widget_order
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Split a user-typed widget list on commas and whitespace, so both
+/// `/widgets set todos, git` and `/widgets set todos git` work.
+fn split_widget_names(params: &str) -> Vec<String> {
+    params
+        .split([',', ' ', '\t'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn apply_widget_order(app: &mut App, names: Vec<String>) {
+    let (kinds, unknown) = WidgetKind::resolve_names(&names);
+    if !unknown.is_empty() {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Unknown widget name(s): {} (see /widgets list)",
+            unknown.join(", ")
+        )));
+        if kinds.is_empty() {
+            return;
+        }
+    }
+    let canonical: Vec<String> = kinds.iter().map(|k| k.as_str().to_string()).collect();
+    app.widget_order = kinds;
+    if let Err(err) = crate::config::Config::set_widgets(&canonical) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Could not save widget order: {err}"
+        )));
+    }
+    app.request_full_repaint();
+    let label = widget_order_label(app);
+    app.push_display_message(DisplayMessage::system(format!("Widgets: {label}")));
+    app.set_status_notice(format!("Widgets: {label}"));
 }

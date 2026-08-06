@@ -156,6 +156,25 @@ pub struct DisplayConfig {
     /// elastic overscroll line is revealed.
     #[serde(default = "default_true")]
     pub session_facts: bool,
+    /// Which info widgets are enabled, and the order they appear in.
+    ///
+    /// Empty (the default) means "use the built-in set, ordered by priority",
+    /// which is dynamic: an urgent widget (memory processing, usage near the
+    /// limit) can pull itself to the top. Listing names here pins both the set
+    /// and the order instead, so the column is exactly what was asked for:
+    ///
+    /// ```toml
+    /// [display]
+    /// widgets = ["todos", "context", "git", "model"]
+    /// ```
+    ///
+    /// Names are the widget ids: overview, workspace, todos, context, memory,
+    /// swarm, background, compaction, usage, kv-cache, model, diagrams,
+    /// ambient, tips, git. Unknown names are ignored. Widgets with nothing to
+    /// show are still skipped, so an enabled widget only appears when it has
+    /// data.
+    #[serde(default)]
+    pub widgets: Vec<String>,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -197,6 +216,7 @@ impl Default for DisplayConfig {
             widget_placement: WidgetPlacementMode::default(),
             widget_overview: true,
             session_facts: true,
+            widgets: Vec::new(),
         }
     }
 }

@@ -1568,6 +1568,7 @@ impl crate::tui::TuiState for App {
 
         crate::tui::info_widget::InfoWidgetData {
             overview_merge_disabled: !crate::config::config().display.widget_overview,
+            enabled_widgets: self.widget_order.clone(),
             todos,
             todo_goals,
             todos_are_swarm_plan,

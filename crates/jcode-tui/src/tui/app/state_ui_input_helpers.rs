@@ -173,7 +173,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public(
         "/widgets",
-        "Cycle or set info widget placement (margin/column/off)",
+        "Cycle placement (margin/column/off), or pick which widgets show and in what order (list/set/add/remove/reset)",
     ),
     RegisteredCommand::public(
         "/onboarding-preview",

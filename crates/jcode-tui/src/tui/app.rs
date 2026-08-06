@@ -1611,6 +1611,11 @@ pub struct App {
     /// (default), stacked in a dedicated right-hand column, or off entirely.
     /// From `display.widget_placement` config.
     widget_placement_mode: crate::config::WidgetPlacementMode,
+    /// Which info widgets are enabled and in what order, from
+    /// `display.widgets`. Empty means the built-in priority-ordered set.
+    /// Held on the app (not read from config per frame) so `/widgets` can
+    /// change it live.
+    widget_order: Vec<crate::tui::info_widget::WidgetKind>,
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,

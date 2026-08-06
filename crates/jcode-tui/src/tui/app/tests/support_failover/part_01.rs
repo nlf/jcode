@@ -633,6 +633,33 @@ fn widget_placement_config_reaches_the_live_app() {
     }
 }
 
+/// `display.widgets` in config.toml must reach the running App, or the setting
+/// is only reachable through the slash command.
+#[test]
+fn config_widgets_list_reaches_the_running_app() {
+    use crate::tui::info_widget::WidgetKind;
+
+    with_temp_jcode_home(|| {
+        let path = crate::config::Config::path().expect("config path");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("config dir");
+        }
+        std::fs::write(
+            &path,
+            "[display]\nwidgets = [\"git\", \"todos\", \"nonsense\"]\n",
+        )
+        .expect("write config");
+        crate::config::invalidate_config_cache();
+
+        let app = create_test_app();
+        assert_eq!(
+            app.widget_order,
+            vec![WidgetKind::GitStatus, WidgetKind::Todos],
+            "configured names reach the App in order; unknown names are dropped"
+        );
+    });
+}
+
 /// `/widgets` must switch placement at runtime, so the mode is reachable
 /// without editing config.toml and restarting.
 #[test]
@@ -680,5 +707,55 @@ fn widgets_command_sets_and_cycles_placement() {
             &mut app,
             "/widgetsomething"
         ));
+    });
+}
+
+/// `/widgets set|add|remove|reset` must change which widgets are shown and in
+/// what order, and persist that to `display.widgets` so it survives restart.
+#[test]
+fn widgets_command_configures_set_and_order() {
+    use crate::tui::info_widget::WidgetKind;
+
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        assert!(
+            app.widget_order.is_empty(),
+            "default is the built-in priority order"
+        );
+
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets set git, todos model");
+        assert_eq!(
+            app.widget_order,
+            vec![
+                WidgetKind::GitStatus,
+                WidgetKind::Todos,
+                WidgetKind::ModelInfo
+            ],
+            "commas and spaces both separate names, order is preserved"
+        );
+        assert_eq!(
+            crate::config::Config::load().display.widgets,
+            vec![
+                "git".to_string(),
+                "todos".to_string(),
+                "model".to_string()
+            ],
+            "the choice is persisted in canonical form"
+        );
+
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets add context");
+        assert_eq!(app.widget_order.last(), Some(&WidgetKind::ContextUsage));
+
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets remove todos");
+        assert!(!app.widget_order.contains(&WidgetKind::Todos));
+
+        // An unknown name must not wipe the existing order.
+        let before = app.widget_order.clone();
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets set nonsense");
+        assert_eq!(app.widget_order, before);
+
+        crate::tui::app::commands::handle_widgets_command(&mut app, "/widgets reset");
+        assert!(app.widget_order.is_empty(), "reset restores the default");
+        assert!(crate::config::Config::load().display.widgets.is_empty());
     });
 }
