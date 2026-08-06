@@ -1420,5 +1420,143 @@ fn test_clicking_a_truncated_diff_expands_every_change() {
         "expanding should reveal changes the elided view omitted:\n{after}"
     );
 
+    // A second click must collapse it again: the expandable flag is computed
+    // from the underlying change set, not the current view, so the row stays a
+    // valid target once open.
+    // The expanded diff is taller than the viewport, so the head scrolls off;
+    // click whatever diff line is still visible.
+    let reopened_row = after
+        .lines()
+        .position(|line| line.contains("old_line_"))
+        .expect("expanded diff should still render change lines") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row: reopened_row,
+        modifiers: KeyModifiers::empty(),
+    });
+    let recollapsed = render_and_snap(&app, &mut terminal);
+    assert!(
+        recollapsed.contains("more changes"),
+        "second click should restore the elided view:\n{recollapsed}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+
+/// Making the whole tool row clickable must not cost the ability to select
+/// text on it. A press, a drag, and a release is a selection; only a press and
+/// release at the same spot is an expand.
+#[test]
+fn test_dragging_across_a_tool_row_selects_instead_of_expanding() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "DRAGSENTINEL_OUT".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_drag_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo drag" }),
+            intent: Some("dragprobe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    let row = before
+        .lines()
+        .position(|line| line.contains("dragprobe"))
+        .expect("expected the tool row to render") as u16;
+
+    let at = |kind, column| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    };
+    app.handle_mouse_event(at(MouseEventKind::Down(MouseButton::Left), 4));
+    app.handle_mouse_event(at(MouseEventKind::Drag(MouseButton::Left), 20));
+    app.handle_mouse_event(at(MouseEventKind::Up(MouseButton::Left), 20));
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        !after.contains("DRAGSENTINEL_OUT"),
+        "a drag is a selection gesture and must not expand the row:\n{after}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+
+/// Expansion is keyed by transcript index, so a message arriving *after* an
+/// expanded row must not shift which row is open. (Appends are safe because
+/// indices only grow at the tail; this pins that assumption.)
+#[test]
+fn test_expansion_survives_new_messages_arriving() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let tool = |id: &str, intent: &str, out: &str| DisplayMessage {
+        role: "tool".to_string(),
+        content: out.to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo x" }),
+            intent: Some(intent.to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![tool("c1", "firstprobe", "FIRST_OUTPUT")];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    let row = before
+        .lines()
+        .position(|line| line.contains("firstprobe"))
+        .expect("expected the first tool row") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    assert!(
+        render_and_snap(&app, &mut terminal).contains("FIRST_OUTPUT"),
+        "first row should be expanded"
+    );
+
+    // A later message arrives.
+    app.display_messages
+        .push(tool("c2", "secondprobe", "SECOND_OUTPUT"));
+    app.bump_display_messages_version();
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        after.contains("FIRST_OUTPUT"),
+        "the expanded row must stay expanded when a message is appended:\n{after}"
+    );
+    assert!(
+        !after.contains("SECOND_OUTPUT"),
+        "the new row must not inherit the expansion:\n{after}"
+    );
+
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
