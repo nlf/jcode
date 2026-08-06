@@ -1442,3 +1442,84 @@ fn only_rows_with_hidden_content_are_expandable() {
     };
     assert!(!crate::tui::ui::tool_row_can_expand(&not_a_tool));
 }
+
+/// A batch row already renders a line per sub-call, and its raw content is the
+/// concatenated sub-outputs. Expanding must show those in full rather than
+/// producing something incoherent, since batch is one of the most common tools
+/// whose output the collapsed row summarises away.
+#[test]
+fn expanding_a_batch_tool_shows_each_sub_output() {
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "--- [1] read ---\nBATCH_ONE\n\n--- [2] grep ---\nBATCH_TWO".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_batch_expand".to_string(),
+            name: "batch".to_string(),
+            input: serde_json::json!({
+                "tool_calls": [
+                    {"tool": "read", "file_path": "a.rs"},
+                    {"tool": "grep", "query": "needle"}
+                ]
+            }),
+            intent: Some("look".to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    assert!(
+        crate::tui::ui::tool_row_can_expand(&msg),
+        "a batch row with output should be expandable"
+    );
+    let detail = crate::tui::ui::render_expanded_tool_detail(&msg, 120);
+    let rendered = detail
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in ["BATCH_ONE", "BATCH_TWO", "needle"] {
+        assert!(
+            rendered.contains(needle),
+            "expanded batch should contain {needle:?}, got:\n{rendered}"
+        );
+    }
+}
+
+/// Long output must wrap rather than being clipped: the point of expanding is
+/// to read what the collapsed row cut off, so silently truncating again would
+/// defeat it.
+#[test]
+fn expanded_output_wraps_long_lines_instead_of_clipping() {
+    let long = "Z".repeat(300);
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: long.clone(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_wrap".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo z" }),
+            intent: None,
+            thought_signature: None,
+        }),
+    };
+    let detail = crate::tui::ui::render_expanded_tool_detail(&msg, 80);
+    let total: usize = detail
+        .iter()
+        .map(|line| {
+            extract_line_text(line)
+                .chars()
+                .filter(|c| *c == 'Z')
+                .count()
+        })
+        .sum();
+    assert_eq!(
+        total,
+        long.len(),
+        "every character of the output should survive wrapping"
+    );
+}
