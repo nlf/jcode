@@ -654,3 +654,39 @@ fn column_places_three_row_widgets() {
             .collect::<Vec<_>>()
     );
 }
+
+/// Every widget the column places must be tall enough for everything its
+/// renderer emits. `calculate_widget_height` sizes the box, so if it
+/// undercounts the renderer, the last line is silently clipped. This went
+/// unnoticed while widgets could only appear inside Overview; placing them
+/// standalone made it visible.
+#[test]
+fn column_widgets_are_tall_enough_for_their_content() {
+    let mut data = contended_data();
+    data.overview_merge_disabled = true;
+    let (placements, _) = calculate_placements_column(Rect::new(0, 0, 30, 60), &data, true);
+    assert!(!placements.is_empty(), "expected widgets to be placed");
+
+    for p in &placements {
+        let inner = Rect::new(
+            p.rect.x + 1,
+            p.rect.y + 1,
+            p.rect.width.saturating_sub(2),
+            p.rect.height.saturating_sub(2),
+        );
+        let lines = crate::tui::info_widget::widget_lines_for_tests(p.kind, &data, inner);
+        let content = lines.iter().filter(|l| !l.spans.is_empty()).count() as u16;
+        assert!(
+            content > 0,
+            "widget {:?} was placed but renders no content (an empty box)",
+            p.kind
+        );
+        assert!(
+            content <= inner.height,
+            "widget {:?} renders {content} lines into {} inner rows; {} line(s) clipped",
+            p.kind,
+            inner.height,
+            content - inner.height
+        );
+    }
+}

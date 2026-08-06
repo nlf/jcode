@@ -1249,7 +1249,21 @@ pub(crate) fn calculate_widget_height(
         WidgetKind::UsageLimits => {
             if let Some(info) = data.usage_info.as_ref() {
                 if info.available {
-                    2 + if info.spark.is_some() { 1 } else { 0 }
+                    // Mirror `render_usage_widget` exactly. Undercounting here
+                    // clips the last bar off the bottom of the widget, which
+                    // only became visible once the widget could be placed
+                    // standalone (`display.widget_overview = false`).
+                    match info.provider {
+                        UsageProvider::Copilot => 1,
+                        UsageProvider::CostBased => 2,
+                        _ => {
+                            let header = u16::from(!info.provider.label().is_empty());
+                            let primary = u16::from(info.primary_limit_label.is_some());
+                            let secondary = u16::from(info.secondary_limit_label.is_some());
+                            let spark = u16::from(info.spark.is_some());
+                            header + primary + secondary + spark
+                        }
+                    }
                 } else {
                     0
                 }
@@ -1661,6 +1675,16 @@ fn edge_kind_priority(kind: &str) -> u8 {
         "has_tag" => 1,
         _ => 1,
     }
+}
+
+/// Test hook: content lines a widget's renderer produces for a given inner area.
+#[cfg(test)]
+pub(crate) fn widget_lines_for_tests(
+    kind: WidgetKind,
+    data: &InfoWidgetData,
+    inner: Rect,
+) -> Vec<Line<'static>> {
+    render_widget_content(kind, data, inner)
 }
 
 /// Render content for a specific widget type
