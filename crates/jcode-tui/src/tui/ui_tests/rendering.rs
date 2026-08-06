@@ -873,3 +873,124 @@ fn column_mode_stacks_widgets_above_panel_content() {
         column.bottom()
     );
 }
+
+/// Dump the rendered column as text so the visual result is inspectable, and
+/// pin the structural invariants a human would check by eye: a separator rule
+/// exists, widget borders sit above it, and nothing bleeds into the transcript.
+#[test]
+fn column_mode_visual_smoke() {
+    let state = column_mode_state();
+    let buf = draw_state(&state, 120, 30);
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+    let column = layout.diff_pane_area.expect("column");
+
+    let row_text = |y: u16, from: u16, to: u16| -> String {
+        (from..to).map(|x| buf[(x, y)].symbol()).collect()
+    };
+
+    // The column must contain box-drawing borders (widgets draw rounded blocks).
+    let mut border_rows = 0usize;
+    for y in column.y..column.bottom() {
+        let s = row_text(y, column.x, column.right());
+        if s.contains('╭') || s.contains('╰') || s.contains('│') {
+            border_rows += 1;
+        }
+    }
+    assert!(
+        border_rows > 0,
+        "expected widget borders drawn in the column; got none.\ncolumn={column:?}"
+    );
+
+    // Print the column for eyeball inspection under --nocapture.
+    println!("--- column {column:?} ---");
+    for y in column.y..column.bottom().min(column.y + 16) {
+        println!("|{}|", row_text(y, column.x, column.right()));
+    }
+    println!("--- transcript right edge = {} ---", layout.messages_area.right());
+}
+
+/// The headline visual contract: widgets on top, a separator rule, then the
+/// side panel content. This is the case the column mode exists for, so render
+/// it for real and assert the three bands appear in order.
+#[test]
+fn column_mode_renders_separator_between_widgets_and_panel() {
+    let mut state = column_mode_state();
+    state.side_panel = Some(crate::side_panel::SidePanelSnapshot {
+        focused_page_id: Some("p1".into()),
+        pages: vec![crate::side_panel::SidePanelPage {
+            id: "p1".into(),
+            title: "Notes".into(),
+            file_path: "notes.md".into(),
+            content: "PANELBODY alpha\n\nPANELBODY bravo\n".into(),
+            ..Default::default()
+        }],
+    });
+
+    let buf = draw_state(&state, 120, 30);
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+    let column = layout.diff_pane_area.expect("column");
+
+    let row_text = |y: u16| -> String {
+        (column.x..column.right())
+            .map(|x| buf[(x, y)].symbol())
+            .collect()
+    };
+
+    println!("--- column {column:?} ---");
+    for y in column.y..column.bottom() {
+        println!("|{}|", row_text(y));
+    }
+
+    // Find the panel body and the separator rule.
+    let body_row = (column.y..column.bottom()).find(|&y| row_text(y).contains("PANELBODY"));
+    let sep_row = (column.y..column.bottom()).find(|&y| {
+        let s = row_text(y);
+        s.chars().filter(|&c| c == '\u{2500}').count() >= (column.width as usize) / 2
+            && !s.contains('\u{256d}')
+            && !s.contains('\u{2570}')
+    });
+
+    let body_row = body_row.expect("panel content must render in the column");
+    let sep_row = sep_row.expect("a separator rule must render in the column");
+    assert!(
+        sep_row < body_row,
+        "separator (y={sep_row}) must sit above the panel content (y={body_row})"
+    );
+}
+
+/// Render at a range of terminal widths and confirm the column never starves
+/// the transcript: either a column exists and the transcript keeps a workable
+/// width, or the column is dropped entirely.
+#[test]
+fn column_mode_width_sweep_keeps_transcript_usable() {
+    let state = column_mode_state();
+    for width in [40u16, 60, 80, 100, 120, 200] {
+        let _ = draw_state(&state, width, 30);
+        let layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+        let msg = layout.messages_area;
+        match layout.diff_pane_area {
+            Some(col) => {
+                assert!(
+                    msg.right() <= col.x,
+                    "w={width}: transcript {msg:?} overlaps column {col:?}"
+                );
+                assert!(
+                    msg.width >= 20,
+                    "w={width}: transcript starved to {} by column {col:?}",
+                    msg.width
+                );
+            }
+            None => {
+                assert!(
+                    width < 60,
+                    "w={width}: column was dropped even though there was room"
+                );
+            }
+        }
+        println!(
+            "w={width:3} -> transcript {:3} col {:?}",
+            msg.width,
+            layout.diff_pane_area.map(|c| c.width)
+        );
+    }
+}

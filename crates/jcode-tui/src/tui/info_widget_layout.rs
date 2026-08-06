@@ -74,10 +74,11 @@ pub(crate) fn calculate_placements_column(
         return (Vec::new(), 0);
     }
 
-    // The column is exactly as wide as it is; widgets fill it rather than
-    // sizing to a ragged margin. Cap at MAX_WIDGET_WIDTH so a wide panel does
-    // not stretch widget content past what its renderers expect.
-    let width = budget.width.min(MAX_WIDGET_WIDTH);
+    // Widgets fill the column. Unlike margin mode there is no ragged text to
+    // size against, and leaving MAX_WIDGET_WIDTH of slack would draw a short
+    // widget border against a full-width separator, which reads as a rendering
+    // fault rather than a layout choice.
+    let width = budget.width;
     let mut placements = Vec::new();
     let mut used = 0u16;
     let mut overview_placed = false;
@@ -96,8 +97,11 @@ pub(crate) fn calculate_placements_column(
         if height == 0 {
             continue;
         }
-        // `calculate_widget_height` reports content rows; add the border back.
-        let total = height.saturating_add(2).min(remaining);
+        // `calculate_widget_height` already includes the border rows (it returns
+        // `content + 2`, and margin mode uses it as the full height). Adding the
+        // border again here padded every widget with two dead rows inside its
+        // own frame.
+        let total = height.min(remaining);
         if total < MIN_WIDGET_HEIGHT {
             continue;
         }

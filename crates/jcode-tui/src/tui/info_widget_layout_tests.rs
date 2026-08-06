@@ -512,3 +512,50 @@ fn column_split_caps_stack_when_content_is_below() {
         "cap should still leave the stack some rows"
     );
 }
+
+/// Widgets must span the full column width. A short widget border sitting
+/// beside a full-width separator reads as a rendering fault, and it is exactly
+/// what a MAX_WIDGET_WIDTH cap would produce in a wide (panel-sized) column.
+#[test]
+fn column_placements_fill_the_column_width() {
+    let data = contended_data();
+    for width in [26u16, 30, 40, 60, 80] {
+        let column = Rect::new(0, 0, width, 40);
+        let (placements, _) = calculate_placements_column(column, &data, true);
+        for p in &placements {
+            assert_eq!(
+                p.rect.width, width,
+                "widget {:?} is {} wide in a {width}-wide column; it must fill it",
+                p.kind, p.rect.width
+            );
+        }
+    }
+}
+
+/// A widget's slot must contain no dead rows: `calculate_widget_height` already
+/// includes the border, so adding it again pads every frame with blank lines.
+/// Assert the drawn slot is exactly the reported height.
+#[test]
+fn column_placements_have_no_dead_rows() {
+    let data = contended_data();
+    let column = Rect::new(0, 0, 40, 60);
+    let (placements, used) = calculate_placements_column(column, &data, true);
+    assert!(!placements.is_empty());
+
+    for p in &placements {
+        let reported = calculate_widget_height(p.kind, &data, p.rect.width, p.rect.height);
+        assert_eq!(
+            p.rect.height, reported,
+            "widget {:?} occupies {} rows but reports {reported}; the difference is dead space",
+            p.kind, p.rect.height
+        );
+        assert!(
+            p.rect.height >= MIN_WIDGET_HEIGHT,
+            "widget {:?} is too short to render",
+            p.kind
+        );
+    }
+
+    let sum: u16 = placements.iter().map(|p| p.rect.height).sum();
+    assert_eq!(sum, used, "stack extent must equal the sum of widget heights");
+}

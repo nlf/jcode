@@ -118,6 +118,7 @@ struct TestState {
     info_widget_data: info_widget::InfoWidgetData,
     suppress_info_widgets: bool,
     widget_placement_mode: crate::config::WidgetPlacementMode,
+    side_panel: Option<crate::side_panel::SidePanelSnapshot>,
     display_messages: Vec<DisplayMessage>,
     messages_version: u64,
     streaming_text: String,
@@ -431,7 +432,7 @@ impl crate::tui::TuiState for TestState {
     fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot {
         static EMPTY: std::sync::LazyLock<crate::side_panel::SidePanelSnapshot> =
             std::sync::LazyLock::new(crate::side_panel::SidePanelSnapshot::default);
-        &EMPTY
+        self.side_panel.as_ref().unwrap_or(&EMPTY)
     }
     fn pin_images(&self) -> bool {
         self.pin_images
