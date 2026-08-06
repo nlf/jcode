@@ -1365,3 +1365,68 @@ fn composer_anchored_facts_respect_the_toggle_on_the_buffer() {
         "composer-anchored facts must disappear when session_facts is off"
     );
 }
+
+/// Re-check the column-docking behavior under the session_facts toggle that
+/// landed after it. Docking and hiding are separate features that touch the
+/// same rows, so verify them together: when facts are shown they must still be
+/// docked inside the column, when hidden they must be gone, and in neither case
+/// may the column's geometry move.
+#[test]
+fn column_docking_still_holds_under_the_session_facts_toggle() {
+    let mut geometries = Vec::new();
+
+    for merge_off in [false, true] {
+        let mut shown = git_column_state(merge_off);
+        shown.hide_session_facts = false;
+        let shown_buf = draw_state(&shown, 120, 40);
+        let shown_col = crate::tui::ui::last_layout_snapshot()
+            .expect("layout")
+            .diff_pane_area
+            .expect("column");
+        geometries.push(shown_col);
+
+        let half = shown_buf.area.height / 2;
+        let docked: Vec<_> = session_fact_rows(&shown_buf, 0)
+            .into_iter()
+            .filter(|&(y, _)| y >= half)
+            .collect();
+        assert!(
+            !docked.is_empty(),
+            "facts should render while enabled (merge_off={merge_off})"
+        );
+        for (row, x) in docked {
+            assert!(
+                x >= shown_col.x,
+                "fact row {row} at x={x} escaped the column (x={}) with merge_off={merge_off}",
+                shown_col.x
+            );
+        }
+
+        let mut hidden = git_column_state(merge_off);
+        hidden.hide_session_facts = true;
+        let hidden_buf = draw_state(&hidden, 120, 40);
+        let hidden_col = crate::tui::ui::last_layout_snapshot()
+            .expect("layout")
+            .diff_pane_area
+            .expect("column");
+        geometries.push(hidden_col);
+
+        let half = hidden_buf.area.height / 2;
+        assert!(
+            session_fact_rows(&hidden_buf, 0)
+                .into_iter()
+                .all(|(y, _)| y < half),
+            "facts still docked with session_facts off (merge_off={merge_off})"
+        );
+    }
+
+    // Hiding the facts must not resize or move the column.
+    let first = geometries[0];
+    for geom in &geometries {
+        assert_eq!(
+            (geom.x, geom.width),
+            (first.x, first.width),
+            "column geometry changed across fact/merge combinations: {geometries:?}"
+        );
+    }
+}
