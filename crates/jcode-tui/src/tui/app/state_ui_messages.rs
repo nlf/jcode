@@ -380,6 +380,10 @@ impl App {
         // block started so a stale offset can't slice the new stream.
         self.reasoning_block_start = None;
         self.turn_reasoning_traces.clear();
+        // Click-to-expand is keyed by transcript position, so expansions left
+        // over from the old transcript would reopen whatever unrelated messages
+        // happen to land on the same indices next.
+        crate::tui::ui::expand_state::clear_expanded_regions();
         if !self.display_messages.is_empty() {
             self.display_messages.clear();
             self.bump_display_messages_version();

@@ -1270,3 +1270,74 @@ fn test_click_on_inline_image_body_cycles_level() {
         "clicking blank space beside the image must not cycle it"
     );
 }
+
+/// End-to-end proof that clicking a collapsed tool row reveals its output.
+///
+/// The renderer tests cover `render_expanded_tool_detail` in isolation; this
+/// drives the real path instead: draw a frame, dispatch a real mouse event at
+/// the tool row's screen position, redraw, and read the resulting buffer.
+#[test]
+fn test_clicking_a_tool_row_expands_its_output_in_the_rendered_frame() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "SENTINEL_ALPHA\nSENTINEL_BETA".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_click_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo SENTINEL" }),
+            intent: Some("probe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    assert!(
+        !before.contains("SENTINEL_ALPHA"),
+        "collapsed row must not show tool output:\n{before}"
+    );
+
+    // Find the drawn tool row and click it.
+    let row = before
+        .lines()
+        .position(|line| line.contains("probe"))
+        .expect("expected the tool row to render") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        after.contains("SENTINEL_ALPHA") && after.contains("SENTINEL_BETA"),
+        "clicking the tool row should reveal its output:\n{after}"
+    );
+
+    // Clicking again puts it back, so the gesture is a toggle rather than a
+    // one-way reveal.
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    let collapsed_again = render_and_snap(&app, &mut terminal);
+    assert!(
+        !collapsed_again.contains("SENTINEL_ALPHA"),
+        "second click should collapse the row again:\n{collapsed_again}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
