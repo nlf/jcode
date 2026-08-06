@@ -745,13 +745,23 @@ fn column_mode_state() -> TestState {
     }
 }
 
+/// Render one full frame and return the buffer.
+///
+/// Drawing mutates process-global render state (flicker/slow-frame history,
+/// remembered widget placements). These tests draw many frames in quick
+/// succession, which trips the flicker detector and leaves a notice that then
+/// surfaces in unrelated tests drawing a notification into a small area. Clear
+/// that history so a column test cannot fail a swarm-buffer test.
 fn draw_state(state: &TestState, width: u16, height: u16) -> ratatui::buffer::Buffer {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     terminal
         .draw(|frame| crate::tui::ui::draw(frame, state))
         .expect("draw");
-    terminal.backend().buffer().clone()
+    let buffer = terminal.backend().buffer().clone();
+    crate::tui::ui::clear_flicker_frame_history_for_tests();
+    crate::tui::info_widget::clear_widget_placements_for_tests();
+    buffer
 }
 
 /// Column mode must reserve a real column: the transcript's usable area has to
@@ -993,4 +1003,103 @@ fn column_mode_width_sweep_keeps_transcript_usable() {
             layout.diff_pane_area.map(|c| c.width)
         );
     }
+}
+
+/// The layout snapshot deliberately reports the whole column, not just the
+/// scrollable remainder: drag-resize, the debug capture, and the diagram-border
+/// hit test all need the column's true geometry. Routing a wheel over the widget
+/// band to the side pane is therefore expected, and safe, because a pane with no
+/// rendered content ignores the motion (see
+/// `scroll_over_widget_band_does_not_corrupt_pane_state`). This pins the
+/// geometry contract so a future change cannot silently shrink it.
+#[test]
+fn column_mode_snapshot_reports_full_column_geometry() {
+    let state = column_mode_state();
+    let _ = draw_state(&state, 120, 30);
+    let layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+    let column = layout.diff_pane_area.expect("column");
+
+    assert_eq!(
+        column.x,
+        layout.messages_area.right(),
+        "column must start exactly where the transcript ends"
+    );
+    // The column spans the whole chat frame, which is taller than the transcript
+    // (the transcript is shortened by the input chrome below it). It must at
+    // least cover the transcript rows, or a wheel over the lower part of the
+    // column would fall through to nothing.
+    assert!(
+        column.height >= layout.messages_area.height,
+        "column ({}) must cover at least the transcript rows ({})",
+        column.height,
+        layout.messages_area.height
+    );
+}
+
+/// `widget_placement = "off"` must place nothing and, crucially, must not
+/// reserve a column: the transcript should be exactly as wide as it is with no
+/// widget data at all.
+#[test]
+fn off_mode_places_nothing_and_reserves_no_column() {
+    let mut state = column_mode_state();
+    state.widget_placement_mode = crate::config::WidgetPlacementMode::Off;
+    let _ = draw_state(&state, 120, 30);
+    let off = crate::tui::ui::last_layout_snapshot().expect("layout");
+
+    assert!(
+        off.diff_pane_area.is_none(),
+        "off mode must not reserve a column: {:?}",
+        off.diff_pane_area
+    );
+
+    // Same width as a session with no widget data whatsoever.
+    let bare = TestState {
+        widget_placement_mode: crate::config::WidgetPlacementMode::Off,
+        ..Default::default()
+    };
+    let _ = draw_state(&bare, 120, 30);
+    let bare_layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+    assert_eq!(
+        off.messages_area.width, bare_layout.messages_area.width,
+        "off mode must cost the transcript nothing"
+    );
+}
+
+/// Alt+I (the global widget toggle) must give the column's space back to the
+/// transcript in column mode, not leave an empty reserved strip.
+#[test]
+fn column_mode_toggle_off_returns_space_to_transcript() {
+    let state = column_mode_state();
+
+    let _ = draw_state(&state, 120, 30);
+    let on = crate::tui::ui::last_layout_snapshot().expect("layout");
+    assert!(on.diff_pane_area.is_some(), "expected a column while enabled");
+    let on_width = on.messages_area.width;
+
+    // `WIDGETS_STATE` is process-global, so restore it before asserting and
+    // clear the remembered placements: leaving either mutated leaks into
+    // unrelated tests that render a frame.
+    crate::tui::info_widget::toggle_enabled();
+    let disabled = !crate::tui::info_widget::is_enabled();
+    let _ = draw_state(&state, 120, 30);
+    let off = crate::tui::ui::last_layout_snapshot().expect("layout");
+    crate::tui::info_widget::toggle_enabled();
+    crate::tui::info_widget::clear_widget_placements_for_tests();
+    assert!(
+        crate::tui::info_widget::is_enabled(),
+        "global widget state must be restored for other tests"
+    );
+
+    assert!(disabled, "toggle should have disabled widgets");
+    assert!(
+        off.diff_pane_area.is_none(),
+        "disabled widgets must not keep an empty column reserved: {:?}",
+        off.diff_pane_area
+    );
+    assert!(
+        off.messages_area.width > on_width,
+        "transcript must reclaim the column width ({} -> {})",
+        on_width,
+        off.messages_area.width
+    );
 }

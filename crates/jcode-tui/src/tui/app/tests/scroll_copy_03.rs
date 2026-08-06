@@ -1840,3 +1840,27 @@ fn command_palette_open_does_not_move_existing_rows() {
     }
     assert!(checked >= 3, "expected transcript rows to sample:\n{before}");
 }
+
+/// Scrolling over the widget band in a widgets-only column must not corrupt
+/// pane state. The layout snapshot still reports the whole column (drag-resize
+/// and the debug capture need that geometry), so the wheel is routed to the
+/// side pane; with no pane content rendered this has to be an inert no-op
+/// rather than accumulating phantom offset.
+#[test]
+fn scroll_over_widget_band_does_not_corrupt_pane_state() {
+    let (mut app, _terminal) = create_scroll_test_app(120, 30, 0, 0);
+    let before = app.diff_pane_scroll;
+
+    // Ten notches in each direction over a pane that rendered no content.
+    for _ in 0..10 {
+        app.side_pane_scroll_by(1);
+    }
+    for _ in 0..10 {
+        app.side_pane_scroll_by(-1);
+    }
+
+    assert_eq!(
+        app.diff_pane_scroll, before,
+        "scrolling a pane with no rendered content must leave the offset untouched"
+    );
+}
