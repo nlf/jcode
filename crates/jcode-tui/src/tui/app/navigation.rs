@@ -202,6 +202,26 @@ impl App {
         true
     }
 
+    /// If a left-click landed inside a truncated edit diff, show every change
+    /// instead of the elided view. Returns `false` when the click was
+    /// elsewhere.
+    pub(super) fn try_toggle_diff_expand_at(&mut self, column: u16, row: u16) -> bool {
+        let Some(msg_idx) = super::super::ui::diff_expand_target_from_screen(column, row) else {
+            return false;
+        };
+        let expanded = super::super::ui::expand_state::toggle_expanded(
+            msg_idx,
+            super::super::ui::expand_state::ExpandKind::Diff,
+        );
+        self.set_status_notice(if expanded {
+            "Diff expanded"
+        } else {
+            "Diff collapsed"
+        });
+        self.bump_display_messages_version();
+        true
+    }
+
     /// If a left-click landed on a tool row, expand or collapse that tool's
     /// full command and untruncated output in place. Returns `false` when the
     /// click was elsewhere.
@@ -1603,6 +1623,16 @@ impl App {
             && self.try_open_link_at(mouse.column, mouse.row)
         {
             finish_mouse_event!(false, "open_link");
+        }
+
+        // Diff before tool row: a diff is rendered *inside* the tool message,
+        // so both targets match the same lines. The more specific one wins,
+        // otherwise clicking a truncated diff would expand the tool's output
+        // instead of the diff the user was pointing at.
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && self.try_toggle_diff_expand_at(mouse.column, mouse.row)
+        {
+            finish_mouse_event!(false, "toggle_diff_expand");
         }
 
         // Checked after links so a URL inside a tool row still opens rather

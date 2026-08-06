@@ -1341,3 +1341,84 @@ fn test_clicking_a_tool_row_expands_its_output_in_the_rendered_frame() {
 
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
+
+/// A diff longer than `MAX_INLINE_DIFF_LINES` renders elided ("... N more
+/// changes ..."). Clicking it must show every change.
+#[test]
+fn test_clicking_a_truncated_diff_expands_every_change() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    // Well past the 12-line inline cap, with a uniquely named line in the
+    // middle so its presence proves the elision is gone.
+    let mut old_lines = Vec::new();
+    let mut new_lines = Vec::new();
+    for i in 0..30 {
+        old_lines.push(format!("old_line_{i}"));
+        new_lines.push(format!("new_line_{i}"));
+    }
+
+    let mut app = create_test_app();
+    app.diff_mode = crate::config::DiffDisplayMode::Inline;
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "Edited file".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_diff_1".to_string(),
+            name: "edit".to_string(),
+            input: serde_json::json!({
+                "file_path": "/tmp/probe.rs",
+                "old_string": old_lines.join("\n"),
+                "new_string": new_lines.join("\n"),
+            }),
+            intent: Some("rewrite".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let backend = ratatui::backend::TestBackend::new(100, 60);
+    let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+
+    let before = render_and_snap(&app, &mut terminal);
+    assert!(
+        before.contains("more changes"),
+        "expected a truncated diff to start with:\n{before}"
+    );
+
+    // Click a rendered diff line.
+    // Deletions render first, so an early `old_line_*` is visible while the
+    // middle of the change set is inside the elision.
+    assert!(
+        !before.contains("new_line_10"),
+        "the elided view should omit the middle of the change set:\n{before}"
+    );
+    let diff_row = before
+        .lines()
+        .position(|line| line.contains("old_line_0"))
+        .expect("expected diff content to render") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row: diff_row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        !after.contains("more changes"),
+        "expanding should remove the truncation marker:\n{after}"
+    );
+    assert!(
+        after.contains("new_line_10"),
+        "expanding should reveal changes the elided view omitted:\n{after}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}

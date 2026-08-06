@@ -1500,10 +1500,23 @@ fn render_message_into(
                 msg_global_idx,
                 crate::tui::ui::expand_state::ExpandKind::ToolDetail,
             );
+            // A clicked-open diff renders as if the diff mode were FullInline:
+            // that is already the "show every change" path, so expanding is
+            // simply opting this one message into it rather than a parallel
+            // renderer that could drift from the real one.
+            let diff_expanded = crate::tui::ui::expand_state::is_expanded(
+                msg_global_idx,
+                crate::tui::ui::expand_state::ExpandKind::Diff,
+            );
+            let effective_diff_mode = if diff_expanded {
+                crate::config::DiffDisplayMode::FullInline
+            } else {
+                app.diff_mode()
+            };
             let cached = crate::tui::ui::get_cached_message_lines_expanded(
                 msg,
                 width,
-                app.diff_mode(),
+                effective_diff_mode,
                 tool_expanded,
                 |msg, width, diff_mode| {
                     let mut lines = render_tool_message(msg, width, diff_mode);

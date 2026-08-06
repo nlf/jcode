@@ -2456,6 +2456,34 @@ pub(crate) fn inline_image_expand_target_from_screen(column: u16, row: u16) -> O
     snapshot.inline_image_id_for_label_line(point.abs_line)
 }
 
+/// If a screen click landed inside an edit tool's rendered diff, return the
+/// transcript message index so the caller can show every change instead of the
+/// truncated view.
+///
+/// Only diffs that are actually eliding something report a target
+/// (`EditToolRange::expandable`), so clicking a diff already shown in full
+/// leaves the click free for selection rather than redrawing the same lines.
+pub(crate) fn diff_expand_target_from_screen(column: u16, row: u16) -> Option<usize> {
+    let point = copy_point_from_screen(column, row)?;
+    if point.pane != crate::tui::CopySelectionPane::Chat {
+        return None;
+    }
+    let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let prepared = match &snapshot.data {
+        CopyViewportData::ChatFrame { prepared } => prepared.clone(),
+        CopyViewportData::Dense { .. } => return None,
+    };
+    prepared
+        .edit_tool_ranges
+        .iter()
+        .find(|range| {
+            range.expandable
+                && point.abs_line >= range.start_line
+                && point.abs_line < range.end_line
+        })
+        .map(|range| range.msg_index)
+}
+
 /// If a screen click landed on a collapsed tool row, return the transcript
 /// message index so the caller can expand that tool's full command and output.
 ///
