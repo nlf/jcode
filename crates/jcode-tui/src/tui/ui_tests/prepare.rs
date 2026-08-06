@@ -1464,3 +1464,126 @@ fn test_diff_and_reasoning_expansion_also_defeat_body_reuse() {
         "expanded diff must drop the truncation marker:\n{text}"
     );
 }
+
+/// Run the reuse check over a multi-message transcript, which is the shape the
+/// earlier single-message tests never exercised.
+///
+/// Two things must both hold: the expanded row rebuilds, and the unchanged
+/// prefix above it is still reused. A fix that simply defeated reuse whenever
+/// anything was expanded would pass the single-message test while making every
+/// redraw re-render the whole transcript.
+#[test]
+fn test_expansion_rebuilds_only_from_the_expanded_message() {
+    use crate::tui::ui::prepare::{build_body_from_base, matching_prefix_len, prepare_body};
+    use std::sync::Arc;
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let tool = |id: &str, intent: &str, out: &str| DisplayMessage {
+        role: "tool".to_string(),
+        content: out.to_string(),
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: id.to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo x" }),
+            intent: Some(intent.to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    let state = TestState {
+        display_messages: vec![
+            tool("c0", "first", "ZERO_OUT"),
+            tool("c1", "second", "ONE_OUT"),
+            tool("c2", "third", "TWO_OUT"),
+        ],
+        ..Default::default()
+    };
+
+    let base = Arc::new(prepare_body(&state, 110, false));
+    let count = base.message_boundaries.len();
+    assert_eq!(count, 3, "expected three message boundaries");
+
+    // Expand the middle row only.
+    crate::tui::ui::expand_state::toggle_expanded(
+        1,
+        crate::tui::ui::expand_state::ExpandKind::ToolDetail,
+    );
+
+    // The prefix above the expanded row must still match, so reuse keeps it.
+    let k = matching_prefix_len(base.as_ref(), &state.display_messages);
+    assert_eq!(
+        k, 1,
+        "only the messages before the expanded one should still match: k={k}"
+    );
+
+    let (rebuilt, reason) = build_body_from_base(&state, 110, base, count, 0, 3);
+    let text = rebuilt
+        .wrapped_lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    assert_ne!(
+        reason, "prefix_exact",
+        "the expanded row must force a rebuild"
+    );
+    assert!(
+        text.contains("ONE_OUT"),
+        "the expanded row's output must appear:\n{text}"
+    );
+    assert!(
+        !text.contains("ZERO_OUT") && !text.contains("TWO_OUT"),
+        "untouched rows must stay collapsed:\n{text}"
+    );
+}
+
+/// Run the reuse loop over the earlier display-toggle work, which shipped
+/// before this loop existed.
+///
+/// `widget_placement` and `widget_overview` change what the column draws, not
+/// the transcript body, so a body rebuild is neither expected nor required.
+/// What must hold is that the transcript body stays reusable across those
+/// toggles: if it did not, every widget change would re-render the whole
+/// transcript. This pins that the earlier work is compatible with the reuse
+/// path rather than assuming it.
+#[test]
+fn test_transcript_body_is_reusable_across_display_toggles() {
+    use crate::tui::ui::prepare::{build_body_from_base, prepare_body};
+    use std::sync::Arc;
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let state = TestState {
+        display_messages: vec![DisplayMessage {
+            role: "assistant".to_string(),
+            content: "some ordinary answer text".to_string(),
+            tool_calls: Vec::new(),
+            duration_secs: None,
+            title: None,
+            tool_data: None,
+        }],
+        widget_placement_mode: crate::config::WidgetPlacementMode::Column,
+        ..Default::default()
+    };
+
+    let base = Arc::new(prepare_body(&state, 110, false));
+    let count = base.message_boundaries.len();
+
+    // Same transcript, different widget placement: the body must be reusable.
+    let margin_state = TestState {
+        widget_placement_mode: crate::config::WidgetPlacementMode::Margin,
+        ..state.clone()
+    };
+    let (_, reason) = build_body_from_base(&margin_state, 110, base, count, 0, 1);
+    assert_eq!(
+        reason, "prefix_exact",
+        "widget placement must not invalidate the transcript body; \
+         re-rendering it on every widget change would be a real cost"
+    );
+}

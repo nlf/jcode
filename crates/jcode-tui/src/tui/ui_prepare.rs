@@ -1100,6 +1100,14 @@ fn prepare_header_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages
 }
 
 fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
+    // NOTE: this bypass (and the matching ones in `prepare_messages`,
+    // `get_cached_message_lines`, `prepare_header_cached`, and the assistant
+    // aux cache) means no test reaching this function exercises caching or
+    // body reuse. A feature can therefore pass every render test and still do
+    // nothing in the running app, because production answers from a reuse
+    // layer the test never touched - which is exactly what happened to
+    // click-to-expand. When a change affects what gets *redrawn*, test
+    // `build_body_from_base` directly rather than trusting a rendered frame.
     if cfg!(test) {
         return Arc::new(prepare_body(app, width, false));
     }
