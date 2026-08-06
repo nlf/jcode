@@ -473,7 +473,7 @@ fn column_placements_handle_degenerate_sizes() {
             assert!(used <= height, "used {used} > height {height}");
             for p in &placements {
                 assert!(p.rect.width >= MIN_WIDGET_WIDTH);
-                assert!(p.rect.height >= MIN_WIDGET_HEIGHT);
+                assert!(p.rect.height >= MIN_COLUMN_WIDGET_HEIGHT);
                 assert!(p.rect.bottom() <= column.bottom());
             }
         }
@@ -553,7 +553,7 @@ fn column_placements_have_no_dead_rows() {
             p.kind, p.rect.height
         );
         assert!(
-            p.rect.height >= MIN_WIDGET_HEIGHT,
+            p.rect.height >= MIN_COLUMN_WIDGET_HEIGHT,
             "widget {:?} is too short to render",
             p.kind
         );
@@ -563,5 +563,94 @@ fn column_placements_have_no_dead_rows() {
     assert_eq!(
         sum, used,
         "stack extent must equal the sum of widget heights"
+    );
+}
+
+/// With merging on, Overview subsumes its mergeable widgets, so the column
+/// shows one combined box rather than each widget separately. This is the
+/// historical behavior and must not change by default.
+#[test]
+fn column_merge_on_places_overview_and_suppresses_its_members() {
+    let data = contended_data();
+    assert!(!data.overview_merge_disabled, "merging must default to on");
+    let (placements, _) = calculate_placements_column(Rect::new(90, 0, 30, 60), &data, true);
+    let kinds: Vec<WidgetKind> = placements.iter().map(|p| p.kind).collect();
+
+    assert!(
+        kinds.contains(&WidgetKind::Overview),
+        "Overview should be placed when merging is on: {kinds:?}"
+    );
+    for kind in &kinds {
+        assert!(
+            !is_overview_mergeable(*kind),
+            "{kind:?} is mergeable and must not be placed alongside Overview: {kinds:?}"
+        );
+    }
+}
+
+/// With merging off, Overview is not drawn at all (it has no content of its
+/// own) and each mergeable widget is placed individually, so their full
+/// renderers are used instead of their one-line summaries.
+#[test]
+fn column_merge_off_places_members_individually_and_drops_overview() {
+    let mut data = contended_data();
+    data.overview_merge_disabled = true;
+    let (placements, _) = calculate_placements_column(Rect::new(90, 0, 30, 60), &data, true);
+    let kinds: Vec<WidgetKind> = placements.iter().map(|p| p.kind).collect();
+
+    assert!(
+        !kinds.contains(&WidgetKind::Overview),
+        "Overview must not be placed when merging is off: {kinds:?}"
+    );
+    // The widgets Overview would have swallowed now stand on their own.
+    for expected in [
+        WidgetKind::Todos,
+        WidgetKind::ContextUsage,
+        WidgetKind::ModelInfo,
+        WidgetKind::GitStatus,
+    ] {
+        assert!(
+            kinds.contains(&expected),
+            "{expected:?} should be placed individually when merging is off: {kinds:?}"
+        );
+    }
+}
+
+/// Turning merging off must actually surface more widgets, which is the whole
+/// point of the toggle.
+#[test]
+fn column_merge_off_shows_strictly_more_widgets() {
+    let budget = Rect::new(90, 0, 30, 60);
+    let on = contended_data();
+    let (p_on, _) = calculate_placements_column(budget, &on, true);
+
+    let mut off = contended_data();
+    off.overview_merge_disabled = true;
+    let (p_off, _) = calculate_placements_column(budget, &off, true);
+
+    assert!(
+        p_off.len() > p_on.len(),
+        "merging off should place more widgets (on={} off={})",
+        p_on.len(),
+        p_off.len()
+    );
+}
+
+/// Short widgets (a single content row plus borders) must be placeable in the
+/// column. The margin-mode floor of 5 rows silently excluded context usage,
+/// memory activity, and compaction from ever appearing standalone.
+#[test]
+fn column_places_three_row_widgets() {
+    let mut data = contended_data();
+    data.overview_merge_disabled = true;
+    let (placements, _) = calculate_placements_column(Rect::new(90, 0, 30, 60), &data, true);
+    let short: Vec<_> = placements.iter().filter(|p| p.rect.height < 5).collect();
+    assert!(
+        !short.is_empty(),
+        "expected at least one sub-5-row widget to be placed: {:?}",
+        placements
+            .iter()
+            .map(|p| (p.kind, p.rect.height))
+            .collect::<Vec<_>>()
     );
 }

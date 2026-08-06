@@ -216,6 +216,25 @@ prompt_entry_animation = true
 #   "off"        - never shown
 # overscroll_status = "overscroll"
 
+# Where info widgets are placed:
+#   "margin" - float in the transcript's free space, scrolling with it (default)
+#   "column" - stack in a dedicated right-hand column, fixed position
+#   "off"    - never place info widgets
+# widget_placement = "margin"
+
+# Merge the mergeable info widgets into one combined "Overview" widget
+# (default: true). Overview has no content of its own: it concatenates the
+# compact one-line renderings of model, context, todos, memory, background
+# tasks, usage limits, KV cache, and git, and suppresses those widgets so the
+# same numbers are not shown twice.
+#
+# Set false to place each widget separately instead. This uses more vertical
+# space but shows each widget's full renderer rather than its one-line summary
+# (notably git, which then lists the changed files). With merging off the
+# Overview widget is not drawn at all. Pairs well with widget_placement =
+# "column", where there is dedicated space to stack them in.
+# widget_overview = true
+
 # Disable specific animation variants by name.
 # Examples: ["donut"] or ["donut", "orbit_rings"]
 # Legacy aliases such as "three_rings" and "gyroscope" are still accepted.

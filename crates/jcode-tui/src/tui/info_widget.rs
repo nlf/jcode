@@ -589,6 +589,12 @@ const PAGE_SWITCH_SECONDS: u64 = 30;
 /// Data to display in the info widget
 #[derive(Debug, Default, Clone)]
 pub struct InfoWidgetData {
+    /// When true, do not build the combined `Overview` widget; place each
+    /// mergeable widget on its own instead (`display.widget_overview = false`).
+    ///
+    /// Phrased negatively so `Default` (false) keeps the historical merging
+    /// behavior for every construction site that does not set it.
+    pub overview_merge_disabled: bool,
     pub todos: Vec<TodoItem>,
     /// Goal-level assessments (closed feedback loop and objective)
     /// keyed by todo group (`group: None` covers the ungrouped list). Empty
@@ -690,6 +696,15 @@ impl InfoWidgetData {
             WidgetKind::Diagrams => !self.diagrams.is_empty(),
             WidgetKind::WorkspaceMap => !self.workspace_rows.is_empty(),
             WidgetKind::Overview => {
+                // With merging disabled the Overview widget is not drawn at
+                // all: it has no content of its own (it concatenates the other
+                // widgets' compact renderings), so placing it while its
+                // mergeable widgets render individually would just duplicate
+                // them. Reporting "no data" here suppresses both the widget and
+                // the merge rule keyed off it.
+                if self.overview_merge_disabled {
+                    return false;
+                }
                 let mut sections = 0usize;
                 if self.model.is_some() {
                     sections += 1;

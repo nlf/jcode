@@ -127,6 +127,22 @@ pub struct DisplayConfig {
     /// separator, where they hold a fixed position instead of scrolling.
     #[serde(default, deserialize_with = "crate::serde_lenient::lenient_enum")]
     pub widget_placement: WidgetPlacementMode,
+    /// Merge the mergeable info widgets into a single combined `Overview`
+    /// widget (default: true).
+    ///
+    /// The Overview widget has no content of its own: it concatenates the
+    /// compact renderings of model, context, todos, memory, background tasks,
+    /// usage limits, KV cache, and git. When it is placed, those widgets are
+    /// suppressed so the same numbers are not shown twice. That is a good trade
+    /// in `margin` placement, where widgets compete for scattered gaps beside
+    /// the transcript.
+    ///
+    /// Set false to place each widget on its own instead. This costs vertical
+    /// space but shows each widget's full renderer rather than its one-line
+    /// summary, notably the git widget's per-file change list. With merging
+    /// off the Overview widget is not drawn at all (it would be empty).
+    #[serde(default = "default_true")]
+    pub widget_overview: bool,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -166,6 +182,7 @@ impl Default for DisplayConfig {
             external_sessions: true,
             overscroll_status: OverscrollStatusMode::default(),
             widget_placement: WidgetPlacementMode::default(),
+            widget_overview: true,
         }
     }
 }

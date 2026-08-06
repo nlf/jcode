@@ -11,6 +11,16 @@ const MIN_WIDGET_WIDTH: u16 = 24;
 const MAX_WIDGET_WIDTH: u16 = 40;
 /// Minimum height needed to show the widget.
 const MIN_WIDGET_HEIGHT: u16 = 5;
+/// Minimum height for a widget stacked in the dedicated column.
+///
+/// Lower than [`MIN_WIDGET_HEIGHT`] because the two floors answer different
+/// questions. In margin mode a widget must earn its place in a scarce pocket of
+/// transcript negative space, so a nearly empty box is not worth the intrusion.
+/// In the column the space is already reserved and would otherwise sit blank,
+/// so a 3-row widget (one content row plus its two border rows) is strictly
+/// better than nothing. Without this, single-line widgets such as context
+/// usage, memory activity, and compaction could never appear standalone.
+const MIN_COLUMN_WIDGET_HEIGHT: u16 = 3;
 /// Preferred width of the bare widget gutter when no side panel content is
 /// present to widen the column. Wide enough to clear [`MIN_WIDGET_WIDTH`] plus
 /// the borders the widgets draw for themselves.
@@ -70,7 +80,7 @@ pub(crate) fn calculate_placements_column(
     data: &InfoWidgetData,
     enabled: bool,
 ) -> (Vec<WidgetPlacement>, u16) {
-    if !enabled || budget.width < MIN_WIDGET_WIDTH || budget.height < MIN_WIDGET_HEIGHT {
+    if !enabled || budget.width < MIN_WIDGET_WIDTH || budget.height < MIN_COLUMN_WIDGET_HEIGHT {
         return (Vec::new(), 0);
     }
 
@@ -90,7 +100,7 @@ pub(crate) fn calculate_placements_column(
             continue;
         }
         let remaining = budget.height.saturating_sub(used);
-        if remaining < MIN_WIDGET_HEIGHT {
+        if remaining < MIN_COLUMN_WIDGET_HEIGHT {
             break;
         }
         let height = calculate_widget_height(kind, data, width, remaining);
@@ -102,7 +112,7 @@ pub(crate) fn calculate_placements_column(
         // border again here padded every widget with two dead rows inside its
         // own frame.
         let total = height.min(remaining);
-        if total < MIN_WIDGET_HEIGHT {
+        if total < MIN_COLUMN_WIDGET_HEIGHT {
             continue;
         }
         placements.push(WidgetPlacement {
