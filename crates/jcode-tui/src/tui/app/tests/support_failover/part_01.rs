@@ -594,3 +594,41 @@ fn auto_poke_defaults_on_when_config_does_not_disable_it() {
         );
     });
 }
+
+/// End-to-end config wiring: a real `config.toml` on disk must reach the live
+/// `App` and be visible through the `TuiState` trait the renderer consults.
+///
+/// Every other column-mode test sets the mode directly on a test state, which
+/// would keep passing even if `App` never read the config. This closes that
+/// gap by writing the file, constructing a real `App`, and asking it the same
+/// question `ui::draw` asks.
+#[test]
+fn widget_placement_config_reaches_the_live_app() {
+    use crate::tui::TuiState;
+
+    for (written, expected) in [
+        ("column", crate::config::WidgetPlacementMode::Column),
+        ("off", crate::config::WidgetPlacementMode::Off),
+        ("margin", crate::config::WidgetPlacementMode::Margin),
+    ] {
+        with_temp_jcode_home(|| {
+            let path = crate::config::Config::path().expect("config path");
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("config dir");
+            }
+            std::fs::write(
+                &path,
+                format!("[display]\nwidget_placement = \"{written}\"\n"),
+            )
+            .expect("write config");
+            crate::config::invalidate_config_cache();
+
+            let app = create_test_app();
+            assert_eq!(
+                app.widget_placement_mode(),
+                expected,
+                "config widget_placement = {written:?} must reach the running App"
+            );
+        });
+    }
+}
