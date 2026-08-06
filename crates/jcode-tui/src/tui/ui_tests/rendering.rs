@@ -1294,3 +1294,74 @@ fn session_facts_can_be_hidden_in_both_placements() {
         "the toggle must disable the composer-anchored stack too"
     );
 }
+
+/// Sweep the whole configuration space these toggles create, on the rendered
+/// buffer, so the display options are checked in combination rather than only
+/// in the one arrangement they were developed against.
+///
+/// `session_facts` must win everywhere it applies. The composer-anchored stack
+/// only draws into genuinely blank cells, so widgets are suppressed here to
+/// expose that path; otherwise the widgets legitimately occupy those cells and
+/// the facts stand down on their own.
+#[test]
+fn session_facts_toggle_holds_across_placement_and_merge_combinations() {
+    for placement in [
+        crate::config::WidgetPlacementMode::Margin,
+        crate::config::WidgetPlacementMode::Column,
+    ] {
+        for merge_off in [false, true] {
+            for suppress_widgets in [false, true] {
+                let mut shown = git_column_state(merge_off);
+                shown.widget_placement_mode = placement;
+                shown.suppress_info_widgets = suppress_widgets;
+
+                let mut hidden = shown.clone();
+                hidden.hide_session_facts = true;
+
+                let shown_buf = draw_state(&shown, 120, 40);
+                let hidden_buf = draw_state(&hidden, 120, 40);
+
+                // Hiding must never *add* facts, and must remove any that the
+                // enabled frame drew.
+                assert!(
+                    !column_contains(&hidden_buf, 0, "Anthropic"),
+                    "facts still rendered with session_facts off \
+                     (placement={placement:?} merge_off={merge_off} \
+                      suppress_widgets={suppress_widgets})"
+                );
+
+                // The widgets themselves must be untouched by the fact toggle.
+                assert_eq!(
+                    column_box_count(&shown_buf, 90),
+                    column_box_count(&hidden_buf, 90),
+                    "hiding facts changed the widget boxes \
+                     (placement={placement:?} merge_off={merge_off} \
+                      suppress_widgets={suppress_widgets})"
+                );
+            }
+        }
+    }
+}
+
+/// The composer-anchored stack (the path the column-docking work replaced in
+/// column mode) must still honor the toggle on the real buffer, not just via
+/// its gate function.
+#[test]
+fn composer_anchored_facts_respect_the_toggle_on_the_buffer() {
+    let mut shown = git_column_state(false);
+    shown.widget_placement_mode = crate::config::WidgetPlacementMode::Margin;
+    shown.suppress_info_widgets = true;
+    let shown_buf = draw_state(&shown, 120, 40);
+    assert!(
+        column_contains(&shown_buf, 0, "Anthropic"),
+        "composer-anchored facts should draw when the chrome cells are free"
+    );
+
+    let mut hidden = shown.clone();
+    hidden.hide_session_facts = true;
+    let hidden_buf = draw_state(&hidden, 120, 40);
+    assert!(
+        !column_contains(&hidden_buf, 0, "Anthropic"),
+        "composer-anchored facts must disappear when session_facts is off"
+    );
+}
