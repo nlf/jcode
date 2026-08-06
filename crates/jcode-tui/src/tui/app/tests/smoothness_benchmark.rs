@@ -49,12 +49,20 @@ fn observe_smoothness_frame_text(
 
 #[test]
 fn smoothness_benchmark_simulated_streaming_turn_stays_within_budget() {
+    // Lock order matters: every other test in this suite takes the test-env
+    // lock (via `with_temp_jcode_home`/`with_reasoning_current_home`) and only
+    // then the render-state lock (via `create_test_app`). Taking the render
+    // lock first here inverted that order, and with enough threads in flight
+    // the suite deadlocked outright: half the tests held the env lock waiting
+    // for render, this one held render waiting for env. Enter the home helper
+    // first so this test acquires the same two locks in the same order as
+    // everyone else.
+    with_reasoning_current_home(|| {
     let _render_lock = scroll_render_test_lock();
     // The budgets below describe a turn that streams *visible* reasoning and then
     // releases the retained trace at answer-commit. Reasoning display defaults to
     // `Off` for new users (166e4444f), so pin `current` mode or the benchmark
     // measures a different turn shape than the one its budgets were written for.
-    with_reasoning_current_home(|| {
     let mut app = create_test_app();
     app.session.short_name = Some("test".to_string());
     let rt = tokio::runtime::Runtime::new().unwrap();
