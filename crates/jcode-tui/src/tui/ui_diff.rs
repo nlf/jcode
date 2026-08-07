@@ -249,12 +249,14 @@ fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine>
     }
 
     strip_common_indent(&mut lines);
+    pad_line_numbers(&mut lines);
     lines
 }
 
 pub(super) fn collect_diff_lines(content: &str) -> Vec<ParsedDiffLine> {
     let mut lines: Vec<ParsedDiffLine> = content.lines().filter_map(parse_diff_line).collect();
     strip_common_indent(&mut lines);
+    pad_line_numbers(&mut lines);
     lines
 }
 
@@ -337,6 +339,45 @@ fn strip_indent(content: &str, width: usize) -> String {
     let mut out = " ".repeat(remaining);
     out.push_str(rest);
     out
+}
+
+/// Split a prefix into its leading line number and the rest (`"12- "` becomes
+/// `("12", "- ")`). Returns `None` when there is no number to align, as for the
+/// bare `"+"` / `"-"` prefixes that carry no line number at all.
+fn split_line_number(prefix: &str) -> Option<(&str, &str)> {
+    let digits = prefix.len() - prefix.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return None;
+    }
+    Some(prefix.split_at(digits))
+}
+
+/// Right-align line numbers to a common width, so content does not shift a
+/// column when the number gains a digit (9 to 10, 99 to 100).
+///
+/// Per-hunk, not per-line: the width depends on the widest number in the set,
+/// which a single line cannot know. Padding goes on the left so the digits stay
+/// flush against their `+`/`-` marker.
+fn pad_line_numbers(lines: &mut [ParsedDiffLine]) {
+    let widest = lines
+        .iter()
+        .filter_map(|line| split_line_number(&line.prefix))
+        .map(|(number, _)| number.len())
+        .max()
+        .unwrap_or(0);
+    if widest == 0 {
+        return;
+    }
+
+    for line in lines.iter_mut() {
+        let Some((number, rest)) = split_line_number(&line.prefix) else {
+            continue;
+        };
+        if number.len() >= widest {
+            continue;
+        }
+        line.prefix = format!("{}{number}{rest}", " ".repeat(widest - number.len()));
+    }
 }
 
 /// Strip the indentation common to every non-blank line, so a uniformly
@@ -490,5 +531,67 @@ mod tests {
 
         assert_eq!(lines[0].content, "one");
         assert_eq!(lines[1].content, "    two");
+    }
+
+    #[test]
+    fn line_numbers_align_across_a_digit_boundary() {
+        // 8 unchanged lines, then three added: numbers 9, 10, 11.
+        let old = "a\n".repeat(8);
+        let new = format!("{old}x\ny\nz\n");
+        let lines = generate_diff_lines_from_strings(&old, &new);
+
+        let prefixes: Vec<&str> = lines.iter().map(|l| l.prefix.as_str()).collect();
+        assert_eq!(prefixes, vec![" 9+ ", "10+ ", "11+ "]);
+
+        let widths: std::collections::HashSet<usize> =
+            lines.iter().map(|l| l.prefix.chars().count()).collect();
+        assert_eq!(widths.len(), 1, "every gutter must be the same width");
+    }
+
+    #[test]
+    fn line_numbers_align_across_the_hundreds_boundary() {
+        let old = "a\n".repeat(98);
+        let new = format!("{old}x\ny\nz\n");
+        let lines = generate_diff_lines_from_strings(&old, &new);
+
+        let prefixes: Vec<&str> = lines.iter().map(|l| l.prefix.as_str()).collect();
+        assert_eq!(prefixes, vec![" 99+ ", "100+ ", "101+ "]);
+    }
+
+    #[test]
+    fn padding_goes_left_so_digits_stay_against_their_marker() {
+        let old = "a\n".repeat(8);
+        let new = format!("{old}x\ny\n");
+        let lines = generate_diff_lines_from_strings(&old, &new);
+
+        assert!(
+            lines[0].prefix.starts_with(' ') && lines[0].prefix.contains("9+"),
+            "the gap belongs before the number, not between it and the marker: {:?}",
+            lines[0].prefix
+        );
+    }
+
+    #[test]
+    fn parsed_patch_line_numbers_are_aligned_too() {
+        let lines = collect_diff_lines("9- old line\n10+ new line\n");
+
+        assert_eq!(lines[0].prefix, " 9- ");
+        assert_eq!(lines[1].prefix, "10+ ");
+    }
+
+    #[test]
+    fn single_digit_hunks_gain_no_padding() {
+        let lines = generate_diff_lines_from_strings("", "one\ntwo\n");
+
+        assert_eq!(lines[0].prefix, "1+ ");
+        assert_eq!(lines[1].prefix, "2+ ");
+    }
+
+    #[test]
+    fn markers_without_line_numbers_are_left_alone() {
+        let lines = collect_diff_lines("+added\n-removed\n");
+
+        assert_eq!(lines[0].prefix, "+");
+        assert_eq!(lines[1].prefix, "-");
     }
 }

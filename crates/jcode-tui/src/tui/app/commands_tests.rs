@@ -181,25 +181,40 @@ mod colors {
         crate::storage::lock_test_env()
     }
 
-    /// Take the shared lock and leave the config and palette clean afterwards,
-    /// even if the test body panics.
+    /// Take the shared lock and run against a throwaway `JCODE_HOME`, leaving
+    /// the palette clean afterwards even if the test body panics.
+    ///
+    /// The temp home is not optional. These tests clear `display.colors` and
+    /// save, so without it they load the developer's real
+    /// `~/.jcode/config.toml`, delete their palette, and write it back. That is
+    /// a deliberate deletion, so no amount of care in `Config::save` will stop
+    /// it; the sandbox is the only thing that does. This ate a hand-written
+    /// 22-role palette three times before it was tracked down.
     fn with_clean_config(body: impl FnOnce()) {
-        struct Restore;
+        struct Restore {
+            prev_home: Option<std::ffi::OsString>,
+        }
         impl Drop for Restore {
             fn drop(&mut self) {
-                let mut config = crate::config::Config::load();
-                config.display.colors.clear();
-                let _ = config.save();
+                match self.prev_home.take() {
+                    Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+                    None => crate::env::remove_var("JCODE_HOME"),
+                }
+                crate::config::invalidate_config_cache();
                 jcode_tui_style::set_palette(jcode_tui_style::Palette::default());
             }
         }
+
         let _lock = lock_shared_state();
-        let _restore = Restore;
-        {
-            let mut config = crate::config::Config::load();
-            config.display.colors.clear();
-            let _ = config.save();
-        }
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _restore = Restore {
+            prev_home: std::env::var_os("JCODE_HOME"),
+        };
+        crate::env::set_var("JCODE_HOME", temp.path());
+        // The config cache is keyed by content, not by home, so the outer
+        // config would otherwise still be visible inside the sandbox.
+        crate::config::invalidate_config_cache();
+
         body();
     }
 
