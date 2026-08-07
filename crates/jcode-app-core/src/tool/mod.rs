@@ -18,6 +18,8 @@ mod edit_hashline;
 mod gmail;
 mod goal;
 mod grep_glob;
+#[cfg(test)]
+mod home_override;
 pub mod hashline_store;
 
 #[cfg(test)]

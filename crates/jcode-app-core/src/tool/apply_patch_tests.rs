@@ -254,9 +254,7 @@ fn test_parse_update_without_explicit_at() {
 async fn apply_patch_refuses_to_delete_a_protected_path() {
     let temp = tempfile::tempdir().expect("temp home");
     let home = temp.path().to_path_buf();
-    let previous = std::env::var("HOME").ok();
-    // SAFETY: single-threaded test setup; restored below.
-    unsafe { std::env::set_var("HOME", &home) };
+    let _home = crate::tool::home_override::HomeOverride::set(&home);
 
     // A credential file inside the protected ~/.ssh directory.
     let ssh = home.join(".ssh");
@@ -283,10 +281,6 @@ async fn apply_patch_refuses_to_delete_a_protected_path() {
         )
         .await;
 
-    match previous {
-        Some(value) => unsafe { std::env::set_var("HOME", value) },
-        None => unsafe { std::env::remove_var("HOME") },
-    }
 
     let output = result.expect("the tool should report, not error out");
     assert!(

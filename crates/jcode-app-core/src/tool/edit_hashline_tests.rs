@@ -401,3 +401,183 @@ fn the_seen_line_guard_is_off_by_default() {
         "enforce_seen_lines should default off, as omp ships it"
     );
 }
+
+/// Every operation form the system prompt teaches must actually work.
+///
+/// The prompt was written by reading the parser, which is exactly the way to
+/// end up documenting a syntax that does not execute. These run each documented
+/// form through the real tool. If someone changes the parser, this fails rather
+/// than leaving the prompt quietly lying to the model.
+mod documented_syntax {
+    use super::*;
+
+    async fn apply(initial: &str, ops: &str, session: &str) -> Result<String, String> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("f.txt");
+        std::fs::write(&path, initial).expect("write");
+        let tag = read_tag(temp.path(), session, "f.txt").await;
+
+        EditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "input": format!("[f.txt#{tag}]\n{ops}"),
+                }),
+                ctx(temp.path().to_path_buf(), session),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(std::fs::read_to_string(&path).unwrap_or_default())
+    }
+
+    /// `PUT start=end:` replaces an inclusive range.
+    #[tokio::test]
+    async fn put_replaces_an_inclusive_range() {
+        let out = apply("a\nb\nc\nd\n", "PUT 2=3:\n+X", "doc-put-range")
+            .await
+            .expect("PUT range");
+        assert_eq!(out, "a\nX\nd\n");
+    }
+
+    /// `CUT start=end` deletes, with no body.
+    #[tokio::test]
+    async fn cut_deletes_a_range() {
+        let out = apply("a\nb\nc\nd\n", "CUT 2=3", "doc-cut")
+            .await
+            .expect("CUT");
+        assert_eq!(out, "a\nd\n");
+    }
+
+    /// `PUT <N:` inserts before line N.
+    #[tokio::test]
+    async fn put_before_inserts_above_the_line() {
+        let out = apply("a\nb\n", "PUT <2:\n+X", "doc-before")
+            .await
+            .expect("PUT before");
+        assert_eq!(out, "a\nX\nb\n");
+    }
+
+    /// `PUT >N:` inserts after line N.
+    #[tokio::test]
+    async fn put_after_inserts_below_the_line() {
+        let out = apply("a\nb\n", "PUT >1:\n+X", "doc-after")
+            .await
+            .expect("PUT after");
+        assert_eq!(out, "a\nX\nb\n");
+    }
+
+    /// `PUT >$:` appends at end of file.
+    #[tokio::test]
+    async fn put_at_eof_appends() {
+        let out = apply("a\nb\n", "PUT >$:\n+X", "doc-eof")
+            .await
+            .expect("PUT eof");
+        assert!(out.starts_with("a\nb\n"), "expected an append, got {out:?}");
+        assert!(out.contains('X'), "the appended line is missing: {out:?}");
+    }
+
+    /// `PUT <1:` is the beginning of the file.
+    #[tokio::test]
+    async fn put_before_the_first_line_prepends() {
+        let out = apply("a\nb\n", "PUT <1:\n+X", "doc-bof")
+            .await
+            .expect("PUT bof");
+        assert_eq!(out, "X\na\nb\n");
+    }
+
+    /// Several operations in one section, which the prompt's example shows.
+    /// This is also the claim most likely to be wrong: line numbers must all
+    /// refer to the original file, not to positions shifted by earlier ops.
+    #[tokio::test]
+    async fn line_numbers_refer_to_the_original_file_throughout() {
+        let out = apply(
+            "a\nb\nc\nd\ne\n",
+            // Replacing 1=1 with two lines shifts everything down. If the CUT
+            // were interpreted against the shifted text it would delete the
+            // wrong line.
+            "PUT 1=1:\n+X\n+Y\nCUT 4=4",
+            "doc-multi",
+        )
+        .await
+        .expect("multiple ops");
+        assert_eq!(
+            out, "X\nY\nb\nc\ne\n",
+            "the second op should have been resolved against the original numbering"
+        );
+    }
+
+    /// The prompt's own example must parse. Its content is arbitrary, so this
+    /// checks the shape rather than a result.
+    #[tokio::test]
+    async fn the_example_from_the_system_prompt_parses() {
+        let initial: String = (1..=40)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .concat();
+        let out = apply(
+            &initial,
+            "PUT 12=14:\n+    let total = items.len();\n+    println!(\"{total}\");\nCUT 20=22\nPUT >30:\n+// appended after line 30",
+            "doc-example",
+        )
+        .await
+        .expect("the documented example should apply");
+
+        assert!(out.contains("let total = items.len();"), "PUT did not land");
+        assert!(!out.contains("line 20\n"), "CUT did not remove line 20");
+        assert!(
+            out.contains("// appended after line 30"),
+            "the insert after line 30 did not land"
+        );
+    }
+
+    /// `REM` deletes the file. Documented in the prompt, so it must work; also
+    /// the one op whose failure mode is destructive rather than a no-op.
+    #[tokio::test]
+    async fn rem_deletes_the_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("f.txt");
+        std::fs::write(&path, "a\n").expect("write");
+        let tag = read_tag(temp.path(), "doc-rem", "f.txt").await;
+
+        EditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "input": format!("[f.txt#{tag}]\nREM"),
+                }),
+                ctx(temp.path().to_path_buf(), "doc-rem"),
+            )
+            .await
+            .expect("REM");
+
+        assert!(!path.exists(), "REM should have deleted the file");
+    }
+
+    /// `MV dest` moves the file: new path has the content, old path is gone.
+    #[tokio::test]
+    async fn mv_moves_the_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let from = temp.path().join("f.txt");
+        let to = temp.path().join("g.txt");
+        std::fs::write(&from, "a\n").expect("write");
+        let tag = read_tag(temp.path(), "doc-mv", "f.txt").await;
+
+        EditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "input": format!("[f.txt#{tag}]\nMV g.txt"),
+                }),
+                ctx(temp.path().to_path_buf(), "doc-mv"),
+            )
+            .await
+            .expect("MV");
+
+        assert!(!from.exists(), "the original path should be gone after MV");
+        assert_eq!(
+            std::fs::read_to_string(&to).expect("the destination should exist"),
+            "a\n"
+        );
+    }
+}
