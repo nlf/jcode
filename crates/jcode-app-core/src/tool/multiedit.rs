@@ -128,8 +128,44 @@ impl Tool for MultiEditTool {
             }
         }
 
+        // Nothing is written unless every edit succeeded.
+        //
+        // This used to write whatever survived and return Ok, with the failures
+        // listed under a "Failed:" heading below a line reading "Edited
+        // <path>". Two ways that goes wrong: a call where *every* edit failed
+        // still rewrote the file and reported success, and a partial success
+        // left the file in a state matching neither the old content nor what
+        // was asked for, while the model read the first line and moved on.
+        //
+        // Edits in one call are usually one intended change, so applying half
+        // is not a partial success but a corruption. The same reasoning as
+        // hashline's preflight, which validates every section before writing
+        // any file.
+        if !failed.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No edits applied to {}: {} of {} failed.\n{}\n\n\
+                 Nothing was written. Re-read the file and retry with text that \
+                 matches, or use `edit` with a hashline patch to anchor by line \
+                 number instead of by matching text.",
+                params.file_path,
+                failed.len(),
+                params.edits.len(),
+                failed
+                    .iter()
+                    .map(|message| format!("  ✗ {message}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+
         // Write the result
         tokio::fs::write(&path, &content).await?;
+
+        // Record the new content, so a later hashline edit in this session can
+        // anchor to it. Keyed the same way `read` and `write` key it.
+        let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
+        let key = jcode_hashline::normalize_path(&params.file_path, cwd);
+        super::hashline_store::for_session(&ctx.session_id).record(&key, &content, None);
 
         // Format output
         let mut output = format!("Edited {}\n\n", params.file_path);
@@ -141,18 +177,7 @@ impl Tool for MultiEditTool {
             }
         }
 
-        if !failed.is_empty() {
-            output.push_str("\nFailed:\n");
-            for msg in &failed {
-                output.push_str(&format!("  ✗ {}\n", msg));
-            }
-        }
-
-        output.push_str(&format!(
-            "\nTotal: {} applied, {} failed\n",
-            applied.len(),
-            failed.len()
-        ));
+        output.push_str(&format!("\nTotal: {} applied\n", applied.len()));
 
         // Generate diff summary
         if !applied.is_empty() {
@@ -248,5 +273,163 @@ mod tests {
             diff.contains("1+ new"),
             "Should have line number directly before plus"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod execute_tests {
+    use super::*;
+    use crate::tool::ToolExecutionMode;
+
+    fn ctx(dir: std::path::PathBuf, session: &str) -> ToolContext {
+        ToolContext {
+            session_id: session.to_string(),
+            message_id: "m".to_string(),
+            tool_call_id: "t".to_string(),
+            working_dir: Some(dir),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        }
+    }
+
+    /// The worst of the old behaviour: every edit failed, yet the file was
+    /// rewritten and the output opened with "Edited <path>". A model reading
+    /// the first line would believe its change had landed.
+    #[tokio::test]
+    async fn a_call_where_every_edit_fails_is_an_error_and_writes_nothing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("f.txt");
+        std::fs::write(&path, "hello\n").expect("write");
+
+        let error = MultiEditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "edits": [{"old_string": "NOPE", "new_string": "X"}],
+                }),
+                ctx(temp.path().to_path_buf(), "me-allfail"),
+            )
+            .await
+            .expect_err("a call where nothing matched must not report success");
+
+        assert!(
+            error.to_string().contains("Nothing was written"),
+            "the error should say the file is untouched: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "hello\n"
+        );
+    }
+
+    /// A partial failure must not write either. Edits in one call are usually
+    /// one intended change, so applying half leaves the file matching neither
+    /// the old content nor the intent.
+    #[tokio::test]
+    async fn a_partial_failure_writes_nothing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("f.txt");
+        std::fs::write(&path, "alpha\nbeta\n").expect("write");
+
+        let error = MultiEditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "edits": [
+                        {"old_string": "alpha", "new_string": "ALPHA"},
+                        {"old_string": "MISSING", "new_string": "X"},
+                    ],
+                }),
+                ctx(temp.path().to_path_buf(), "me-partial"),
+            )
+            .await
+            .expect_err("a partial failure must be refused");
+
+        assert!(
+            error.to_string().contains("1 of 2 failed"),
+            "the error should say how many failed: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "alpha\nbeta\n",
+            "the successful edit was written despite a sibling failing"
+        );
+    }
+
+    /// The ordinary path must still work.
+    #[tokio::test]
+    async fn all_edits_succeeding_applies_them_in_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("f.txt");
+        std::fs::write(&path, "alpha\nbeta\n").expect("write");
+
+        MultiEditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "edits": [
+                        {"old_string": "alpha", "new_string": "ALPHA"},
+                        {"old_string": "beta", "new_string": "BETA"},
+                    ],
+                }),
+                ctx(temp.path().to_path_buf(), "me-ok"),
+            )
+            .await
+            .expect("all edits should apply");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "ALPHA\nBETA\n"
+        );
+    }
+
+    /// The failure names hashline, since anchoring by line number is the
+    /// remedy when matching text keeps failing.
+    #[tokio::test]
+    async fn the_failure_points_at_hashline_as_the_alternative() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("f.txt"), "hello\n").expect("write");
+
+        let error = MultiEditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "edits": [{"old_string": "NOPE", "new_string": "X"}],
+                }),
+                ctx(temp.path().to_path_buf(), "me-hint"),
+            )
+            .await
+            .expect_err("must fail");
+
+        assert!(
+            error.to_string().contains("hashline"),
+            "the error should offer the line-anchored alternative: {error}"
+        );
+    }
+
+    /// After a successful multiedit, a hashline edit can anchor to the result
+    /// without a re-read, as it can after `write`.
+    #[tokio::test]
+    async fn a_hashline_edit_can_follow_a_multiedit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("f.txt"), "alpha\nbeta\n").expect("write");
+
+        MultiEditTool::new()
+            .execute(
+                json!({
+                    "file_path": "f.txt",
+                    "edits": [{"old_string": "alpha", "new_string": "ALPHA"}],
+                }),
+                ctx(temp.path().to_path_buf(), "me-chain"),
+            )
+            .await
+            .expect("multiedit");
+
+        let snapshot = crate::tool::hashline_store::for_session("me-chain")
+            .head("f.txt")
+            .expect("multiedit should record what it wrote");
+        assert_eq!(snapshot.text, "ALPHA\nbeta\n");
     }
 }
