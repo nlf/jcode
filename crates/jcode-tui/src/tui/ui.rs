@@ -2615,6 +2615,13 @@ pub(crate) fn apply_hover_highlight(buffer: &mut ratatui::buffer::Buffer) {
             if cell.symbol().trim().is_empty() {
                 continue;
             }
+            // A framed block lifts only its border, leaving the text the user
+            // is reading untouched.
+            if matches!(target.scope, crate::tui::hover::HoverScope::Frame)
+                && !crate::tui::hover::is_frame_glyph(cell.symbol())
+            {
+                continue;
+            }
             let lifted = brighten_hover_color(cell.style().fg);
             cell.set_style(cell.style().fg(lifted));
         }
@@ -2652,7 +2659,7 @@ pub(crate) fn hover_target_from_screen(
     centered: bool,
     is_tool_message: impl Fn(usize) -> bool,
 ) -> Option<crate::tui::hover::HoverTarget> {
-    use crate::tui::hover::{HoverKind, HoverTarget};
+    use crate::tui::hover::{HoverKind, HoverScope, HoverTarget};
 
     let point = copy_point_from_screen(column, row)?;
     let snapshot = copy_snapshot_for_pane(point.pane)?;
@@ -2677,13 +2684,19 @@ pub(crate) fn hover_target_from_screen(
             .saturating_add((widest as u16).min(area.width))
             .min(area.x.saturating_add(area.width))
     };
-    let full_row = |top: u16, bottom: u16, top_abs: usize, bottom_abs: usize, kind: HoverKind| {
+    let full_row = |top: u16,
+                    bottom: u16,
+                    top_abs: usize,
+                    bottom_abs: usize,
+                    kind: HoverKind,
+                    scope: HoverScope| {
         HoverTarget {
             kind,
             top_row: top.max(area.y),
             bottom_row: bottom.min(area.y.saturating_add(area.height)),
             left_col: area.x,
             right_col: region_right(top_abs, bottom_abs),
+            scope,
         }
     };
 
@@ -2710,6 +2723,7 @@ pub(crate) fn hover_target_from_screen(
             bottom_row: row.saturating_add(1),
             left_col: origin.saturating_add(start_col as u16).min(right_limit),
             right_col: origin.saturating_add(end_col as u16).min(right_limit),
+            scope: HoverScope::Text,
         });
     }
 
@@ -2749,6 +2763,7 @@ pub(crate) fn hover_target_from_screen(
                 bottom_row: row.saturating_add(1),
                 left_col: area.x.saturating_add(badge_left as u16),
                 right_col: region_right(point.abs_line, point.abs_line + 1),
+                scope: HoverScope::Text,
             });
         }
 
@@ -2765,18 +2780,36 @@ pub(crate) fn hover_target_from_screen(
                 range.start_line,
                 range.end_line,
                 HoverKind::Diff,
+                HoverScope::Frame,
             ));
         }
 
         if let Some(msg_idx) = prepared.message_index_at_line(point.abs_line)
             && is_tool_message(msg_idx)
         {
+            // Highlight the whole rendered block, as the diff path does: the
+            // click toggles the entire message, so lighting up only the line
+            // under the pointer would understate what is about to change. An
+            // expanded row therefore highlights its summary and its detail
+            // frame together, which is exactly what collapses on click.
+            let (start_line, end_line) = prepared
+                .message_line_range_at_line(point.abs_line)
+                .unwrap_or((point.abs_line, point.abs_line + 1));
+            // A collapsed row is a single line with no frame to trace, so it
+            // lifts its text; once expanded it is a framed block and only the
+            // frame lifts.
+            let scope = if end_line.saturating_sub(start_line) > 1 {
+                HoverScope::Frame
+            } else {
+                HoverScope::Text
+            };
             return Some(full_row(
-                row,
-                row.saturating_add(1),
-                point.abs_line,
-                point.abs_line + 1,
+                row_for_abs(start_line),
+                row_for_abs(end_line),
+                start_line,
+                end_line,
                 HoverKind::ToolRow,
+                scope,
             ));
         }
     }
@@ -2791,6 +2824,7 @@ pub(crate) fn hover_target_from_screen(
             point.abs_line,
             point.abs_line + 1,
             HoverKind::Image,
+            HoverScope::Text,
         ));
     }
 

@@ -29,6 +29,36 @@ pub(crate) struct HoverTarget {
     /// just its own cells, so the prose beside it stays visually inert.
     pub left_col: u16,
     pub right_col: u16,
+    /// Which cells inside the region actually brighten.
+    pub scope: HoverScope,
+}
+
+/// Which cells of a hovered region receive the lift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HoverScope {
+    /// Every cell with content. Right for a short region that *is* the target:
+    /// a single row, a badge, a URL.
+    Text,
+    /// Only the box-drawing glyphs framing the region, leaving its content
+    /// alone. A multi-line block is mostly the text the user is reading, and
+    /// lifting all of it swamps the screen and reads as a selection; tracing
+    /// the frame says "this whole block is one clickable thing" without
+    /// touching what is being read.
+    Frame,
+}
+
+/// Box-drawing characters that make up a rendered block's frame.
+///
+/// Deliberately narrow: these are the glyphs the transcript's own framed
+/// blocks draw (`┌─ detail`, `│ …`, `└─`), so a stray box character inside
+/// tool output is the only false positive, and lighting one cell of it is
+/// harmless.
+pub(crate) fn is_frame_glyph(symbol: &str) -> bool {
+    matches!(
+        symbol,
+        "│" | "─" | "┌" | "┐" | "└" | "┘" | "├" | "┤" | "┬" | "┴" | "┼"
+            | "╭" | "╮" | "╰" | "╯" | "╷" | "╵"
+    )
 }
 
 /// Which flavor of clickable region the pointer is over.
@@ -138,6 +168,7 @@ mod tests {
             bottom_row: row + 1,
             left_col: 0,
             right_col: 40,
+            scope: HoverScope::Text,
         }
     }
 

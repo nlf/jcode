@@ -2164,3 +2164,101 @@ fn test_hovering_a_link_highlights_only_the_url() {
     crate::tui::hover::clear_hover();
 }
 
+
+/// Hovering anywhere inside a framed block must trace the frame across the
+/// whole block and leave the text alone.
+///
+/// Lighting up every cell of a long output swamps the screen and reads as a
+/// selection; the border says "this whole block is one clickable thing"
+/// without touching what is being read.
+#[test]
+fn test_hovering_a_framed_block_highlights_the_frame_not_the_text() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "line one\nline two\nline three".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "frameblock".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "ls" }),
+            intent: Some("frameprobe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let snap = render_and_snap(&app, &mut terminal);
+    let row = snap
+        .lines()
+        .position(|l| l.contains("frameprobe"))
+        .expect("tool row") as u16;
+    // Expand it so there is a frame to trace.
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+    let snap = render_and_snap(&app, &mut terminal);
+
+    let area = *terminal.backend().buffer().area();
+    let (h, w) = (area.height, area.width);
+    terminal.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+    let cold: Vec<Vec<_>> = (0..h)
+        .map(|r| {
+            (0..w)
+                .map(|c| terminal.backend().buffer()[(c, r)].style().fg)
+                .collect()
+        })
+        .collect();
+
+    // Hover a text row in the middle of the block, not its border row.
+    let output_row = snap
+        .lines()
+        .position(|l| l.contains("line two"))
+        .expect("output row") as u16;
+    assert!(app.update_hover_at(6, output_row), "block must register");
+    terminal.draw(|f| crate::tui::ui::draw(f, &app)).unwrap();
+
+    let mut lit_rows = 0;
+    for r in 0..h {
+        let mut row_lit = false;
+        for c in 0..w {
+            let cell = &terminal.backend().buffer()[(c, r)];
+            if cell.style().fg == cold[r as usize][c as usize] {
+                continue;
+            }
+            row_lit = true;
+            assert!(
+                crate::tui::hover::is_frame_glyph(cell.symbol()),
+                "only frame glyphs may brighten, got {:?} at {c},{r}",
+                cell.symbol()
+            );
+        }
+        if row_lit {
+            lit_rows += 1;
+        }
+    }
+
+    // The frame spans the header, every body row, and the footer, so a
+    // three-line output lights well more than one row.
+    assert!(
+        lit_rows >= 4,
+        "the frame should trace the whole block, only {lit_rows} rows lit"
+    );
+
+    crate::tui::hover::clear_hover();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+

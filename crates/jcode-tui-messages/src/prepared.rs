@@ -338,6 +338,31 @@ impl PreparedChatFrame {
         (idx < boundaries.len()).then_some(idx)
     }
 
+    /// Absolute wrapped-line range `[start, end)` covered by the message at
+    /// `abs_line`, in the same coordinates `message_index_at_line` accepts.
+    ///
+    /// Message boundaries are cumulative lengths, so a message spans from the
+    /// previous boundary to its own. Hover highlighting uses this to light up a
+    /// whole rendered block rather than the single line under the pointer.
+    pub fn message_line_range_at_line(&self, abs_line: usize) -> Option<(usize, usize)> {
+        let (section, local) = self.line_section(abs_line)?;
+        if section.kind != PreparedSectionKind::Body {
+            return None;
+        }
+        let boundaries = &section.prepared.message_boundaries;
+        let idx = boundaries.partition_point(|boundary| boundary.wrapped_len <= local);
+        let boundary = boundaries.get(idx)?;
+        let start_local = if idx == 0 {
+            0
+        } else {
+            boundaries[idx - 1].wrapped_len
+        };
+        Some((
+            section.line_start + start_local,
+            section.line_start + boundary.wrapped_len,
+        ))
+    }
+
     pub fn materialize_line_slice(&self, start: usize, end: usize) -> Vec<Line<'static>> {
         let end = end.min(self.total_wrapped_lines);
         if start >= end {
