@@ -224,8 +224,8 @@ fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine>
     let mut lines = Vec::new();
 
     for change in diff.iter_all_changes() {
-        let content = change.value().trim();
-        if content.is_empty() {
+        let content = change.value().trim_end_matches(['\n', '\r']);
+        if content.trim().is_empty() {
             continue;
         }
 
@@ -248,11 +248,14 @@ fn generate_diff_lines_from_strings(old: &str, new: &str) -> Vec<ParsedDiffLine>
         }
     }
 
+    strip_common_indent(&mut lines);
     lines
 }
 
 pub(super) fn collect_diff_lines(content: &str) -> Vec<ParsedDiffLine> {
-    content.lines().filter_map(parse_diff_line).collect()
+    let mut lines: Vec<ParsedDiffLine> = content.lines().filter_map(parse_diff_line).collect();
+    strip_common_indent(&mut lines);
+    lines
 }
 
 fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
@@ -276,7 +279,7 @@ fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
             return Some(ParsedDiffLine {
                 kind: DiffLineKind::Del,
                 prefix: prefix.to_string(),
-                content: trim_diff_content(content),
+                content: content.to_string(),
             });
         }
     }
@@ -286,7 +289,7 @@ fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
             return Some(ParsedDiffLine {
                 kind: DiffLineKind::Add,
                 prefix: prefix.to_string(),
-                content: trim_diff_content(content),
+                content: content.to_string(),
             });
         }
     }
@@ -295,22 +298,66 @@ fn parse_diff_line(raw_line: &str) -> Option<ParsedDiffLine> {
         return Some(ParsedDiffLine {
             kind: DiffLineKind::Add,
             prefix: "+".to_string(),
-            content: trim_diff_content(rest),
+            content: rest.trim_end().to_string(),
         });
     }
     if let Some(rest) = raw_line.strip_prefix('-') {
         return Some(ParsedDiffLine {
             kind: DiffLineKind::Del,
             prefix: "-".to_string(),
-            content: trim_diff_content(rest),
+            content: rest.trim_end().to_string(),
         });
     }
 
     None
 }
 
-fn trim_diff_content(content: &str) -> String {
-    content.trim_start_matches([' ', '\t']).to_string()
+const TAB_WIDTH: usize = 4;
+
+/// Visual width of a line's leading whitespace, with tabs expanded, so that
+/// mixed tab/space indentation does not yield a bogus minimum.
+fn indent_width(content: &str) -> usize {
+    let mut width = 0usize;
+    for ch in content.chars() {
+        match ch {
+            ' ' => width += 1,
+            '\t' => width += TAB_WIDTH - (width % TAB_WIDTH),
+            _ => break,
+        }
+    }
+    width
+}
+
+/// Re-indent a line to `width` columns fewer than it had, normalizing leading
+/// tabs to spaces so indentation renders predictably in the TUI.
+fn strip_indent(content: &str, width: usize) -> String {
+    let original = indent_width(content);
+    let rest = content.trim_start_matches([' ', '\t']);
+    let remaining = original.saturating_sub(width);
+    let mut out = " ".repeat(remaining);
+    out.push_str(rest);
+    out
+}
+
+/// Strip the indentation common to every non-blank line, so a uniformly
+/// indented hunk renders flush left while relative nesting is preserved.
+fn strip_common_indent(lines: &mut [ParsedDiffLine]) {
+    let common = lines
+        .iter()
+        .filter(|line| !line.content.trim().is_empty())
+        .map(|line| indent_width(&line.content))
+        .min()
+        .unwrap_or(0);
+    if common == 0 {
+        return;
+    }
+    for line in lines.iter_mut() {
+        if line.content.trim().is_empty() {
+            line.content = String::new();
+        } else {
+            line.content = strip_indent(&line.content, common);
+        }
+    }
 }
 
 pub(super) fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) -> Span<'static> {
@@ -338,8 +385,8 @@ pub(super) fn tint_span_with_diff_color(span: Span<'static>, diff_color: Color) 
 #[cfg(test)]
 mod tests {
     use super::{
-        DiffLineKind, diff_change_counts_for_tool, diff_counts_from_apply_patch_input,
-        generate_diff_lines_from_strings,
+        DiffLineKind, collect_diff_lines, diff_change_counts_for_tool,
+        diff_counts_from_apply_patch_input, generate_diff_lines_from_strings,
     };
     use crate::message::ToolCall;
     use serde_json::json;
@@ -400,5 +447,48 @@ mod tests {
         assert_eq!(lines[1].prefix, "3+ ");
         assert_eq!(lines[2].kind, DiffLineKind::Add);
         assert_eq!(lines[2].prefix, "4+ ");
+    }
+
+    #[test]
+    fn uniformly_indented_hunk_renders_flush_left() {
+        let lines = generate_diff_lines_from_strings("", "        one\n        two\n");
+
+        assert_eq!(lines[0].content, "one");
+        assert_eq!(lines[1].content, "two");
+    }
+
+    #[test]
+    fn nested_indentation_keeps_relative_structure() {
+        let lines =
+            generate_diff_lines_from_strings("", "        if x {\n            body();\n        }\n");
+
+        assert_eq!(lines[0].content, "if x {");
+        assert_eq!(lines[1].content, "    body();");
+        assert_eq!(lines[2].content, "}");
+    }
+
+    #[test]
+    fn tab_indentation_is_measured_by_visual_width() {
+        let lines = collect_diff_lines("+\tif x {\n+\t\tbody();\n+\t}\n");
+
+        assert_eq!(lines[0].content, "if x {");
+        assert_eq!(lines[1].content, "    body();");
+        assert_eq!(lines[2].content, "}");
+    }
+
+    #[test]
+    fn numbered_prefix_lines_keep_relative_indentation() {
+        let lines = collect_diff_lines("12-     outer\n13+         inner\n");
+
+        assert_eq!(lines[0].content, "outer");
+        assert_eq!(lines[1].content, "    inner");
+    }
+
+    #[test]
+    fn unindented_hunk_is_unchanged() {
+        let lines = generate_diff_lines_from_strings("", "one\n    two\n");
+
+        assert_eq!(lines[0].content, "one");
+        assert_eq!(lines[1].content, "    two");
     }
 }
