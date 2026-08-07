@@ -14,7 +14,12 @@ ReadTool schema is defined and tell me which parameters it advertises."*
 | | bash calls per run | tools actually used |
 |---|---|---|
 | Before | 2, 2, 3 | `bash`, `agentgrep` |
-| After | 0, 0, 0, 0, 0 | `grep`, `glob`, `read`, `ls`, `batch` |
+| After | 0 across 20 runs | `grep`, `glob`, `read`, `ls`, `batch` |
+
+The last 5 of those runs were measured on the final binary, after the alias fix
+in `dddfab2ea` changed which tool a `grep` call actually reaches. Earlier runs
+were still zero-bash but were routing through `agentgrep`, so they measured the
+prompt and description work rather than the adapters.
 
 Reproduce by building a binary at `5b3924637~1` and one at HEAD, then running
 each against its own socket:
