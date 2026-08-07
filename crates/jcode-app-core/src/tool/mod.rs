@@ -29,7 +29,6 @@ mod ls;
 pub mod mcp;
 mod memory;
 mod open;
-mod patch;
 mod read;
 pub mod selfdev;
 pub(crate) mod serde_coerce;
@@ -207,7 +206,6 @@ impl Registry {
                 side_panel::SidePanelTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "edit", edit::EditTool::new);
-            Self::insert_tool_timed(&mut m, &mut timings, "patch", patch::PatchTool::new);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,

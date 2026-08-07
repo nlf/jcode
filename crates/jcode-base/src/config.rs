@@ -643,7 +643,6 @@ impl ToolConfig {
                     "write",
                     "edit",
                     "apply_patch",
-                    "patch",
                     "agentgrep",
                     "ls",
                     "batch",
@@ -660,7 +659,6 @@ impl ToolConfig {
                     "write",
                     "edit",
                     "apply_patch",
-                    "patch",
                     "agentgrep",
                     "ls",
                 ]

@@ -114,7 +114,7 @@ async fn main() -> Result<()> {
         }),
     });
     cases.push(ToolCase {
-        name: "patch",
+        name: "edit",
         label: "patch sample.txt",
         input: json!({"patch_text": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1,2 +1,3 @@\n alpha2\n beta1\n+gamma\n"}),
     });

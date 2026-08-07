@@ -1088,7 +1088,6 @@ fn to_claude_tool_name(name: &str) -> String {
         "read" => "Read",
         "write" => "Write",
         "edit" => "Edit",
-        "patch" => "Patch",
         "apply_patch" => "ApplyPatch",
         "glob" => "Glob",
         "grep" => "Grep",
@@ -1120,7 +1119,10 @@ fn to_internal_tool_name(name: &str) -> String {
         // subset of edit, so route it to edit rather than to a name the
         // registry cannot resolve, which would fail as "Unknown tool".
         "MultiEdit" => "edit",
-        "Patch" => "patch",
+        // The patch tool was removed as superseded by edit's hashline mode.
+        // Route the CLI's name to a tool that exists rather than one the
+        // registry cannot resolve, which would fail as "Unknown tool".
+        "Patch" => "edit",
         "ApplyPatch" => "apply_patch",
         "Glob" => "glob",
         "Grep" => "grep",
