@@ -498,3 +498,40 @@ fn heredoc_bodies_are_data_not_commands() {
         "the command opening a heredoc is still assessed"
     );
 }
+
+/// A discard sink keeps its closing punctuation when the redirect ends a
+/// command substitution or a list, and must still be recognised.
+///
+/// Regression: `$(cmd 2>/dev/null)` tokenizes the redirect target as
+/// `/dev/null)`, which failed the exact-match sink check, fell through to the
+/// device-node rule because it still starts with `/dev`, and was refused as
+/// Catastrophic. Assigning command output while discarding stderr is
+/// completely ordinary.
+#[test]
+fn discard_sinks_are_recognised_with_trailing_punctuation() {
+    let ctx = ctx();
+    let mut noisy = Vec::new();
+    for command in [
+        "x=$(cmd 2>/dev/null)",
+        "echo $(date 2>/dev/null)",
+        "for f in $(ls 2>/dev/null); do echo $f; done",
+        "if grep -q x file 2>/dev/null; then echo yes; fi",
+    ] {
+        let level = assess(command, &ctx).level;
+        if !level.runs_immediately() {
+            noisy.push(format!("{command} -> {level:?}"));
+        }
+    }
+    assert!(
+        noisy.is_empty(),
+        "gate refused ordinary command substitution: {noisy:#?}"
+    );
+
+    // Trimming punctuation must not turn a real device node into a sink.
+    for command in ["cat x > /dev/sda", "rm /dev/null", "cat x > /dev/nullX"] {
+        assert!(
+            !assess(command, &ctx).level.runs_immediately(),
+            "must still be refused: {command}"
+        );
+    }
+}

@@ -275,9 +275,15 @@ fn is_temp_path(path: &Path) -> bool {
 /// nothing, but `rm /dev/null` removes a device node and is not covered here.
 /// Matched exactly, so a hypothetical `/dev/nullX` stays a device node.
 pub fn is_discard_sink(path: &Path) -> bool {
+    // A redirect at the end of a command substitution or a list keeps its
+    // closing punctuation as part of the token (`$(cmd 2>/dev/null)` yields
+    // `/dev/null)`), so an exact match alone reported those as writes to a
+    // device node under `/dev` and refused ordinary commands.
+    let text = path.to_string_lossy();
+    let trimmed = text.trim_end_matches([')', ';', '`', '"', '\'']);
     ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]
         .iter()
-        .any(|sink| path == Path::new(sink))
+        .any(|sink| trimmed == *sink)
 }
 
 #[cfg(test)]
