@@ -8,5 +8,10 @@
 //! second without compiling the agent, and so it carries no rebase surface.
 
 pub mod format;
+pub mod snapshots;
 
-pub use format::{compute_file_hash, format_hashline_header, format_numbered_line, FILE_HASH_LENGTH};
+pub use format::{
+    compute_file_hash, format_hashline_header, format_numbered_line, format_numbered_lines,
+    FILE_HASH_LENGTH,
+};
+pub use snapshots::{Snapshot, SnapshotStore, SnapshotStoreOptions};
