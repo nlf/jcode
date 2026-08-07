@@ -1870,3 +1870,105 @@ end to end.
 **Next, in order:** wire `read` to mint tags and record provenance; wire `edit`
 to accept hashline as a second addressing mode alongside string matching; then
 measure the failed-edit rate that Phase 5's gate depends on.
+
+---
+
+# The reviewer's integration claims, independently verified
+
+Checked 2026-08-07 against the source. The reviewer found these; I had not
+verified them myself, and the plan was stating them as fact. Given this
+session's error rate, that was worth closing before anyone builds on them.
+
+**Four confirmed exactly, one refuted, one mischaracterized.** The refutation
+matters most, because it was the claim that made the list sound alarming.
+
+## Confirmed
+
+| claim | verified |
+|---|---|
+| `jcode-desktop2/src/edits.rs` string-scans raw JSON for `"file_path"` | **yes** — `files_in()` literally `find`s the key in the serialized input and walks quotes by hand |
+| `jcode-tui/src/tui/remote_diff.rs` snapshots by `file_path` on edit/write/multiedit | **yes** — reads `input.get("file_path")`, then `read_to_string` before the edit |
+| `catchup.rs` builds resume summaries from `file_path` | **yes** — "Updated `{path}`", falling back to "Edited files" |
+| `agent/inline_tail.rs` labels the status line from `file_path` | **yes** — a per-tool field map |
+
+All four degrade to a generic label rather than breaking, **except desktop2**,
+which builds its edit-card file list from the scan and would show an edit card
+with no files.
+
+## Refuted: `safety.rs` does not fall to a default tier
+
+The claim was that a renamed or added tool "falls to some default tier",
+implying a security hole. **It is the opposite.** `SafetySystem::classify`
+(`jcode-base/src/safety.rs:177`) is:
+
+```rust
+if AUTO_ALLOWED.iter().any(|&a| a == lower) {
+    ActionTier::AutoAllowed
+} else {
+    ActionTier::RequiresPermission
+}
+```
+
+`AUTO_ALLOWED` is eleven read-only names (`read`, `glob`, `grep`, `ls`,
+`memory`, `todo`, the searches). **Anything unrecognized requires permission**,
+which is failing closed. A new `hashline_edit` tool would be gated by default,
+and the cited line 571 is a *test* asserting exactly that, not the
+implementation.
+
+So this is a correctness property working as designed, not a risk. The real
+(small) consequence is the inverse: if we ever want a new *read-only* tool
+auto-allowed, it must be added to that list deliberately.
+
+## Mischaracterized: productivity `scan.rs` is name-aliasing
+
+`scan.rs:351` is `canonical_tool_name`, mapping legacy names (`file_read` →
+`read`). It does not touch `file_path`. It belongs with the telemetry-alias
+concern, not this list.
+
+## The renderer claim is confirmed, and the fix is cleaner than proposed
+
+`jcode-tui-tool-display/src/lib.rs` exposes six functions, all pure string and
+name helpers (`canonical_tool_name`, `is_edit_tool_name`,
+`truncate_middle_display`, …). No session, no store, no way to reach one.
+
+But the actual diff rendering is in **`jcode-tui/src/tui/ui_diff.rs:160-215`**,
+which switches on the tool name and reads the *arguments*:
+
+| tool | source of the diff |
+|---|---|
+| `edit` | `old_string` / `new_string` |
+| `multiedit` | each edit's `old_string` / `new_string` |
+| `write` | `""` → `content` |
+| `patch`, `apply_patch` | `patch_text`, parsed |
+
+**Every one reconstructs the diff from arguments alone**, which is exactly why
+hashline breaks it: a hashline patch contains the replacement but not what it
+replaces, so there is nothing to diff against.
+
+**The cleaner fix.** Rather than threading a snapshot store into the TUI (the
+reviewer's suggestion, and a real cross-crate change), note that `prepare()`
+already computes `before` and `after`. Have the edit tool put the rendered diff
+— or the before/after pair — in `ToolOutput::metadata`, and let `ui_diff.rs`
+read it there when present. The renderer then needs **no** store handle, no new
+dependency, and the same path serves remote mode, where the TUI may not even be
+on the machine that holds the store.
+
+That also fixes a pre-existing wart: `remote_diff.rs` re-reads the file from
+disk to reconstruct the "before", which races with any concurrent write. Taking
+it from the tool result is strictly more correct.
+
+## Net effect on the plan
+
+The integration is **less** hazardous than the review made it sound:
+
+- `safety.rs` is a non-issue, and a good one.
+- The renderer is a real dependency but has a cheaper fix than a store handle.
+- Three of the four `file_path` consumers degrade gracefully; **desktop2 is the
+  one that needs work**, and only if hashline lands on a tool whose args it
+  scans.
+
+The single mitigation that covers most of it stands: **if hashline rides on a
+separate tool name rather than replacing `edit`'s schema, every one of these
+consumers keeps working unchanged**, because `edit` keeps its `file_path` and
+`old_string`/`new_string` shape. That is now a second independent argument for
+the sibling-tool option, alongside the OAuth curated schemas.
