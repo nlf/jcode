@@ -263,6 +263,11 @@ impl Tool for ReadTool {
         let mut output = String::with_capacity(range.limit.min(2000) * 80);
         let mut total_lines = 0usize;
         let mut truncated_line_count = 0usize;
+        // Which lines this call actually put in front of the model. `edit`'s
+        // seen-line guard is checked against these, so a line clipped at
+        // MAX_LINE_LEN still counts: the model saw the line and its number,
+        // which is what anchoring an edit to it requires.
+        let mut seen_lines: Vec<usize> = Vec::new();
         let end_exclusive = range.offset + range.limit;
         {
             use std::fmt::Write;
@@ -276,6 +281,7 @@ impl Tool for ReadTool {
                     continue;
                 }
                 let line_num = i + 1;
+                seen_lines.push(line_num);
                 if line.len() > MAX_LINE_LEN {
                     truncated_line_count += 1;
                     let _ = writeln!(
@@ -336,7 +342,20 @@ impl Tool for ReadTool {
         if output.is_empty() {
             Ok(ToolOutput::new("(empty file)"))
         } else {
-            Ok(ToolOutput::new(output))
+            // Record what was shown and stamp the output with `[path#TAG]`.
+            // The tag is a hash of the whole file, not of the shown range, so
+            // `edit` can tell "you are patching the file you read" apart from
+            // "the file changed underneath you" even for a partial read.
+            //
+            // Keyed by the path as given rather than the resolved one, because
+            // that is the string the model will send back in a patch header.
+            let store = super::hashline_store::for_session(&ctx.session_id);
+            let tag = store.record(&params.file_path, &content, Some(&seen_lines));
+            Ok(ToolOutput::new(format!(
+                "{}\n{}",
+                jcode_hashline::format_hashline_header(&params.file_path, &tag),
+                output
+            )))
         }
     }
 }

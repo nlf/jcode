@@ -17,6 +17,7 @@ mod edit;
 mod gmail;
 mod goal;
 mod grep_glob;
+pub mod hashline_store;
 
 #[cfg(test)]
 pub(crate) use bash::bash_tool_descriptions_for_test;

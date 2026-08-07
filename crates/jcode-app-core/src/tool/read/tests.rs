@@ -726,3 +726,145 @@ async fn ls_reports_the_same_context_as_read() {
         "ls resolves paths the same way and should explain itself the same way: {message}"
     );
 }
+
+/// A context with its own session, so snapshot provenance from one test cannot
+/// resolve in another. `make_ctx` deliberately shares one session id, which is
+/// fine for tests that never touch the store.
+fn make_ctx_in_session(working_dir: std::path::PathBuf, session_id: &str) -> ToolContext {
+    ToolContext {
+        session_id: session_id.to_string(),
+        ..make_ctx(working_dir)
+    }
+}
+
+/// The header is the whole point of the read side: without it the model has no
+/// tag to send back, and every hashline edit fails as unanchored.
+#[tokio::test]
+async fn read_stamps_its_output_with_a_hashline_header() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\n").expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "read-header"),
+        )
+        .await
+        .expect("read");
+
+    let first = output.output.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with("[f.txt#") && first.ends_with(']'),
+        "expected a [path#TAG] header, got {first:?}"
+    );
+}
+
+/// The tag has to resolve in the session's store, or `edit` cannot turn it back
+/// into the content it was minted from. A header that looks right but resolves
+/// to nothing would pass the test above and fail every real edit.
+#[tokio::test]
+async fn the_minted_tag_resolves_to_the_content_that_was_read() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let text = "one\ntwo\n";
+    std::fs::write(temp.path().join("f.txt"), text).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "read-resolves"),
+        )
+        .await
+        .expect("read");
+
+    let header = output.output.lines().next().unwrap_or_default();
+    let tag = header
+        .trim_start_matches("[f.txt#")
+        .trim_end_matches(']')
+        .to_string();
+    let snapshot = crate::tool::hashline_store::for_session("read-resolves")
+        .by_hash("f.txt", &tag)
+        .expect("the tag read just minted did not resolve in its own session");
+
+    assert_eq!(snapshot.text, text);
+}
+
+/// A partial read must record only the lines it showed. If it recorded them all,
+/// the seen-line guard would let the model edit a line it never saw, which is
+/// the exact failure the guard exists to prevent.
+#[tokio::test]
+async fn a_partial_read_records_only_the_lines_it_displayed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\nthree\nfour\n").expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt", "start_line": 2, "end_line": 3 }),
+            make_ctx_in_session(temp.path().to_path_buf(), "read-partial"),
+        )
+        .await
+        .expect("read");
+
+    let header = output.output.lines().next().unwrap_or_default();
+    let tag = header
+        .trim_start_matches("[f.txt#")
+        .trim_end_matches(']')
+        .to_string();
+    let snapshot = crate::tool::hashline_store::for_session("read-partial")
+        .by_hash("f.txt", &tag)
+        .expect("tag resolves");
+
+    assert_eq!(
+        snapshot.seen_lines,
+        Some([2usize, 3].into_iter().collect()),
+        "a partial read should record exactly the displayed lines"
+    );
+}
+
+/// The tag hashes the whole file even when only part was shown. Hashing the
+/// shown range instead would make two different reads of one unchanged file
+/// disagree, and `edit` would report a spurious concurrent modification.
+#[tokio::test]
+async fn the_tag_covers_the_whole_file_not_the_displayed_range() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\nthree\nfour\n").expect("write");
+    let dir = temp.path().to_path_buf();
+
+    let tag_of = |args: serde_json::Value| {
+        let dir = dir.clone();
+        async move {
+            let output = ReadTool::new()
+                .execute(args, make_ctx_in_session(dir, "read-whole-file"))
+                .await
+                .expect("read");
+            let header = output.output.lines().next().unwrap_or_default().to_string();
+            header
+                .trim_start_matches("[f.txt#")
+                .trim_end_matches(']')
+                .to_string()
+        }
+    };
+
+    assert_eq!(
+        tag_of(json!({ "file_path": "f.txt" })).await,
+        tag_of(json!({ "file_path": "f.txt", "start_line": 2, "end_line": 3 })).await,
+        "reads of one unchanged file produced different tags"
+    );
+}
+
+/// An empty file returns early, before the header is minted. Worth pinning: a
+/// caller that assumes line one is always a header would misparse this.
+#[tokio::test]
+async fn an_empty_file_returns_its_own_message_without_a_header() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("empty.txt"), "").expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "empty.txt" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "read-empty"),
+        )
+        .await
+        .expect("read");
+
+    assert_eq!(output.output, "(empty file)");
+}
