@@ -3392,6 +3392,7 @@ dependencies = [
  "jcode-message-types",
  "jcode-notify-email",
  "jcode-overnight-core",
+ "jcode-patch",
  "jcode-pdf",
  "jcode-plan",
  "jcode-provider-core",
@@ -4126,6 +4127,14 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "toml",
+]
+
+[[package]]
+name = "jcode-read"
+version = "0.1.0"
+dependencies = [
+ "jcode-search",
+ "tempfile",
 ]
 
 [[package]]
