@@ -1672,7 +1672,8 @@ pub(crate) mod selection_highlight;
 #[path = "ui/url.rs"]
 mod url_regex_support;
 use self::copy_selection::{
-    copy_point_from_snapshot, copy_selection_text_from_raw_lines, link_target_from_snapshot,
+    copy_point_from_snapshot, copy_selection_text_from_raw_lines, link_span_from_snapshot,
+    link_target_from_snapshot,
 };
 use self::display_width::{clamp_display_col, display_col_slice, line_display_width};
 use self::draw_recovery::render_recovered_panic_frame;
@@ -2687,20 +2688,28 @@ pub(crate) fn hover_target_from_screen(
     };
 
     // Links first: the mouse handler opens a URL before it expands the row
-    // around it, so hovering one must advertise the link, not the row.
+    // around it, so hovering one must advertise the link, not the row. Only
+    // the URL's own cells light up: highlighting the whole line would say the
+    // line is the target, when clicking anywhere else on it does something
+    // else entirely (or nothing).
     if point.pane != crate::tui::CopySelectionPane::Input
-        && let Some(_url) = link_target_from_snapshot(&snapshot, point)
+        && let Some((_url, start_col, end_col)) = link_span_from_snapshot(&snapshot, point)
     {
+        // The span is in wrapped-line display columns; shift it by this row's
+        // left margin (centered mode indents the text) to reach screen columns.
+        let left_margin = snapshot
+            .left_margins
+            .get(row.saturating_sub(area.y) as usize)
+            .copied()
+            .unwrap_or(0);
+        let origin = area.x.saturating_add(left_margin);
+        let right_limit = area.x.saturating_add(area.width);
         return Some(HoverTarget {
             kind: HoverKind::Link,
             top_row: row,
             bottom_row: row.saturating_add(1),
-            // A link is a run of cells inside a line rather than the whole
-            // line, but its exact extent is not reported by the hit-test.
-            // Highlighting the line it lives on is honest about the row and
-            // still points at the right place.
-            left_col: area.x,
-            right_col: region_right(point.abs_line, point.abs_line + 1),
+            left_col: origin.saturating_add(start_col as u16).min(right_limit),
+            right_col: origin.saturating_add(end_col as u16).min(right_limit),
         });
     }
 

@@ -2088,3 +2088,79 @@ fn test_hover_highlight_does_not_bleed_into_the_side_panel() {
     crate::tui::hover::clear_hover();
 }
 
+
+/// Hovering a URL must brighten the URL itself, not the whole line. A link
+/// sits inside prose, and the prose around it does something else on click, so
+/// a line-wide highlight names the wrong target.
+#[test]
+fn test_hovering_a_link_highlights_only_the_url() {
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "assistant".to_string(),
+        content: "prefix https://example.com/docs suffix".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+
+    let snap = render_and_snap(&app, &mut terminal);
+    let (row, text) = snap
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("example.com/docs"))
+        .map(|(i, l)| (i as u16, l.to_string()))
+        .expect("expected the link line to render");
+
+    let url_start = text.find("https://").expect("url start") as u16;
+    let url_end = url_start + "https://example.com/docs".len() as u16;
+
+    let scan_width = (text.trim_end().len() as u16).min(terminal.backend().buffer().area().width);
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw");
+    let cold: Vec<_> = (0..scan_width)
+        .map(|c| terminal.backend().buffer()[(c, row)].style().fg)
+        .collect();
+
+    // Hover the middle of the URL.
+    assert!(
+        app.update_hover_at(url_start + 4, row),
+        "hovering a URL must register a hover target"
+    );
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw");
+    let hot: Vec<_> = (0..scan_width)
+        .map(|c| terminal.backend().buffer()[(c, row)].style().fg)
+        .collect();
+
+    let mut brightened_inside = 0;
+    for (col, (cold_c, hot_c)) in cold.iter().zip(hot.iter()).enumerate() {
+        let col = col as u16;
+        let inside = col >= url_start && col < url_end;
+        if inside {
+            if cold_c != hot_c {
+                brightened_inside += 1;
+            }
+        } else {
+            assert_eq!(
+                cold_c, hot_c,
+                "cell at column {col} is outside the URL ({url_start}..{url_end}) \
+                 and must not change: line was {text:?}"
+            );
+        }
+    }
+    assert!(
+        brightened_inside > 0,
+        "the URL's own cells must brighten: line was {text:?}"
+    );
+
+    crate::tui::hover::clear_hover();
+}
+

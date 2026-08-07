@@ -1,7 +1,7 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::display_width::{clamp_display_col, display_col_slice, line_display_width};
-use super::url_regex_support::link_target_for_display_column;
+use super::url_regex_support::{link_span_for_display_column, link_target_for_display_column};
 use super::{CopyViewportData, CopyViewportSnapshot};
 
 pub(super) fn copy_point_from_snapshot(
@@ -243,6 +243,41 @@ pub(super) fn link_target_from_snapshot(
     let raw_point = raw_selection_point(snapshot, point)?;
     let raw_text = snapshot.raw_plain_line(raw_point.raw_line)?;
     link_target_for_display_column(raw_text, raw_point.column)
+}
+
+/// The URL under a point plus the columns it occupies in the wrapped line,
+/// so hover highlighting can brighten exactly the URL rather than its row.
+///
+/// A wrapped line shows one segment of a raw line, so the URL raw columns are
+/// translated back through the same WrappedLineMap the hit-test used and then
+/// clipped to the visible segment. A URL split across a wrap boundary therefore
+/// highlights just the part on this row, which is the part the user can see.
+pub(super) fn link_span_from_snapshot(
+    snapshot: &CopyViewportSnapshot,
+    point: crate::tui::CopySelectionPoint,
+) -> Option<(String, usize, usize)> {
+    let raw_point = raw_selection_point(snapshot, point)?;
+    let raw_text = snapshot.raw_plain_line(raw_point.raw_line)?;
+    let span = link_span_for_display_column(raw_text, raw_point.column)?;
+
+    let map = snapshot.wrapped_line_map(point.abs_line)?;
+    let wrapped_text = snapshot.wrapped_plain_line(point.abs_line)?;
+    let display_copy_start = snapshot
+        .wrapped_copy_offset(point.abs_line)
+        .unwrap_or(0)
+        .min(wrapped_text.width());
+
+    // Invert raw_selection_point: raw column -> column within this segment ->
+    // display column on the wrapped line.
+    let to_wrapped = |raw_col: usize| -> usize {
+        raw_col
+            .saturating_sub(map.start_col)
+            .min(map.end_col.saturating_sub(map.start_col))
+            + display_copy_start
+    };
+    let start = to_wrapped(span.start_col.max(map.start_col));
+    let end = to_wrapped(span.end_col.min(map.end_col));
+    (end > start).then_some((span.url, start, end))
 }
 
 fn raw_selection_point(

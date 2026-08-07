@@ -33,6 +33,25 @@ pub(crate) fn trim_url_candidate(candidate: &str) -> &str {
 }
 
 pub(crate) fn link_target_for_display_column(raw_text: &str, column: usize) -> Option<String> {
+    link_span_for_display_column(raw_text, column).map(|span| span.url)
+}
+
+/// A URL under a column, together with the display columns it occupies.
+///
+/// The columns are in the same raw-line display space as `column`, so a caller
+/// can map them back to the screen. Hover highlighting needs the extent, not
+/// just the target: brightening the whole line to advertise one URL tells the
+/// user the wrong thing about what they are about to click.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkSpan {
+    pub url: String,
+    /// First display column of the URL, inclusive.
+    pub start_col: usize,
+    /// One past the last display column of the URL.
+    pub end_col: usize,
+}
+
+pub(crate) fn link_span_for_display_column(raw_text: &str, column: usize) -> Option<LinkSpan> {
     for mat in url_regex()?.find_iter(raw_text) {
         let matched = &raw_text[mat.start()..mat.end()];
         let trimmed = trim_url_candidate(matched);
@@ -43,7 +62,11 @@ pub(crate) fn link_target_for_display_column(raw_text: &str, column: usize) -> O
         let start_col = raw_text[..mat.start()].width();
         let end_col = start_col + trimmed.width();
         if column >= start_col && column < end_col && ::url::Url::parse(trimmed).is_ok() {
-            return Some(trimmed.to_string());
+            return Some(LinkSpan {
+                url: trimmed.to_string(),
+                start_col,
+                end_col,
+            });
         }
     }
 
