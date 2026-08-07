@@ -228,17 +228,11 @@ impl Tool for ReadTool {
 
         // Check if file exists
         if !path.exists() {
-            // Try to find similar files
-            let suggestions = find_similar_files(&path);
-            if suggestions.is_empty() {
-                return Err(anyhow::anyhow!("File not found: {}", params.file_path));
-            } else {
-                return Err(anyhow::anyhow!(
-                    "File not found: {}\nDid you mean: {}",
-                    params.file_path,
-                    suggestions.join(", ")
-                ));
-            }
+            return Err(anyhow::anyhow!(file_not_found_message(
+                &params.file_path,
+                &path,
+                ctx.working_dir.as_deref(),
+            )));
         }
 
         // Check for image files and display in terminal if supported
@@ -379,6 +373,80 @@ fn is_binary_file(path: &Path) -> bool {
     }
 
     false
+}
+
+/// Build the not-found error, adding whatever context is actually useful.
+///
+/// The bare "File not found: <path>" this replaced stated the one thing the
+/// model already knew and none of what it needed. Three additions, each only
+/// when it applies, because an unconditional note is noise that costs context on
+/// every failed read:
+///
+/// 1. **The working directory, only for a relative path.** That is the hidden
+///    half of the resolution, and it is invisible to the model. For an absolute
+///    path it played no part, so saying it would mislead.
+/// 2. **A parent-directory suggestion**, when the file exists one level up or
+///    down from where it was looked for. This is the common mistake of dropping
+///    or duplicating a directory level, and it is a higher-confidence guess than
+///    a name match, so it is offered first.
+/// 3. **Fuzzy filename matches** in the target directory, as before.
+fn file_not_found_message(requested: &str, resolved: &Path, working_dir: Option<&Path>) -> String {
+    let mut message = format!("File not found: {requested}");
+
+    // Only meaningful when the path was relative: an absolute path did not
+    // consult the working directory at all.
+    if Path::new(requested).is_relative()
+        && let Some(cwd) = working_dir
+    {
+        message.push_str(&format!(
+            "\nResolved to {} against the working directory {}.",
+            resolved.display(),
+            cwd.display()
+        ));
+    }
+
+    if let Some(hit) = find_path_near_working_dir(resolved, working_dir) {
+        message.push_str(&format!("\nDid you mean: {hit}"));
+        return message;
+    }
+
+    let suggestions = find_similar_files(resolved);
+    if !suggestions.is_empty() {
+        message.push_str(&format!("\nDid you mean: {}", suggestions.join(", ")));
+    }
+
+    message
+}
+
+/// Look for the same filename one directory level away, which catches a path
+/// that dropped or duplicated a level.
+///
+/// Two directions, both real mistakes. Given a working directory `/w/repo` and a
+/// miss at `/w/repo/src/main.rs`: the file may sit at `/w/repo/main.rs` (a level
+/// too many), or the request may have been rooted a level too high, so
+/// `/w/main.rs` is checked as well.
+///
+/// Deliberately narrow. It only ever returns a path that exists, so a suggestion
+/// is never invented, and it does not walk the tree.
+fn find_path_near_working_dir(resolved: &Path, working_dir: Option<&Path>) -> Option<String> {
+    let file_name = resolved.file_name()?;
+    let parent = resolved.parent()?;
+
+    let mut candidates = Vec::new();
+    if let Some(grandparent) = parent.parent() {
+        candidates.push(grandparent.join(file_name));
+    }
+    if let Some(cwd) = working_dir {
+        candidates.push(cwd.join(file_name));
+        if let Some(cwd_parent) = cwd.parent() {
+            candidates.push(cwd_parent.join(file_name));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| candidate != resolved && candidate.is_file())
+        .map(|candidate| candidate.display().to_string())
 }
 
 fn find_similar_files(path: &Path) -> Vec<String> {

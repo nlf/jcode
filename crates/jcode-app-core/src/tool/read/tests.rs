@@ -446,3 +446,132 @@ async fn read_tool_prefers_end_line_over_limit() {
         output.output
     );
 }
+
+// --- file-not-found message -------------------------------------------------
+//
+// The old message was "File not found: <path>" and nothing else, which stated
+// the one thing the caller already knew. These pin what was added, and equally
+// that it is not added when it would be noise or a guess.
+
+#[test]
+fn a_relative_miss_reports_what_it_resolved_against() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    let resolved = cwd.join("missing.txt");
+
+    let message = file_not_found_message("missing.txt", &resolved, Some(cwd));
+
+    assert!(message.contains("File not found: missing.txt"), "{message}");
+    assert!(
+        message.contains("working directory"),
+        "a relative miss must say what it resolved against: {message}"
+    );
+    assert!(
+        message.contains(&cwd.display().to_string()),
+        "the working directory itself must appear: {message}"
+    );
+}
+
+/// An absolute path never consulted the working directory, so naming it would
+/// point at something that played no part in the failure.
+#[test]
+fn an_absolute_miss_does_not_mention_the_working_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    let absolute = cwd.join("nope").join("missing.txt");
+
+    let message = file_not_found_message(&absolute.display().to_string(), &absolute, Some(cwd));
+
+    assert!(
+        !message.contains("working directory"),
+        "an absolute path did not use the working directory: {message}"
+    );
+}
+
+/// The common "dropped or duplicated a directory level" mistake: the file is
+/// really at the root, but was asked for one level deeper.
+#[test]
+fn a_file_one_level_up_is_suggested() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    let real = cwd.join("config.toml");
+    std::fs::write(&real, "x = 1\n").expect("write");
+    std::fs::create_dir(cwd.join("src")).expect("mkdir");
+
+    let resolved = cwd.join("src").join("config.toml");
+    let message = file_not_found_message("src/config.toml", &resolved, Some(cwd));
+
+    assert!(
+        message.contains("Did you mean"),
+        "a file one level up should be offered: {message}"
+    );
+    assert!(
+        message.contains(&real.display().to_string()),
+        "the suggestion must be the real path: {message}"
+    );
+}
+
+/// Suggestions must only ever name a path that exists, so the model is never
+/// sent somewhere invented.
+#[test]
+fn no_suggestion_is_offered_when_nothing_is_near() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    let resolved = cwd.join("totally-absent-xyz.txt");
+
+    let message = file_not_found_message("totally-absent-xyz.txt", &resolved, Some(cwd));
+
+    assert!(
+        !message.contains("Did you mean"),
+        "nothing exists nearby, so nothing should be guessed: {message}"
+    );
+}
+
+#[tokio::test]
+async fn the_read_tool_surfaces_the_richer_message() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let real = temp.path().join("notes.md");
+    std::fs::write(&real, "hello\n").expect("write");
+    std::fs::create_dir(temp.path().join("docs")).expect("mkdir");
+
+    let tool = ReadTool::new();
+    let error = tool
+        .execute(
+            json!({ "file_path": "docs/notes.md" }),
+            make_ctx(temp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("reading a missing file must fail");
+    let message = error.to_string();
+
+    assert!(message.contains("File not found: docs/notes.md"), "{message}");
+    assert!(
+        message.contains("working directory"),
+        "the tool must carry the context, not just the helper: {message}"
+    );
+    assert!(
+        message.contains(&real.display().to_string()),
+        "and the suggestion: {message}"
+    );
+}
+
+/// With tilde expansion in `resolve_path`, `~/` reaching the read tool is a
+/// genuine miss rather than a resolution failure, so the message must not still
+/// be echoing an unexpanded `~` back as the resolved location.
+#[tokio::test]
+async fn a_tilde_path_is_expanded_before_the_existence_check() {
+    let tool = ReadTool::new();
+    let error = tool
+        .execute(
+            json!({ "file_path": "~/definitely-not-a-real-file-xyz123.txt" }),
+            make_ctx(std::path::PathBuf::from("/tmp")),
+        )
+        .await
+        .expect_err("a missing file must fail");
+    let message = error.to_string();
+
+    assert!(
+        !message.contains("/tmp/~"),
+        "the tilde must not have been joined onto the working directory: {message}"
+    );
+}
