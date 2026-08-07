@@ -167,3 +167,167 @@ fn descriptions_steer_away_from_bash() {
         );
     }
 }
+
+/// Everything above checks the JSON this adapter *emits*. That is not the same
+/// as checking what agentgrep *does* with it, and the difference is where the
+/// PDF page-splitting bug lived: unit tests that stop at the boundary of the
+/// code under change cannot see a false premise underneath it. These run the
+/// real tool against real files.
+#[cfg(test)]
+mod end_to_end {
+    use super::*;
+    use crate::tool::{ToolContext, ToolExecutionMode};
+
+    fn fixture_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("jcode-grep-e2e-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // `a.c` vs `abc` distinguishes a regex search from a literal one, which
+        // is the single most consequential translation detail here.
+        std::fs::write(
+            dir.join("one.rs"),
+            "fn alpha() {}\nliteral a.c here\nliteral abc here\nUPPERCASE_MARKER\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("two.rs"), "fn gamma() {}\nUPPERCASE_MARKER\n").unwrap();
+        std::fs::write(dir.join("three.txt"), "not rust\nUPPERCASE_MARKER\n").unwrap();
+        dir
+    }
+
+    fn ctx(dir: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: "grep-e2e".to_string(),
+            message_id: "grep-e2e".to_string(),
+            tool_call_id: "grep-e2e".to_string(),
+            working_dir: Some(dir.to_path_buf()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        }
+    }
+
+    async fn run_grep(dir: &std::path::Path, input: Value) -> String {
+        GrepTool::new()
+            .execute(input, ctx(dir))
+            .await
+            .expect("grep should succeed")
+            .output
+    }
+
+    /// Claude-Code's `Grep` is regex by default. If the adapter fails to pass
+    /// `regex: true` through, an alternation silently returns nothing and the
+    /// model concludes the code it is looking for does not exist.
+    #[tokio::test]
+    async fn patterns_are_treated_as_regex_not_literal_text() {
+        let dir = fixture_dir();
+
+        let alternation = run_grep(&dir, json!({"pattern": "fn (alpha|gamma)"})).await;
+        assert!(
+            alternation.contains("alpha") && alternation.contains("gamma"),
+            "an alternation must match both branches, got: {alternation}"
+        );
+
+        let anchored = run_grep(&dir, json!({"pattern": "^UPPERCASE"})).await;
+        assert!(
+            anchored.contains("UPPERCASE_MARKER"),
+            "an anchor must be honoured as regex, got: {anchored}"
+        );
+
+        // `.` must match any character, not just a literal period.
+        let wildcard = run_grep(&dir, json!({"pattern": "literal a.c here"})).await;
+        assert!(
+            wildcard.contains("abc here"),
+            "`.` must match any character, got: {wildcard}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn case_insensitive_flag_actually_matches_other_case() {
+        let dir = fixture_dir();
+        let out = run_grep(&dir, json!({"pattern": "uppercase_marker", "-i": true})).await;
+        assert!(
+            out.contains("UPPERCASE_MARKER"),
+            "-i must match across case, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare alternation with no other parameters, which is the shape a model
+    /// actually sends and the shape that returned zero matches in a live
+    /// session while the tests above passed.
+    #[tokio::test]
+    async fn bare_alternation_with_no_other_parameters_matches() {
+        let dir = fixture_dir();
+        let out = run_grep(&dir, json!({"pattern": "alpha|gamma"})).await;
+        assert!(
+            out.contains("alpha") && out.contains("gamma"),
+            "a bare alternation must match both branches, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn glob_and_type_filters_actually_narrow_the_search() {
+        let dir = fixture_dir();
+
+        let rust_only = run_grep(&dir, json!({"pattern": "UPPERCASE", "glob": "**/*.rs"})).await;
+        assert!(
+            !rust_only.contains("three.txt"),
+            "a glob filter must exclude non-matching files, got: {rust_only}"
+        );
+
+        let unfiltered = run_grep(&dir, json!({"pattern": "UPPERCASE"})).await;
+        assert!(
+            unfiltered.contains("three.txt"),
+            "without a filter the .txt file must be searched, got: {unfiltered}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `files_with_matches` must return paths without match excerpts.
+    #[tokio::test]
+    async fn output_mode_files_with_matches_returns_paths_not_excerpts() {
+        let dir = fixture_dir();
+        let out = run_grep(
+            &dir,
+            json!({"pattern": "UPPERCASE", "output_mode": "files_with_matches"}),
+        )
+        .await;
+        assert!(out.contains("one.rs"), "must still name the files: {out}");
+        assert!(
+            !out.contains("UPPERCASE_MARKER"),
+            "paths-only mode must not include match text, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn glob_tool_finds_files_by_pattern_and_by_name() {
+        let dir = fixture_dir();
+
+        let by_glob = GlobTool::new()
+            .execute(json!({"pattern": "**/*.rs"}), ctx(&dir))
+            .await
+            .expect("glob should succeed")
+            .output;
+        assert!(by_glob.contains("one.rs"), "{by_glob}");
+        assert!(
+            !by_glob.contains("three.txt"),
+            "a glob must exclude non-matching extensions: {by_glob}"
+        );
+
+        let by_name = GlobTool::new()
+            .execute(json!({"pattern": "three"}), ctx(&dir))
+            .await
+            .expect("glob should succeed")
+            .output;
+        assert!(
+            by_name.contains("three.txt"),
+            "bare words must rank file names: {by_name}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
