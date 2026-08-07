@@ -61,7 +61,7 @@ const SEGMENT_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "\n"];
 /// `rm -rf a && rm -rf b` yields two segments so both are assessed. Without
 /// this, chaining would be a trivial bypass.
 pub fn split_segments(command: &str) -> Vec<Vec<Token>> {
-    let tokens = tokenize(command);
+    let tokens = tokenize(&strip_heredoc_bodies(command));
     let mut segments = Vec::new();
     let mut current = Vec::new();
 
@@ -84,6 +84,111 @@ pub fn split_segments(command: &str) -> Vec<Vec<Token>> {
         segments.push(current);
     }
     segments
+}
+
+/// Remove heredoc bodies, which are data written to a file rather than
+/// commands to be run.
+///
+/// Without this, `cat > t.rs <<'EOF'` followed by a body that merely *mentions*
+/// `/dev/null` or `rm -rf` is assessed as if the body were executed, and
+/// writing a test fixture about the gate trips the gate. The body is kept when
+/// it is piped onward (`cat <<EOF | bash`), where it really does become
+/// commands.
+fn strip_heredoc_bodies(command: &str) -> String {
+    if !command.contains("<<") {
+        return command.to_string();
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut lines = command.lines();
+
+    while let Some(line) = lines.next() {
+        let delimiters = heredoc_delimiters(line);
+        out.push(strip_heredoc_operators(line));
+        if delimiters.is_empty() || line.contains('|') {
+            continue;
+        }
+        // Consume the body of each heredoc opened on this line, in order.
+        for delimiter in delimiters {
+            for body_line in lines.by_ref() {
+                if body_line.trim() == delimiter {
+                    break;
+                }
+            }
+        }
+    }
+
+    out.join("\n")
+}
+
+/// The delimiter words for every heredoc opened on one line, in order.
+fn heredoc_delimiters(line: &str) -> Vec<String> {
+    let bytes: Vec<char> = line.chars().collect();
+    let mut delimiters = Vec::new();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] != '<' || bytes[i + 1] != '<' {
+            i += 1;
+            continue;
+        }
+        // `<<<` is a herestring: one line of data, no body to consume.
+        if bytes.get(i + 2) == Some(&'<') {
+            i += 3;
+            continue;
+        }
+        let mut j = i + 2;
+        if bytes.get(j) == Some(&'-') {
+            j += 1;
+        }
+        while bytes.get(j).is_some_and(|c| *c == ' ' || *c == '\t') {
+            j += 1;
+        }
+        let mut word = String::new();
+        while let Some(&c) = bytes.get(j) {
+            match c {
+                '\'' | '"' | '\\' => {}
+                c if c.is_whitespace() || c == '|' || c == ';' || c == '&' || c == '>' => break,
+                c => word.push(c),
+            }
+            j += 1;
+        }
+        if !word.is_empty() {
+            delimiters.push(word);
+        }
+        i = j;
+    }
+    delimiters
+}
+
+/// Blank out `<<DELIM` operators so the delimiter word is not tokenized as a
+/// path operand of the command that opened the heredoc.
+fn strip_heredoc_operators(line: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' && chars.get(i + 1) == Some(&'<') && chars.get(i + 2) != Some(&'<') {
+            let mut j = i + 2;
+            if chars.get(j) == Some(&'-') {
+                j += 1;
+            }
+            while chars.get(j).is_some_and(|c| *c == ' ' || *c == '\t') {
+                j += 1;
+            }
+            while chars
+                .get(j)
+                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '|' | ';' | '&' | '>'))
+            {
+                j += 1;
+            }
+            out.push(' ');
+            i = j;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 /// Tokenize a command line, resolving quotes so `rm "$HOME"` and `rm $HOME`
@@ -169,12 +274,26 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                 tokens.push(op);
             }
             '>' => {
-                flush!();
                 // `>>` appends and does not truncate, so it is far less
                 // destructive; only a single `>` clobbers.
                 if chars.peek() == Some(&'>') {
+                    flush!();
                     chars.next();
+                } else if chars.peek() == Some(&'&') {
+                    // `2>&1` duplicates a file descriptor. Nothing is opened
+                    // and nothing is truncated, so neither the fd designator
+                    // before it nor the digits after it are paths.
+                    drop_fd_designator(&mut current, &mut has_content);
+                    flush!();
+                    chars.next();
+                    while chars.peek().is_some_and(|c| c.is_ascii_digit() || *c == '-') {
+                        chars.next();
+                    }
                 } else {
+                    // A leading `2` in `2>file` names a file descriptor, not a
+                    // path to be destroyed.
+                    drop_fd_designator(&mut current, &mut has_content);
+                    flush!();
                     if chars.peek() == Some(&'|') {
                         chars.next();
                     }
@@ -191,6 +310,15 @@ pub fn tokenize(command: &str) -> Vec<Token> {
     flush!();
 
     tokens
+}
+
+/// Discard a pending word when it is the file-descriptor number attached to a
+/// redirect (`2>`), so it is never mistaken for a target path.
+fn drop_fd_designator(current: &mut String, has_content: &mut bool) {
+    if *has_content && !current.is_empty() && current.chars().all(|c| c.is_ascii_digit()) {
+        current.clear();
+        *has_content = false;
+    }
 }
 
 #[cfg(test)]

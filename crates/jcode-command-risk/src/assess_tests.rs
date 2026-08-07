@@ -406,3 +406,95 @@ fn ordinary_wrapped_commands_still_run_immediately() {
         "gate became noisy on normal work: {noisy:#?}"
     );
 }
+
+/// Read-only commands that redirect their output must not be refused.
+///
+/// Regression for the false-positive class documented in NLFCODE.md: a
+/// redirect used to make *every* operand a deletion target, so
+/// `ls crates 2>/dev/null` was assessed as destroying both `crates` and the
+/// null sink, the latter reading as catastrophic because `/dev` is protected
+/// recursively. Neither command deletes anything.
+#[test]
+fn read_only_commands_with_redirects_run_immediately() {
+    let ctx = ctx();
+    let mut noisy = Vec::new();
+    for command in [
+        "ls crates 2>/dev/null",
+        "ls -la /home/u/NLFCODE.md 2>&1",
+        "grep -rn pattern crates",
+        "rg -n foo crates",
+        "cat /home/u/proj/Cargo.toml 2>/dev/null",
+        "find . -name '*.rs' 2>/dev/null",
+        "ls /home/u/proj > /dev/null",
+        "cargo build 2>&1 | tail -20",
+        "wc -l src/lib.rs 2>/dev/null",
+    ] {
+        let assessment = assess(command, &ctx);
+        if !assessment.level.runs_immediately() {
+            noisy.push(format!("{command} -> {:?}", assessment.level));
+        }
+    }
+    assert!(
+        noisy.is_empty(),
+        "gate refused read-only commands: {noisy:#?}"
+    );
+}
+
+/// The redirect fix must not open a hole: a real deletion is still caught when
+/// the same command also redirects, and a discard sink is harmless only as a
+/// redirect destination, never as something to delete.
+#[test]
+fn redirects_do_not_hide_a_real_deletion() {
+    let laundered = ["rm -rf ~ 2>/dev/null", "rm -rf /home/u > /dev/null 2>&1"];
+    for command in laundered {
+        assert!(
+            !level(command).runs_immediately(),
+            "a redirect must not launder: {command}"
+        );
+    }
+    let still_refused = [
+        "rm /dev/null",
+        "rm -rf /etc",
+        "cat foo > /dev/sda",
+        "echo hi > /home/u/.ssh/id_rsa",
+    ];
+    for command in still_refused {
+        assert!(
+            !level(command).runs_immediately(),
+            "must still be refused: {command}"
+        );
+    }
+}
+
+/// A heredoc body is data being written to a file, not commands being run.
+///
+/// Observed live: appending a test fixture that merely *mentioned* `/dev/null`
+/// and `rm -rf` was refused outright, because the body was tokenized as if it
+/// were executed. Writing a test about the gate must not trip the gate.
+#[test]
+fn heredoc_bodies_are_data_not_commands() {
+    let ctx = ctx();
+    let script = "cat >> src/assess_tests.rs <<'EOF'\n\
+                  let cases = [\"ls crates 2>/dev/null\", \"rm -rf ~\"];\n\
+                  assert!(!level(\"rm -rf /etc\").runs_immediately());\n\
+                  EOF";
+    assert!(
+        assess(script, &ctx).level.runs_immediately(),
+        "a heredoc body mentioning destructive commands must not be assessed as running them"
+    );
+
+    // The body really is executed when it is piped into a shell, so it must
+    // still be assessed there.
+    let piped = "cat <<'EOF' | bash\nrm -rf ~\nEOF";
+    assert!(
+        !assess(piped, &ctx).level.runs_immediately(),
+        "a heredoc piped into a shell is executed and must still be caught"
+    );
+
+    // The command opening the heredoc is still assessed on its own merits.
+    let destructive_opener = "rm -rf ~ <<'EOF'\nharmless text\nEOF";
+    assert!(
+        !assess(destructive_opener, &ctx).level.runs_immediately(),
+        "the command opening a heredoc is still assessed"
+    );
+}

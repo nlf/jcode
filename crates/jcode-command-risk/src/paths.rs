@@ -226,11 +226,7 @@ pub fn classify_target(
     }
 
     // Raw device nodes are never a safe write target.
-    if expanded.starts_with("/dev")
-        && !expanded.starts_with("/dev/null")
-        && !expanded.starts_with("/dev/stdout")
-        && !expanded.starts_with("/dev/stderr")
-    {
+    if expanded.starts_with("/dev") {
         return Some(RiskFinding {
             level: RiskLevel::Catastrophic,
             reason: "writes directly to a device node, which can destroy a \
@@ -271,6 +267,17 @@ fn is_temp_path(path: &Path) -> bool {
     ["/tmp", "/var/tmp", "/private/tmp"]
         .iter()
         .any(|prefix| path.starts_with(prefix))
+}
+
+/// The kernel sinks that discard whatever is written to them.
+///
+/// Only meaningful for a redirect destination: writing to `/dev/null` loses
+/// nothing, but `rm /dev/null` removes a device node and is not covered here.
+/// Matched exactly, so a hypothetical `/dev/nullX` stays a device node.
+pub fn is_discard_sink(path: &Path) -> bool {
+    ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"]
+        .iter()
+        .any(|sink| path == Path::new(sink))
 }
 
 #[cfg(test)]

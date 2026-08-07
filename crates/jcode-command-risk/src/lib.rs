@@ -307,11 +307,19 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     }
 
-    let mut targets: Vec<&Token> = tokens
-        .iter()
-        .skip(1)
-        .filter(|t| !t.is_flag() && !t.is_operator)
-        .collect();
+    // A harmless program that happens to redirect its output destroys exactly
+    // one thing: the redirect destination. Its other operands are inputs
+    // (`ls crates 2>/dev/null` reads `crates`), so scanning them as deletion
+    // targets turns every redirecting read-only command into a false refusal.
+    let mut targets: Vec<&Token> = if triggered {
+        tokens
+            .iter()
+            .skip(1)
+            .filter(|t| !t.is_flag() && !t.is_operator && !t.is_truncating_redirect_target)
+            .collect()
+    } else {
+        Vec::new()
+    };
     targets.extend(redirect_targets.iter().copied());
 
     // A destructive command fed by a pipe takes its operands from the previous
@@ -354,6 +362,12 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
             .map(|(_, value)| value)
             .unwrap_or(&target.text);
         let expanded = paths::expand(raw, ctx);
+        // Redirecting into a discard sink destroys nothing. This is checked
+        // here rather than in `classify_target` because it is true only of a
+        // redirect destination: `rm /dev/null` still removes a device node.
+        if target.is_truncating_redirect_target && paths::is_discard_sink(&expanded) {
+            continue;
+        }
         if let Some(finding) = paths::classify_target(&expanded, raw, recursive, ctx) {
             findings.push(finding);
         }
