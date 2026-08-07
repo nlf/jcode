@@ -8,8 +8,14 @@
 //! agentgrep.
 
 pub mod matching;
+pub mod search;
 
 pub use matching::{
     find, language_for_path, resolve_language, supported_languages, Match, MatchError, Matches,
     DEFAULT_MAX_MATCHES,
+};
+
+pub use search::{
+    search, targets_for, FileMatches, SearchFailure, SearchOptions, SearchResult,
+    DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES,
 };

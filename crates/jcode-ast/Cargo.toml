@@ -11,3 +11,7 @@ ast-grep-core = "0.39"
 # grammars instead would cut ~45 crates, but ast-grep-language is what maps a
 # file extension to a language, which is most of what a tool needs.
 ast-grep-language = "0.39"
+jcode-search = { path = "../jcode-search" }
+
+[dev-dependencies]
+tempfile = "3"

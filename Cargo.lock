@@ -3486,6 +3486,8 @@ version = "0.1.0"
 dependencies = [
  "ast-grep-core",
  "ast-grep-language",
+ "jcode-search",
+ "tempfile",
 ]
 
 [[package]]

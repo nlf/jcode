@@ -227,3 +227,22 @@ fn a_bad_pattern_error_explains_what_a_pattern_is() {
         "{message}"
     );
 }
+
+/// Upstream PANICS when a pattern is compiled against a language it is not
+/// valid for: `find_all(&str)` builds the pattern internally and
+/// `pattern.rs:252` unwraps the error.
+///
+/// A whole-tree search infers the language per file, so a Rust pattern is
+/// necessarily compiled against Python somewhere, and that would take the
+/// process down. Found by a test that searched a mixed tree.
+#[test]
+fn a_pattern_invalid_for_the_language_errors_rather_than_panicking() {
+    let python = resolve_language("python").expect("python");
+    let error = find("def alpha():\n    pass\n", "fn $NAME() { $$$BODY }", python, 10)
+        .expect_err("a Rust pattern is not valid Python");
+
+    assert!(
+        matches!(error, MatchError::BadPattern { .. }),
+        "expected BadPattern, got {error:?}"
+    );
+}

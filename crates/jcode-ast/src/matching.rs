@@ -11,7 +11,7 @@
 //!
 //! No I/O. `ast_grep` adds the walker, `ast_edit` adds rewriting.
 
-use ast_grep_core::AstGrep;
+use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
 use std::str::FromStr;
 
@@ -120,16 +120,23 @@ pub fn find(
         return Err(MatchError::EmptyPattern);
     }
 
+    // `try_new` rather than `find_all(&str)`: passing the pattern as a string
+    // makes upstream compile it internally and PANIC when it is not valid for
+    // the language (`pattern.rs:252` unwraps a MultipleNode error). A
+    // whole-tree search infers the language per file, so a pattern that is
+    // valid Rust and invalid Python would take the process down. Compiling it
+    // here turns that into an error the caller can act on.
+    let compiled = Pattern::try_new(pattern, language).map_err(|_| MatchError::BadPattern {
+        pattern: pattern.to_string(),
+        language: format!("{language:?}").to_lowercase(),
+    })?;
+
     let doc = AstGrep::new(source, language);
     let root = doc.root();
 
-    // An unparseable pattern yields no matches rather than an error upstream,
-    // which is indistinguishable from "no matches in this file". Distinguishing
-    // them matters: one means narrow your search, the other means fix your
-    // pattern.
     let mut found = Vec::new();
     let mut truncated = false;
-    for node in root.find_all(pattern) {
+    for node in root.find_all(&compiled) {
         if found.len() >= max_matches {
             truncated = true;
             break;
