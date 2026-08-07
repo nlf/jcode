@@ -6,9 +6,15 @@
 //! Pure and I/O-free so it tests in about a second without compiling the agent,
 //! matching `jcode-hashline`, `jcode-search` and `jcode-patch`.
 
+pub mod render;
 pub mod window;
 
 pub use window::{
     expand_with_context, outcome, resolve, Outcome, Request, Window, DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES, RANGE_LEADING_CONTEXT_LINES, RANGE_TRAILING_CONTEXT_LINES,
+};
+
+pub use render::{
+    can_merge_brace_pair, format_line, format_merged_brace, header_anchor, render, Numbering,
+    ELISION,
 };
