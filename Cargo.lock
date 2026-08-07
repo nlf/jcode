@@ -3396,6 +3396,7 @@ dependencies = [
  "jcode-pdf",
  "jcode-plan",
  "jcode-provider-core",
+ "jcode-read",
  "jcode-schema-dialect",
  "jcode-search",
  "jcode-selfdev-types",
@@ -3526,6 +3527,13 @@ dependencies = [
  "urlencoding",
  "uuid",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "jcode-bash-intercept"
+version = "0.1.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
