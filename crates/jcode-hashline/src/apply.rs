@@ -81,6 +81,10 @@ pub fn apply_ops(text: &str, ops: &[Op]) -> Result<ApplyResult, String> {
                 if start == 0 {
                     continue;
                 }
+                // Indexed by 1-based line number: `deleted` is sized
+                // line_count + 1 so line N sits at index N. An iterator with
+                // skip/take would hide that correspondence.
+                #[allow(clippy::needless_range_loop)]
                 for line in start..=end {
                     deleted[line] = true;
                 }
@@ -91,6 +95,9 @@ pub fn apply_ops(text: &str, ops: &[Op]) -> Result<ApplyResult, String> {
                     if start == 0 {
                         continue;
                     }
+                    // See the note in `Op::Cut`: indices are 1-based line
+                    // numbers, not offsets.
+                    #[allow(clippy::needless_range_loop)]
                     for line in start..=end {
                         deleted[line] = true;
                     }
@@ -136,7 +143,7 @@ pub fn apply_ops(text: &str, ops: &[Op]) -> Result<ApplyResult, String> {
 
     let mut out: Vec<String> = Vec::with_capacity(line_count);
     let mut first_changed_line = None;
-    let mut changed_at = |line: usize, first: &mut Option<usize>| {
+    let changed_at = |line: usize, first: &mut Option<usize>| {
         if first.is_none() {
             *first = Some(line);
         }
