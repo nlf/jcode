@@ -342,15 +342,26 @@ impl Tool for ReadTool {
         if output.is_empty() {
             Ok(ToolOutput::new("(empty file)"))
         } else {
-            // Record what was shown and stamp the output with `[path#TAG]`.
-            // The tag is a hash of the whole file, not of the shown range, so
-            // `edit` can tell "you are patching the file you read" apart from
-            // "the file changed underneath you" even for a partial read.
+            // Record the file and stamp the output with `[path#TAG]`.
             //
-            // Keyed by the path as given rather than the resolved one, because
-            // that is the string the model will send back in a patch header.
+            // The store is keyed by the *normalized* path, the same form
+            // `split_sections` produces when it parses a header, so a tag
+            // minted here is found again on lookup. Keying by the raw
+            // `file_path` instead meant an absolute-path read and its own
+            // absolute-path header landed under different keys, and a genuinely
+            // stale tag was reported as "not from this session" - which sends
+            // the model looking for a session mixup that never happened.
+            //
+            // The tag hashes the whole file, not the displayed range, so two
+            // reads of one unchanged file agree and `edit` does not report a
+            // spurious concurrent modification for a partial read.
+            let cwd = ctx
+                .working_dir
+                .as_deref()
+                .and_then(|dir| dir.to_str());
+            let key = jcode_hashline::normalize_path(&params.file_path, cwd);
             let store = super::hashline_store::for_session(&ctx.session_id);
-            let tag = store.record(&params.file_path, &content, Some(&seen_lines));
+            let tag = store.record(&key, &content, Some(&seen_lines));
             Ok(ToolOutput::new(format!(
                 "{}\n{}",
                 jcode_hashline::format_hashline_header(&params.file_path, &tag),

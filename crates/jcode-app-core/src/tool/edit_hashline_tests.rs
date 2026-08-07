@@ -657,3 +657,60 @@ async fn the_title_names_every_file_a_patch_touched() {
     );
 }
 
+
+/// A tag read minted must be recognised as *stale* when the file changes, not
+/// reported as belonging to another session.
+///
+/// Found by running a real agent: bash overwrote a file and the refusal said
+/// "tag #2543 is not from this session", which is false and misleading. The
+/// model is told to check for a session mixup when the real cause is that the
+/// file changed underneath it.
+///
+/// The cause was a key mismatch. `read` records under the path as the model
+/// wrote it, but a header carrying an absolute path is normalized to a
+/// cwd-relative one before lookup, so the two never met.
+#[tokio::test]
+async fn a_changed_file_is_reported_as_stale_not_as_a_foreign_tag() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("f.txt");
+    std::fs::write(&path, "one\ntwo\n").expect("write");
+
+    // Read by absolute path, as an agent commonly does.
+    let absolute = path.to_string_lossy().to_string();
+    let output = crate::tool::read::ReadTool::new()
+        .execute(
+            json!({ "file_path": absolute }),
+            ctx(temp.path().to_path_buf(), "hl-attrib-abs"),
+        )
+        .await
+        .expect("read");
+    let header = output.output.lines().next().unwrap_or_default();
+    let tag = header
+        .rsplit_once('#')
+        .map(|(_, tag)| tag.trim_end_matches(']').to_string())
+        .expect("a header with a tag");
+
+    // Something else changes the file, as bash would.
+    std::fs::write(&path, "CHANGED\n").expect("rewrite");
+
+    let error = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "f.txt",
+                "input": format!("[{absolute}#{tag}]\nPUT 1.=1:\n+X"),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-attrib-abs"),
+        )
+        .await
+        .expect_err("a changed file must be refused")
+        .to_string();
+
+    assert!(
+        !error.contains("not from this session"),
+        "a tag this session minted was reported as foreign: {error}"
+    );
+    assert!(
+        error.contains("changed") || error.contains("stale"),
+        "the refusal should say the file changed: {error}"
+    );
+}

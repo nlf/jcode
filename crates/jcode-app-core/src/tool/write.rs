@@ -90,11 +90,13 @@ impl Tool for WriteTool {
         // No seen lines. The model authored this content, so it has seen all of
         // it, but `seen_lines` records what was *displayed* with line numbers,
         // and claiming that here would be a different assertion than `read`'s.
-        super::hashline_store::for_session(&ctx.session_id).record(
-            &params.file_path,
-            &params.content,
-            None,
-        );
+        // Keyed by the normalized path, matching what `read` records and what
+        // a patch header resolves to. See the note in read.rs: keying by the
+        // raw argument puts an absolute-path write and its own header under
+        // different keys.
+        let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
+        let key = jcode_hashline::normalize_path(&params.file_path, cwd);
+        super::hashline_store::for_session(&ctx.session_id).record(&key, &params.content, None);
 
         let _new_len = params.content.len();
         let line_count = params.content.lines().count();
