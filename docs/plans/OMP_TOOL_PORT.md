@@ -1602,3 +1602,81 @@ the applier, the snapshot store with `seenLines`, and every integration point in
 checked to destruction, and the one that could have killed the project passed.
 The remaining risk is no longer "can we do this" but "how long does the
 forgiveness layer take", which Phase 5 is explicitly gated on measuring.
+
+---
+
+# Phase 3a progress: the snapshot store is done
+
+Committed 2026-08-07 as `crates/jcode-hashline/src/snapshots.rs`. **34 tests,
+0.9s.** This is the conceptual heart of hashline — the format is just an
+addressing scheme without it.
+
+## The concurrency question is settled, and the plan was right to raise it
+
+Section "The `batch` tool makes the snapshot store concurrently accessed"
+predicted omp's design would not survive our `batch`. Confirmed in code.
+
+omp's `InMemorySnapshotStore` is a plain `LRUCache` that mutates
+`existing.seenLines` in place. Sound for them: their tool calls are sequential.
+`tool/batch.rs:273` drives sub-calls on a `FuturesUnordered`, and
+`ToolContext::for_subcall` clones `session_id` unchanged, so several `read`s of
+one file share one store and can land at once.
+
+Ours is `Arc<Mutex<Inner>>`, with `record` doing its whole read-modify-write
+under a single lock. Cloning shares the store rather than copying it, so a
+sub-call sees the parent's provenance.
+
+**Proven, not asserted.** Splitting `record` into two lock acquisitions with a
+`yield_now` between — the classic lost-update race, and exactly the shape a
+read-then-write-back port would have — fails
+`concurrent_reads_of_one_file_lose_no_provenance` and nothing else.
+
+Worth noting: a *first* attempt at writing that mutation was **rejected by the
+borrow checker** (`borrow of moved value: inner`). Rust refused to express the
+racy pattern until I deliberately restructured it into two acquisitions. That
+is a small, concrete argument for the port beyond behaviour parity.
+
+## Provenance semantics omp leaves implicit
+
+Their type is `seenLines?: Set<number>`, and the distinction between absent and
+empty is load-bearing but only stated in a doc comment. Ours makes it explicit
+and pins it:
+
+- **`None`** — no provenance recorded; the seen-line guard is **skipped**. This
+  is what lets a producer that does not yet record degrade to old behaviour
+  instead of blocking every edit.
+- **`Some(empty)`** — a producer recorded that it displayed nothing, which
+  **does** block.
+
+`absent_provenance_is_distinct_from_empty_provenance` pins it. A port that used
+`BTreeSet::new()` for both would silently disable the guard everywhere, or
+enable it everywhere, depending on which way it collapsed.
+
+## What the 34 tests cover
+
+All 12 of omp's cases: tag derivation, read fusion, version retention, head
+promotion on re-observation, both bounds (per-path history, LRU paths),
+cross-path isolation, invalidate/clear, relocate-on-`MV`, `find_by_hash`, and
+both collision cases.
+
+Plus five they leave implicit or cannot have: absent-vs-empty provenance,
+attaching provenance after minting, a no-op attach for an unknown tag,
+accumulation across partial reads, and three concurrency cases.
+
+## Mutation results
+
+| mutation | caught by |
+|---|---|
+| dedup on tag alone, not tag **and** text | only the collision test — this *is* their issue #4075 |
+| replace provenance instead of unioning | 4 tests, including both accumulation cases |
+| split `record` into two lock acquisitions | only the concurrency test |
+
+## Running total
+
+`jcode-hashline`: **49 tests, ~1s**, covering `format` and `snapshots`.
+
+**Remaining for a v1 patcher:** `input.rs` (section splitting), `prefixes.rs`
+(strip `123:` prefixes before tokenizing), `parser.rs`, `apply.rs` core, and
+`patcher.rs` (preflight, seen-line guard, mismatch). The plan's estimate of
+"the top of 2-3 weeks" for 3a still looks right; two of the five pieces are
+done and they were the two with the least surface.
