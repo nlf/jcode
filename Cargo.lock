@@ -4167,6 +4167,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-search"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "ignore",
+ "regex",
+ "tempfile",
+]
+
+[[package]]
 name = "jcode-selfdev-types"
 version = "0.1.0"
 dependencies = [
@@ -4330,6 +4340,7 @@ dependencies = [
  "jcode-config-types",
  "jcode-core",
  "jcode-fuzzy",
+ "jcode-hashline",
  "jcode-logging",
  "jcode-productivity-core",
  "jcode-provider-core",
