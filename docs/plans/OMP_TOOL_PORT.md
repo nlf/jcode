@@ -1344,3 +1344,80 @@ address).
 Add to the Phase 3 acceptance: **a checklist item that any future file-touching
 tool is a snapshot producer or invalidator**, so this is a standing rule rather
 than a fact about six specific tools.
+
+---
+
+# Two estimates re-measured, 2026-08-07
+
+Both were flagged as unverified. Both were wrong, in opposite directions.
+
+## 1. `apply.ts` is 83% repair, not 73% — and there is a THIRD repair category
+
+The plan said "~40 KB of its 55 KB is repair" and the reviewer declined to
+verify it. Measured by function boundaries:
+
+| region | lines | what |
+|---|---|---|
+| edit plumbing (`:34-146`) + `applyEdits` (`:1314-1425`) | **~223** | the actual splice |
+| repair machinery (`:147-1313`) | **~1,166** | everything else |
+
+**83% of the file is forgiveness.** I understated it.
+
+And it is **three** categories, not one:
+
+1. **Boundary repair** (`:147-1117`) — JSX closer detection, delimiter balance,
+   echo detection, duplicate prefix/suffix, dropped closers. Test file:
+   `boundary-repair.test.ts` (30 KB).
+2. **Indentation repair** (`repairReplacementIndentation`, `:399-461`).
+3. **Landing repair** (`:1169-1313`, `resolveShiftedLanding`,
+   `resolveInwardLanding`, `repairAfterInsertLandings`) — **a separate concern
+   the plan never named.** It corrects *where an insert lands* when the anchor
+   moved, grouping after-anchor inserts per authored hunk. Its own test file:
+   `landing-shift.test.ts` (9.2 KB), which the Tier-1 table lists but describes
+   only as "insert landing positions" without connecting it to `apply.ts`.
+
+**Consequence.** The Phase 3 / Phase 5 split is cleaner than feared: a v1
+applier really is ~220 lines of logic, because the other 1,166 are separable
+repair passes that can be added one at a time. But **Phase 5 is bigger than
+"2-3 weeks"** if it means all three categories, and landing repair should be
+costed separately — it is not part of `boundary-repair.test.ts`.
+
+Recommended v1 order once the core applies: landing repair first (smallest,
+self-contained, and an insert landing in the wrong place is a *correctness*
+bug, not a leniency nicety), then indentation, then boundary.
+
+## 2. The description token cap is a 26x problem, not a tuning problem
+
+`tool/tests.rs:455`: `DESCRIPTION_TOKEN_CAP = 20`. Parameter descriptions get
+25 (`:705`).
+
+omp's files, at the conventional ~4 chars/token:
+
+| file | bytes | ~tokens | vs cap |
+|---|---|---|---|
+| `prompts/tools/read.md` | 2,113 | **~528** | **26x over** |
+| `hashline/src/prompt.md` | 6,016 | **~1,504** | **75x over** |
+
+The plan called this "resolve deliberately: raise the cap, or split". **Raising
+the cap is not on the table** — 20 → 528 would be a different policy, not an
+adjustment, and per `~/NLFCODE.md` the caps exist because four tools had already
+drifted past them and `macos_computer_use` alone cost 159 always-on tokens.
+
+**So the split is forced, and it is the whole design:**
+
+- **Always-on description: stays under 20 tokens.** One line, naming the tool's
+  advantage over bash, exactly as today.
+- **The format spec (~1,500 tokens) is injected only when hashline is active**,
+  and ideally only once per session rather than per tool definition. omp does
+  the equivalent with `{{#if IS_HL_MODE}}` inside a templated description, but
+  they have no token cap forcing the issue.
+
+This is worth stating as a **constraint on the hashline design itself**, not
+just on documentation: a format whose rules cannot be compressed under ~1,500
+tokens of one-time context is a format we cannot afford to teach. The good news
+is that 1,500 tokens once per session is cheap; 1,500 tokens per tool
+definition, always on, is not.
+
+**Acceptance:** `tool_descriptions_stay_under_token_cap` still passes unchanged
+after the port, and a new test asserts the format spec is absent from the
+always-on tool definitions.
