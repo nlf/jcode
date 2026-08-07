@@ -99,3 +99,18 @@ A related trap, hit three times while doing this: several tests asserted on
 exact sentences of tool copy, so a later reword that preserved the meaning left
 them failing on main. Assert what the text has to *say*, not the sentence it
 says it in.
+
+## PDF pages come from the extractor, not from splitting text
+
+Use `jcode_pdf::extract_text_by_page`. Do not split the output of
+`extract_text` on `\x0c`: `pdf_extract`'s `PlainTextOutput::end_page` is a
+no-op and emits no page separator of any kind, so splitting sees every document
+as a single page. A comment in `read.rs` asserted the opposite, and the first
+version of the `pages` parameter was built on it, which meant a request for
+page 3 of 5 answered that the page did not exist.
+
+Worth noting how that survived review: the parser had unit tests and they all
+passed, because they only ever exercised the *selection string* ("2-5" parses
+to [2,3,4,5]) and never a real document. The bug was one layer below, in what
+the pages were being selected *from*. A test that stops at the boundary of the
+thing you changed will not tell you the premise underneath it is false.
