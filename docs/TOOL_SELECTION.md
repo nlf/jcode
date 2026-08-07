@@ -88,6 +88,14 @@ parameter description or the system prompt, not the tool description. The
 anti-bash steer in each competing tool is deliberately short for this reason,
 and `tools_competing_with_bash_name_it_as_the_wrong_choice` keeps it present.
 
-Note that `batch` and `macos_computer_use` exceed the description cap, and
-`integration_tools`, `macos_computer_use` and `todo` exceed the parameter cap.
-Those predate this work and still fail on a clean worktree.
+Both caps are now enforced with nothing over them, so a new tool that exceeds
+one will fail the suite rather than quietly adding always-on cost. Two patterns
+are worth copying when that happens: `macos_computer_use` keeps its description
+short by deferring the full action set to its own `discover` action, and
+`batch` keeps its worked example in the `tool_calls` parameter description
+rather than the tool description.
+
+A related trap, hit three times while doing this: several tests asserted on
+exact sentences of tool copy, so a later reword that preserved the meaning left
+them failing on main. Assert what the text has to *say*, not the sentence it
+says it in.
