@@ -1131,3 +1131,109 @@ Earlier the recommendation was option 3 — drop `trace`, keep `outline` until
 is wanted, it must be re-provided by omp's summarized `read` (which covers most
 of its job) or reimplemented later on tree-sitter. Worth confirming explicitly,
 because it is now a deletion rather than a deferral.
+
+---
+
+# Deleting agentgrep: the checklist
+
+Audited 2026-08-07 after "is agentgrep embedded anywhere unexpected?". **It is.**
+Roughly 15 sites across 8 crates reference it beyond the tool itself, and
+**three of them fail silently**. This is still half a day of mechanical work,
+but it needs a checklist rather than a grep-and-delete.
+
+## Fails silently — do these FIRST
+
+### 1. The `acp` and `minimal`/`lite`/`small` tool profiles lose search entirely
+
+`jcode-base/src/config.rs:638` (acp) and `:657` (minimal/lite/small) list
+`agentgrep` and **do not list `grep` or `glob`**. Verified: zero occurrences of
+either in those blocks. Delete agentgrep and those profiles have **no search
+tool at all**, with no error — the tool simply is not in the slate.
+
+**ACP is the editor-integration path**, so this hits Zed users specifically.
+
+**Fix, and it must land before the deletion:** add `grep` and `glob` to both
+profiles. Test: `every_tool_profile_includes_a_search_tool`.
+
+### 2. Telemetry and productivity stats undercount
+
+- `jcode-usage-types/src/lib.rs:87` classifies `agentgrep` into a telemetry
+  category (pinned by a test at `:843`).
+- `jcode-productivity-core/src/aggregate.rs:109`:
+  `r.searches = tool("grep") + tool("agentgrep") + tool("glob")`.
+
+Historical sessions keep emitting `agentgrep` in their transcripts. Removing the
+classifier entry makes past search activity vanish from stats rather than
+migrate. **Keep both entries** as historical aliases even after the tool is
+gone; only stop *counting* it if we deliberately want the discontinuity.
+
+### 3. Name-keyed display and status surfaces
+
+All default gracefully, but each shows something worse afterwards:
+`catchup.rs:424` (resume summaries), `agent/inline_tail.rs:135` (status line
+argument label), `ui_tools.rs:1016` (summary rendering),
+`src/cli/acp.rs:1432,1443` (maps tool → "search" kind for the editor UI).
+
+Mechanical rename to `grep`/`glob`; the ACP one matters most because the editor
+uses the kind for its own iconography.
+
+## A user-facing feature disappears
+
+`/show-agentgrep-output` is not a debug flag. It is **18 references across 9
+files**: a slash command with `on`/`off`/`status`, config persistence
+(`display.show_agentgrep_output`), an env override
+(`env_overrides.rs:282`), help text, autocomplete entries, a config-summary
+line, and an inline renderer (`ui_messages.rs:4150-4157`,
+`render_agentgrep_output_body` with its own tests).
+
+It exists because someone wanted full search output inline instead of the
+one-line summary. **That need does not disappear with the tool.**
+
+**Decision required (open question 5 below):** carry it across as
+`/show-grep-output`, or drop it with a release note. Recommend carrying it —
+the renderer is generic over content and the rename is mechanical.
+
+**Config migration:** `display.show_agentgrep_output` becomes inert rather than
+erroring (nothing in the config types uses `deny_unknown_fields`), so a user's
+setting is silently ignored. Either read both keys for a release, or note it.
+
+## Capability genuinely lost
+
+- **`outline` mode** — omp has no equivalent. Their summarized `read`
+  (declarations kept, bodies elided) covers most of the same job and arrives
+  with Phase 3b.
+- **`trace`/`smart` modes** — a bespoke relationship DSL with **no substitute in
+  the omp model at all.** Nothing replaces this.
+
+The earlier recommendation was "drop `trace`, keep `outline` until `ast_grep`".
+**Deleting agentgrep wholesale means both go.** That is now a deletion, not a
+deferral, and it should be confirmed rather than assumed.
+
+## Breaks loudly, so no checklist needed
+
+`tool/mod.rs:1,198` (module + registration), the `agentgrep` git dependency
+(`jcode-app-core/Cargo.toml:107`), and the test files. Compile errors.
+
+## Also update
+
+- `jcode-base/src/config/default_file.rs:335,338` — the documented example
+  tool lists name `agentgrep`.
+- `crates/jcode-tool-types/src/lib.rs:133-167` — the alias-invariant tests
+  explain the historical `grep → agentgrep` alias. **Keep the tests** (they pin
+  a bug that cost us a release); update the prose.
+- `jcode-app-core/src/tool/tests.rs:509,537` — `COMPETING` list and the
+  description-content assertions.
+
+## Revised estimate
+
+Phase 1's "half a day" covers **creating the crate**. The agentgrep deletion is
+a **separate half-day in Phase 6**, gated on ported `grep`/`glob` passing their
+tests, and it runs in this order:
+
+1. Add `grep` + `glob` to the `acp` and `minimal` profiles. Ship this early — it
+   is a bug fix on its own terms, since those profiles are currently one tool
+   away from having no search.
+2. Rename the display/status/ACP name matches.
+3. Decide and execute the `/show-agentgrep-output` question.
+4. Keep telemetry aliases; update the productivity aggregate.
+5. Delete the tool, its tests, and the git dependency.
