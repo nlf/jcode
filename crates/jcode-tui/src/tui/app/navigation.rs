@@ -185,6 +185,23 @@ impl App {
         self.last_visible_diagram_hash = self.current_visible_diagram_hash();
     }
 
+    /// Update the hover highlight for a pointer position.
+    ///
+    /// Returns `true` when the highlighted region changed and the frame must be
+    /// repainted. Pointer motion fires an event per cell crossed, so returning
+    /// `false` for movement *within* the same target keeps a slow drag across a
+    /// tool row from costing a frame per column.
+    pub(super) fn update_hover_at(&mut self, column: u16, row: u16) -> bool {
+        let centered = self.centered;
+        let messages = &self.display_messages;
+        let target = super::super::ui::hover_target_from_screen(column, row, centered, |idx| {
+            messages
+                .get(idx)
+                .is_some_and(super::super::ui::tool_row_can_expand)
+        });
+        crate::tui::hover::set_hover(target)
+    }
+
     /// If a left-click landed on an inline image's `expand` badge or on the
     /// rendered image itself, cycle that image's size and return `true`.
     /// Returns `false` (so the click can fall through to link/selection

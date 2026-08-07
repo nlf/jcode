@@ -1803,3 +1803,288 @@ fn test_loading_older_history_clears_expansions() {
 
     crate::tui::ui::expand_state::clear_expanded_regions();
 }
+
+/// The expanded tool detail must render as a bounded frame, matching the
+/// edit-tool diff's `┌─ / │ / └─` box, so revealed output reads as a block
+/// belonging to its row rather than loose text running into what follows.
+#[test]
+fn test_expanded_tool_output_renders_inside_a_frame() {
+    use crate::message::ToolCall;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "FRAMED_ONE\nFRAMED_TWO".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_frame_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo FRAMED" }),
+            intent: Some("probe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let before = render_and_snap(&app, &mut terminal);
+    let row = before
+        .lines()
+        .position(|line| line.contains("probe"))
+        .expect("expected the tool row to render") as u16;
+    app.handle_mouse_event(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 4,
+        row,
+        modifiers: KeyModifiers::empty(),
+    });
+
+    let after = render_and_snap(&app, &mut terminal);
+    assert!(
+        after.contains("┌─ detail"),
+        "expanded detail needs an opening frame header:\n{after}"
+    );
+    assert!(
+        after.contains("└─"),
+        "expanded detail needs a closing frame:\n{after}"
+    );
+    // The output rows themselves sit inside the frame's left border, which is
+    // what makes the block read as bounded rather than merely indented.
+    let framed_output = after
+        .lines()
+        .any(|line| line.contains('│') && line.contains("FRAMED_ONE"));
+    assert!(
+        framed_output,
+        "output lines must sit inside the frame border:\n{after}"
+    );
+
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+
+/// Hovering a clickable tool row must brighten it, so the user can tell it is
+/// clickable without clicking. Drives the real hover path and compares the
+/// rendered colors, not just the recorded hover state.
+#[test]
+fn test_hovering_a_tool_row_brightens_it() {
+    use crate::message::ToolCall;
+
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "HOVER_OUTPUT".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_hover_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo HOVER" }),
+            intent: Some("probe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let plain = render_and_snap(&app, &mut terminal);
+    let row = plain
+        .lines()
+        .position(|line| line.contains("probe"))
+        .expect("expected the tool row to render") as u16;
+
+    // Colors of the un-hovered row, for comparison.
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &app))
+        .expect("draw");
+    let cold: Vec<_> = (0..40)
+        .map(|col| terminal.backend().buffer()[(col, row)].style().fg)
+        .collect();
+
+    assert!(
+        app.update_hover_at(4, row),
+        "moving onto a clickable row must register a hover"
+    );
+    terminal
+        .draw(|frame| crate::tui::ui::draw(frame, &app))
+        .expect("draw");
+    let hot: Vec<_> = (0..40)
+        .map(|col| terminal.backend().buffer()[(col, row)].style().fg)
+        .collect();
+
+    assert_ne!(
+        cold, hot,
+        "hovering a clickable row must change how it is drawn"
+    );
+
+    // And the change is specifically *brighter*, not merely different.
+    let brightness = |c: Option<ratatui::style::Color>| match c {
+        Some(ratatui::style::Color::Rgb(r, g, b)) => Some(r as u32 + g as u32 + b as u32),
+        _ => None,
+    };
+    let mut compared = 0;
+    for (cold_c, hot_c) in cold.iter().zip(hot.iter()) {
+        if let (Some(a), Some(b)) = (brightness(*cold_c), brightness(*hot_c)) {
+            assert!(b >= a, "hover must not darken any cell ({a} -> {b})");
+            if b > a {
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 0, "at least one cell must actually brighten");
+
+    crate::tui::hover::clear_hover();
+    crate::tui::ui::expand_state::clear_expanded_regions();
+}
+
+/// Hovering text that is *not* clickable must leave the frame alone, or the
+/// highlight stops meaning "you can click this".
+#[test]
+fn test_hovering_plain_text_does_not_highlight() {
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "assistant".to_string(),
+        content: "just some ordinary prose with nothing to click".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: None,
+    }];
+    app.bump_display_messages_version();
+
+    let plain = render_and_snap(&app, &mut terminal);
+    let row = plain
+        .lines()
+        .position(|line| line.contains("ordinary prose"))
+        .expect("expected the prose to render") as u16;
+
+    assert!(
+        !app.update_hover_at(4, row),
+        "plain prose must not register a hover target"
+    );
+    assert_eq!(
+        crate::tui::hover::hover(),
+        None,
+        "no hover target should be recorded over plain text"
+    );
+
+    crate::tui::hover::clear_hover();
+}
+
+/// A tool row with nothing hidden is not clickable, so it must not light up.
+/// The highlight has to track the click handlers exactly or it lies.
+#[test]
+fn test_hovering_an_inert_tool_row_does_not_highlight() {
+    use crate::message::ToolCall;
+
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        // Empty output: `tool_row_can_expand` rejects it, so clicking does
+        // nothing and hovering must say nothing.
+        content: String::new(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_inert_1".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo quiet" }),
+            intent: Some("inertprobe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let plain = render_and_snap(&app, &mut terminal);
+    let row = plain
+        .lines()
+        .position(|line| line.contains("inertprobe"))
+        .expect("expected the tool row to render") as u16;
+
+    assert!(
+        !app.update_hover_at(4, row),
+        "a tool row that hides nothing must not register a hover"
+    );
+    assert_eq!(crate::tui::hover::hover(), None);
+
+    crate::tui::hover::clear_hover();
+}
+
+
+
+/// The hover lift must stop at the end of the hovered text, not run the width
+/// of the pane. The side panel shares those screen rows, so a full-width
+/// highlight brightened its border too and read as a selection bar.
+#[test]
+fn test_hover_highlight_does_not_bleed_into_the_side_panel() {
+    use crate::message::ToolCall;
+
+    let _env_guard = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    crate::tui::hover::clear_hover();
+
+    let (mut app, mut terminal) = create_copy_test_app();
+    app.display_messages = vec![DisplayMessage {
+        role: "tool".to_string(),
+        content: "bleed output".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "bleed".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "ls" }),
+            intent: Some("bleedprobe".to_string()),
+            thought_signature: None,
+        }),
+    }];
+    app.bump_display_messages_version();
+
+    let snap = render_and_snap(&app, &mut terminal);
+    let row = snap
+        .lines()
+        .position(|l| l.contains("bleedprobe"))
+        .expect("row") as u16;
+    // The tool row's own text is short; anything drawn far to its right on the
+    // same screen row belongs to the side panel.
+    let text = snap.lines().nth(row as usize).unwrap();
+    let row_text_width = text.trim_end().len();
+    let far_right = (terminal.backend().buffer().area().width - 2).min(row_text_width as u16 + 30);
+
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw");
+    let cold = terminal.backend().buffer()[(far_right, row)].style().fg;
+
+    app.update_hover_at(4, row);
+    terminal
+        .draw(|f| crate::tui::ui::draw(f, &app))
+        .expect("draw");
+    let hot = terminal.backend().buffer()[(far_right, row)].style().fg;
+
+    assert_eq!(
+        cold, hot,
+        "hovering the transcript must not repaint cells beyond its own text"
+    );
+
+    crate::tui::hover::clear_hover();
+}
+

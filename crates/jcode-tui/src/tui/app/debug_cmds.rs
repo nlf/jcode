@@ -253,6 +253,19 @@ impl App {
                     inject(MouseEventKind::Drag(MouseButton::Left));
                     inject(MouseEventKind::Up(MouseButton::Left));
                 }
+                // Pointer motion drives the hover highlight, which the normal
+                // mouse handler never sees (the event loops route Moved
+                // separately), so drive it the same way they do.
+                "move" => {
+                    let changed = self.update_hover_at(col, row);
+                    let hover = crate::tui::hover::hover();
+                    self.debug_trace
+                        .record("mouse", format!("move at {col},{row}"));
+                    return format!(
+                        "OK: mouse move at {col},{row} (changed: {changed}, hover: {:?})",
+                        hover.map(|h| h.kind)
+                    );
+                }
                 other => return format!("mouse error: unknown kind '{other}'"),
             }
             self.debug_trace

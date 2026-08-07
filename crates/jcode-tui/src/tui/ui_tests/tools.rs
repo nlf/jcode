@@ -1523,3 +1523,52 @@ fn expanded_output_wraps_long_lines_instead_of_clipping() {
         "every character of the output should survive wrapping"
     );
 }
+
+
+/// Every row between the frame's header and footer must carry the left border.
+///
+/// The blank separator between `arguments` and `output` originally rendered as
+/// `"│ "`, whose trailing space is stripped downstream, leaving a hole in the
+/// middle of the box.
+#[test]
+fn expanded_tool_detail_frame_has_no_gaps() {
+    use crate::message::ToolCall;
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "alpha\nbeta".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "x".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "ls" }),
+            intent: None,
+            thought_signature: None,
+        }),
+    };
+    let lines = super::render_expanded_tool_detail(&msg, 60);
+    let text: Vec<String> = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
+
+    assert!(text.first().is_some_and(|l| l.starts_with("┌─")));
+    assert!(text.last().is_some_and(|l| l.starts_with("└─")));
+    for line in &text[1..text.len() - 1] {
+        assert!(
+            line.starts_with('│'),
+            "every interior row needs the left border, got {line:?} in {text:?}"
+        );
+        assert_eq!(
+            line.trim_end(),
+            line.as_str(),
+            "a trailing space is stripped downstream and breaks the border: {line:?}"
+        );
+    }
+}

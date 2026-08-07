@@ -1793,6 +1793,15 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
             normalize_repaint_sensitive_notice_text(&notice),
             Style::default().fg(accent_color()),
         ));
+    } else if let Some(target) = crate::tui::hover::hover() {
+        // Only when there is no notice to show: brightening says "this is
+        // clickable", the hint says what the click does, and neither is worth
+        // displacing an actual status message the user asked for.
+        push_sep(&mut spans);
+        spans.push(Span::styled(
+            target.kind.hint().to_string(),
+            Style::default().fg(dim_color()),
+        ));
     }
 
     // Learned-keybinding nudge: distinct bright color + bold so the user reads

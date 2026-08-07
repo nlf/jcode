@@ -497,7 +497,10 @@ async fn apply_terminal_event(
         Some(Ok(Event::Mouse(mouse))) => {
             input_attribution.event = Some(format!("mouse:{:?}", mouse.kind));
             input_attribution.scroll_delta = mouse_scroll_delta(&mouse);
-            if !matches!(mouse.kind, MouseEventKind::Moved) {
+            if matches!(mouse.kind, MouseEventKind::Moved) {
+                // Motion only moves the hover highlight; repaint when it moved.
+                needs_redraw |= app.update_hover_at(mouse.column, mouse.row);
+            } else {
                 app.note_client_interaction();
                 handle_mouse_event(app, mouse);
                 needs_redraw = true;
@@ -765,7 +768,9 @@ fn handle_terminal_event_while_disconnected(
             needs_redraw = true;
         }
         Some(Ok(Event::Mouse(mouse))) => {
-            if !matches!(mouse.kind, MouseEventKind::Moved) {
+            if matches!(mouse.kind, MouseEventKind::Moved) {
+                needs_redraw |= app.update_hover_at(mouse.column, mouse.row);
+            } else {
                 app.note_client_interaction();
                 handle_mouse_event(app, mouse);
                 needs_redraw = true;

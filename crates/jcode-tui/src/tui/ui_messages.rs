@@ -3734,21 +3734,41 @@ fn render_discovery_card(
 /// row deliberately elides both (the command to one line, the output entirely),
 /// so this is the only place either is shown in full.
 pub(crate) fn render_expanded_tool_detail(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let indent = "    ";
-    let body_width = (width as usize).saturating_sub(indent.len() + 2).max(8);
+    // Framed like the edit-tool diff (`┌─ label` / `│ body` / `└─`) so the two
+    // kinds of revealed detail read as the same kind of thing: a bounded block
+    // belonging to the row above it, rather than loose indented text that runs
+    // into whatever follows.
+    let border_style = Style::default().fg(dim_color());
     let label_style = Style::default().fg(dim_color());
     let body_style = Style::default().fg(dim_color());
+    let border_prefix = "│ ";
+    // The frame owns two cells of prefix; keep a trailing cell so a full-width
+    // line cannot collide with the terminal's own wrap.
+    let body_width = (width as usize)
+        .saturating_sub(unicode_width::UnicodeWidthStr::width(border_prefix) + 3)
+        .max(8);
+
+    let mut body: Vec<Line<'static>> = Vec::new();
+    let framed_line = |spans: Vec<Span<'static>>| -> Line<'static> {
+        // An empty row gets a bare `│` rather than `│ `: a trailing space is
+        // stripped downstream, which broke the border on blank separator rows
+        // and left a gap in the middle of the frame.
+        let prefix = if spans.is_empty() {
+            border_prefix.trim_end().to_string()
+        } else {
+            border_prefix.to_string()
+        };
+        let mut out = vec![Span::styled(prefix, border_style)];
+        out.extend(spans);
+        Line::from(out).alignment(ratatui::layout::Alignment::Left)
+    };
 
     if let Some(tc) = msg.tool_data.as_ref() {
         // Full arguments, one key per line. `get_tool_summary_with_budget` on
         // the collapsed row squeezes these into a single elided string, which
         // is exactly what the user clicked to get past.
         if let Some(obj) = tc.input.as_object().filter(|obj| !obj.is_empty()) {
-            lines.push(Line::from(vec![
-                Span::raw(indent),
-                Span::styled("arguments", label_style),
-            ]));
+            body.push(framed_line(vec![Span::styled("arguments", label_style)]));
             for (key, value) in obj {
                 let rendered = match value {
                     serde_json::Value::String(text) => text.clone(),
@@ -3759,11 +3779,11 @@ pub(crate) fn render_expanded_tool_detail(msg: &DisplayMessage, width: u16) -> V
                     .enumerate()
                 {
                     let prefix = if i == 0 {
-                        format!("{indent}  {key}: ")
+                        format!("  {key}: ")
                     } else {
-                        format!("{indent}    ")
+                        "    ".to_string()
                     };
-                    lines.push(Line::from(vec![
+                    body.push(framed_line(vec![
                         Span::styled(prefix, label_style),
                         Span::styled(chunk, body_style),
                     ]));
@@ -3773,28 +3793,49 @@ pub(crate) fn render_expanded_tool_detail(msg: &DisplayMessage, width: u16) -> V
     }
 
     let output = strip_ansi_escape_sequences(msg.content.trim_end());
+    let mut output_lines = 0usize;
     if !output.trim().is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::from(""));
+        if !body.is_empty() {
+            body.push(framed_line(Vec::new()));
         }
-        lines.push(Line::from(vec![
-            Span::raw(indent),
-            Span::styled("output", label_style),
-        ]));
+        body.push(framed_line(vec![Span::styled("output", label_style)]));
         for raw_line in output.lines() {
+            output_lines += 1;
             if raw_line.is_empty() {
-                lines.push(Line::from(""));
+                body.push(framed_line(Vec::new()));
                 continue;
             }
             for chunk in split_by_display_width(raw_line, body_width) {
-                lines.push(Line::from(vec![
-                    Span::raw(format!("{indent}  ")),
+                body.push(framed_line(vec![
+                    Span::raw("  ".to_string()),
                     Span::styled(chunk, body_style),
                 ]));
             }
         }
     }
 
+    if body.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(body.len() + 2);
+    lines.push(
+        Line::from(Span::styled("┌─ detail".to_string(), border_style))
+            .alignment(ratatui::layout::Alignment::Left),
+    );
+    lines.extend(body);
+    // Mirror the diff footer's habit of reporting the size of what it showed,
+    // so a long output states its own length instead of leaving the reader to
+    // count rows.
+    let footer = if output_lines > 1 {
+        format!("└─ ({output_lines} lines)")
+    } else {
+        "└─".to_string()
+    };
+    lines.push(
+        Line::from(Span::styled(footer, border_style))
+            .alignment(ratatui::layout::Alignment::Left),
+    );
     lines
 }
 

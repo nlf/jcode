@@ -411,7 +411,10 @@ fn apply_terminal_event(
         }
         Some(Ok(Event::Mouse(mouse))) => {
             if matches!(mouse.kind, crossterm::event::MouseEventKind::Moved) {
-                return Ok(false);
+                // Motion is not interaction (it must not count as client
+                // activity or wake anything), but it does move the hover
+                // highlight. Repaint only when the highlighted region changed.
+                return Ok(app.update_hover_at(mouse.column, mouse.row));
             }
             app.note_client_interaction();
             app.handle_mouse_event(mouse);

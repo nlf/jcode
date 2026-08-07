@@ -2588,6 +2588,206 @@ pub(crate) fn inline_image_body_target_from_screen(
     (rel_col < right_edge).then_some(region.hash)
 }
 
+/// Brighten the cells of the currently hovered click target.
+///
+/// Applied to the finished buffer rather than at each render site: the click
+/// targets are discovered by hit-testing a laid-out frame, so the region is
+/// only known once the frame exists. A uniform lift also means every kind of
+/// clickable region signals the same way, which is the point.
+pub(crate) fn apply_hover_highlight(buffer: &mut ratatui::buffer::Buffer) {
+    let Some(target) = crate::tui::hover::hover() else {
+        return;
+    };
+    let buf_area = *buffer.area();
+    for row in target.top_row..target.bottom_row {
+        if row < buf_area.y || row >= buf_area.y.saturating_add(buf_area.height) {
+            continue;
+        }
+        for col in target.left_col..target.right_col {
+            if col < buf_area.x || col >= buf_area.x.saturating_add(buf_area.width) {
+                continue;
+            }
+            let cell = &mut buffer[(col, row)];
+            // Blank cells have nothing to brighten and lifting their background
+            // would draw a solid bar across the row, which reads as a selection
+            // rather than a hint.
+            if cell.symbol().trim().is_empty() {
+                continue;
+            }
+            let lifted = brighten_hover_color(cell.style().fg);
+            cell.set_style(cell.style().fg(lifted));
+        }
+    }
+}
+
+/// Blend a color toward white so a hovered region reads as "live" while
+/// keeping its hue, so a diff's red/green and a tool row's dim gray each stay
+/// recognizable instead of all becoming the same highlight color.
+fn brighten_hover_color(color: Option<ratatui::style::Color>) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match color {
+        Some(Color::Rgb(r, g, b)) => {
+            let lift = |c: u8| -> u8 { c.saturating_add((255 - c) / 2) };
+            Color::Rgb(lift(r), lift(g), lift(b))
+        }
+        // A cell with no explicit foreground is drawing in the terminal's
+        // default color; white is the honest "brighter" for it.
+        None => Color::White,
+        Some(other) => other,
+    }
+}
+
+/// Resolve what is clickable under a screen cell, for hover feedback.
+///
+/// Deliberately built from the same hit-tests the click handlers use, in the
+/// same order the mouse handler tries them, so the highlight can never promise
+/// a click the handlers would not honor. Returns the region to brighten.
+///
+/// `is_tool_message` mirrors the predicate `try_toggle_tool_expand_at` passes,
+/// so a tool row that hides nothing (and is therefore inert) does not light up.
+pub(crate) fn hover_target_from_screen(
+    column: u16,
+    row: u16,
+    centered: bool,
+    is_tool_message: impl Fn(usize) -> bool,
+) -> Option<crate::tui::hover::HoverTarget> {
+    use crate::tui::hover::{HoverKind, HoverTarget};
+
+    let point = copy_point_from_screen(column, row)?;
+    let snapshot = copy_snapshot_for_pane(point.pane)?;
+    let area = snapshot.content_area;
+    // Rows the highlight may cover, translated back from absolute transcript
+    // lines to screen rows through the same scroll offset the hit-test used.
+    let row_for_abs = |abs: usize| -> u16 {
+        let rel = abs.saturating_sub(snapshot.scroll);
+        area.y.saturating_add(rel.min(u16::MAX as usize) as u16)
+    };
+    // Highlighting the pane's full width would run the lift straight through
+    // the side-panel border sitting in the same screen rows. Bound it to the
+    // widest line the region actually drew, so the highlight covers the text
+    // and nothing beyond it.
+    let region_right = |top_abs: usize, bottom_abs: usize| -> u16 {
+        let widest = (top_abs..bottom_abs)
+            .filter_map(|abs| snapshot.wrapped_plain_line(abs))
+            .map(|text| line_display_width(text.trim_end()))
+            .max()
+            .unwrap_or(0);
+        area.x
+            .saturating_add((widest as u16).min(area.width))
+            .min(area.x.saturating_add(area.width))
+    };
+    let full_row = |top: u16, bottom: u16, top_abs: usize, bottom_abs: usize, kind: HoverKind| {
+        HoverTarget {
+            kind,
+            top_row: top.max(area.y),
+            bottom_row: bottom.min(area.y.saturating_add(area.height)),
+            left_col: area.x,
+            right_col: region_right(top_abs, bottom_abs),
+        }
+    };
+
+    // Links first: the mouse handler opens a URL before it expands the row
+    // around it, so hovering one must advertise the link, not the row.
+    if point.pane != crate::tui::CopySelectionPane::Input
+        && let Some(_url) = link_target_from_snapshot(&snapshot, point)
+    {
+        return Some(HoverTarget {
+            kind: HoverKind::Link,
+            top_row: row,
+            bottom_row: row.saturating_add(1),
+            // A link is a run of cells inside a line rather than the whole
+            // line, but its exact extent is not reported by the hit-test.
+            // Highlighting the line it lives on is honest about the row and
+            // still points at the right place.
+            left_col: area.x,
+            right_col: region_right(point.abs_line, point.abs_line + 1),
+        });
+    }
+
+    if point.pane != crate::tui::CopySelectionPane::Chat {
+        return None;
+    }
+
+    if let Some(prepared) = match &snapshot.data {
+        CopyViewportData::ChatFrame { prepared } => Some(prepared.clone()),
+        CopyViewportData::Dense { .. } => None,
+    } {
+        // Swarm badge: only the trailing token is clickable, so only the
+        // trailing token lights up. Reuse the screen hit-test rather than
+        // recomputing the badge column.
+        if swarm_expand_target_from_screen(column, row).is_some() {
+            let badge_left = snapshot
+                .wrapped_plain_line(point.abs_line)
+                .map(|text| {
+                    let trimmed = text.trim_end();
+                    [
+                        messages::SWARM_EXPAND_BADGE,
+                        messages::SWARM_COLLAPSE_BADGE,
+                        messages::SWARM_DIFF_EXPAND_BADGE,
+                        messages::SWARM_DIFF_COLLAPSE_BADGE,
+                    ]
+                    .iter()
+                    .find_map(|badge| {
+                        let prefix = trimmed.strip_suffix(badge)?;
+                        Some(line_display_width(prefix))
+                    })
+                    .unwrap_or(0)
+                })
+                .unwrap_or(0);
+            return Some(HoverTarget {
+                kind: HoverKind::SwarmBadge,
+                top_row: row,
+                bottom_row: row.saturating_add(1),
+                left_col: area.x.saturating_add(badge_left as u16),
+                right_col: region_right(point.abs_line, point.abs_line + 1),
+            });
+        }
+
+        // A truncated diff highlights its whole framed block, which is the
+        // unit that expands.
+        if let Some(range) = prepared.edit_tool_ranges.iter().find(|range| {
+            range.expandable
+                && point.abs_line >= range.start_line
+                && point.abs_line < range.end_line
+        }) {
+            return Some(full_row(
+                row_for_abs(range.start_line),
+                row_for_abs(range.end_line),
+                range.start_line,
+                range.end_line,
+                HoverKind::Diff,
+            ));
+        }
+
+        if let Some(msg_idx) = prepared.message_index_at_line(point.abs_line)
+            && is_tool_message(msg_idx)
+        {
+            return Some(full_row(
+                row,
+                row.saturating_add(1),
+                point.abs_line,
+                point.abs_line + 1,
+                HoverKind::ToolRow,
+            ));
+        }
+    }
+
+    // Inline images: the label line and the picture itself both cycle size.
+    if inline_image_expand_target_from_screen(column, row).is_some()
+        || inline_image_body_target_from_screen(column, row, centered).is_some()
+    {
+        return Some(full_row(
+            row,
+            row.saturating_add(1),
+            point.abs_line,
+            point.abs_line + 1,
+            HoverKind::Image,
+        ));
+    }
+
+    None
+}
+
 /// Debug dump of the live chat snapshot's inline-image regions plus the screen
 /// coordinates of each visible label line (the click target that cycles the
 /// image size), so external drivers (debug socket) can compute real click
@@ -2663,6 +2863,9 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     jcode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
     jcode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
     adapt_buffer_for_emoji_preference(frame.buffer_mut());
+    // Brighten whatever the pointer is over, last, so the lift is applied to
+    // final colors rather than being undone by the theme/palette passes above.
+    apply_hover_highlight(frame.buffer_mut());
     // Cache eviction/clearing can outlive the last visible image. Carry Kitty
     // deletion commands on any completed frame so terminal-side pixel storage
     // is reclaimed even when no image widget renders again.

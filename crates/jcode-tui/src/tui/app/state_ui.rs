@@ -187,6 +187,12 @@ impl App {
     /// recompute counters. Callers that have already maintained the cached
     /// counters incrementally (e.g. a single append) use this to stay O(1).
     pub(super) fn bump_display_messages_version_no_stats(&mut self) {
+        // The hover highlight is a screen region resolved against the previous
+        // frame's layout. Once the transcript changes, that region may name
+        // different content (or none), so drop it rather than leave a stale
+        // patch of brightness on whatever moved into those cells. The next
+        // pointer motion re-resolves it against the new frame.
+        crate::tui::hover::clear_hover();
         self.display_messages_version = self.display_messages_version.wrapping_add(1);
         self.bump_context_revision();
         self.refresh_split_view_if_needed();
