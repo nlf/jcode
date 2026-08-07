@@ -451,7 +451,9 @@ fn the_duplicate_check_runs_before_any_section_is_prepared() {
 fn a_section_failure_names_the_file_it_came_from() {
     let store = SnapshotStore::new();
     let text = "one\n";
-    let tag = store.record("a.txt", text, Some(&[1, 2]));
+    // Recorded so the path is tracked: that makes "FFFF" an unknown *tag*
+    // rather than an unknown path, which is the case worth naming.
+    store.record("a.txt", text, Some(&[1, 2]));
     let bad = ops("PUT 1.=1:\n+ONE");
 
     let error = preflight(&store, &[section("a.txt", text, "FFFF", &bad)], true)

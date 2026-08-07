@@ -92,7 +92,12 @@ fn interior_whitespace_is_content_and_does_change_the_tag() {
 fn identical_content_always_mints_the_same_tag() {
     let text = "fn main() {\n    println!(\"hi\");\n}\n";
     assert_eq!(compute_file_hash(text), compute_file_hash(text));
-    assert_eq!(compute_file_hash(text), compute_file_hash(&text.to_string()));
+
+    // Built at runtime rather than a literal, so this compares independently
+    // constructed buffers. The previous form passed `&text.to_string()`, which
+    // derefs straight back to the same `&str` and asserted `f(x) == f(x)`.
+    let rebuilt: String = text.chars().collect();
+    assert_eq!(compute_file_hash(text), compute_file_hash(&rebuilt));
 }
 
 /// Different content generally differs. Sixteen bits collide by birthday at
