@@ -192,8 +192,10 @@ fn test_resolve_tool_name_oauth_aliases() {
     assert_eq!(Registry::resolve_tool_name("read_file"), "read");
     assert_eq!(Registry::resolve_tool_name("write_file"), "write");
     assert_eq!(Registry::resolve_tool_name("edit_file"), "edit");
-    assert_eq!(Registry::resolve_tool_name("task_runner"), "subagent");
-    assert_eq!(Registry::resolve_tool_name("task"), "subagent");
+    // The `subagent` tool was removed in 1e7bd9d16; `swarm` spawns workers now.
+    assert_eq!(Registry::resolve_tool_name("task_runner"), "swarm");
+    assert_eq!(Registry::resolve_tool_name("task"), "swarm");
+    assert_eq!(Registry::resolve_tool_name("subagent"), "swarm");
     assert_eq!(Registry::resolve_tool_name("launch"), "open");
     // `grep` is a registered tool again, so it resolves to itself; aliasing it
     // to agentgrep sent regex patterns to a literal search.
@@ -601,11 +603,6 @@ async fn every_alias_target_is_a_registered_tool() {
     // The alias table is not enumerable, so probe the names it redirects,
     // including the PascalCase OAuth spellings that `batch` subcalls resolve
     // through rather than the provider-side reverse map.
-    //
-    // `task`/`task_runner`/`Agent` are deliberately absent: they resolve to
-    // `subagent`, which this build never registers, so they are already
-    // dangling. That predates this test and is left as a separate finding
-    // rather than silently accepted by weakening the assertion.
     let aliases = [
         "shell",
         "shell_exec",
@@ -616,6 +613,9 @@ async fn every_alias_target_is_a_registered_tool() {
         "edit_file",
         "file_edit",
         "file_grep",
+        "task",
+        "task_runner",
+        "subagent",
         "launch",
         "communicate",
         "discover_tools",
@@ -627,6 +627,7 @@ async fn every_alias_target_is_a_registered_tool() {
         "Edit",
         "Grep",
         "Glob",
+        "Agent",
         "Skill",
     ];
 

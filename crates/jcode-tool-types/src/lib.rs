@@ -76,7 +76,11 @@ pub fn resolve_tool_name(name: &str) -> &str {
 
     match name {
         "communicate" => "swarm",
-        "task" | "task_runner" => "subagent",
+        // The `subagent` tool was removed in 1e7bd9d16 but these aliases kept
+        // pointing at it, so every one of them failed with "Unknown tool".
+        // `swarm` is what replaced it: spawning a worker is `swarm` with
+        // action `spawn`.
+        "task" | "task_runner" | "subagent" => "swarm",
         "launch" => "open",
         "shell" => "bash",
         "shell_exec" => "bash",
@@ -106,7 +110,7 @@ pub fn resolve_tool_name(name: &str) -> &str {
         "Edit" => "edit",
         "Grep" => "grep",
         "Glob" => "glob",
-        "Agent" => "subagent",
+        "Agent" => "swarm",
         "ScheduleWakeup" => "schedule",
         other => other,
     }
@@ -164,7 +168,10 @@ mod tests {
         // old target silently defeated the adapter's regex handling.
         assert_eq!(resolve_tool_name("Grep"), "grep");
         assert_eq!(resolve_tool_name("Glob"), "glob");
-        assert_eq!(resolve_tool_name("Agent"), "subagent");
+        // The `subagent` tool was removed; `swarm` is what spawns workers now.
+        assert_eq!(resolve_tool_name("Agent"), "swarm");
+        assert_eq!(resolve_tool_name("subagent"), "swarm");
+        assert_eq!(resolve_tool_name("task"), "swarm");
         assert_eq!(resolve_tool_name("ScheduleWakeup"), "schedule");
         assert_eq!(resolve_tool_name("Skill"), "skill_manage");
         assert_eq!(resolve_tool_name("functions.Read"), "read");

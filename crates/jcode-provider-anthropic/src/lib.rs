@@ -407,7 +407,6 @@ pub fn format_content_blocks(blocks: &[ContentBlock], is_oauth: bool) -> Vec<Api
 /// call failed with "task is required for action=create" (#706). Forwarding the
 /// real schema under the remapped name keeps the two in sync by construction.
 const OAUTH_BUILTIN_LOCAL_TOOLS: &[&str] = &[
-    "subagent",
     "bash",
     "edit",
     "glob",
@@ -449,16 +448,11 @@ pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool
         // is appended from the real registry below so OAuth users keep the full
         // toolset (websearch, webfetch, browser, codesearch, memory, ...).
         let curated: Vec<(&[&str], ApiTool)> = vec![
-            (
-                &["subagent"],
-                ApiTool {
-                    name: "Agent".to_string(),
-                    description: "Launch a new agent to handle complex, multi-step tasks."
-                        .to_string(),
-                    input_schema: json!({"type":"object","properties":{"description":{"type":"string"},"prompt":{"type":"string"},"subagent_type":{"type":"string"},"run_in_background":{"type":"boolean"}},"required":["description","prompt"],"additionalProperties":false}),
-                    cache_control: None,
-                },
-            ),
+            // The curated `Agent` entry was removed with the `subagent` tool it
+            // stood for (1e7bd9d16). `has_backing` was already dropping it, so
+            // this changes nothing at runtime; keeping a definition for a tool
+            // that cannot exist only invites someone to "fix" the filter.
+            // Spawning workers is `swarm`, forwarded from the registry below.
             (
                 &["bash"],
                 ApiTool {
