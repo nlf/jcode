@@ -1054,7 +1054,6 @@ fn run_macos_hotkey_listener() -> Result<()> {
             args.extend(launch.args.clone());
             let command = TerminalCommand::new(&exe_path, args)
                 .fresh_spawn()
-                .new_tab(macos_terminal::config_prefers_new_tab())
                 .kind("hotkey")
                 .spawn_env("JCODE_SPAWN_LABEL", launch.label.clone());
             match spawn_command_in_new_terminal_with(&command, &cwd, |cmd| cmd.spawn().map(|_| ()))

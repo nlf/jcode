@@ -107,18 +107,6 @@ pub(super) fn effective_macos_terminal() -> MacTerminalKind {
 
 /// Read `[terminal] preferred` from `~/.jcode/config.toml`, if present and valid.
 fn config_preferred_macos_terminal() -> Option<MacTerminalKind> {
-    read_terminal_config()?
-        .preferred
-        .and_then(|preferred| MacTerminalKind::from_cli_value(&preferred))
-}
-
-/// Read `[terminal] new_tab` from `~/.jcode/config.toml`. Defaults to `false`
-/// (open a new window), matching jcode's historical behavior.
-pub(super) fn config_prefers_new_tab() -> bool {
-    read_terminal_config().map(|t| t.new_tab).unwrap_or(false)
-}
-
-fn read_terminal_config() -> Option<jcode_config_types::TerminalConfig> {
     #[derive(Deserialize, Default)]
     struct Wrapper {
         #[serde(default)]
@@ -126,7 +114,9 @@ fn read_terminal_config() -> Option<jcode_config_types::TerminalConfig> {
     }
     let dir = storage::jcode_dir().ok()?;
     let text = std::fs::read_to_string(dir.join("config.toml")).ok()?;
-    Some(toml::from_str::<Wrapper>(&text).ok()?.terminal)
+    let wrapper = toml::from_str::<Wrapper>(&text).ok()?;
+    let preferred = wrapper.terminal.preferred?;
+    MacTerminalKind::from_cli_value(&preferred)
 }
 
 fn detect_macos_terminal() -> MacTerminalKind {

@@ -770,17 +770,6 @@ pub struct TerminalConfig {
     ///
     /// macOS only; ignored on other platforms.
     pub preferred: Option<String>,
-    /// Open new jcode sessions as a **tab** in the existing terminal window
-    /// instead of a brand-new window.
-    ///
-    /// Applies to the macOS launch hotkeys (Cmd+; and friends) and in-app
-    /// session spawns. Supported for Ghostty (1.2+) and iTerm2; other terminals
-    /// ignore it and keep opening a new window. When no window exists yet, a
-    /// new window is opened regardless.
-    ///
-    /// macOS only; ignored on other platforms.
-    #[serde(default)]
-    pub new_tab: bool,
 }
 
 /// Lifecycle hooks: external commands jcode runs at well-defined points.

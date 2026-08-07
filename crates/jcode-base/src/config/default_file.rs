@@ -522,12 +522,6 @@ swarm_max_concurrent_agents = 32
 # ~/.jcode/preferred_terminal.json file. After changing this, re-run
 # `jcode setup-hotkey` so the generated launcher script (Cmd+;) picks it up.
 # preferred = "ghostty"
-# macOS only: open new jcode sessions as a TAB in the existing terminal window
-# instead of a brand-new window. Applies to the launch hotkeys (Cmd+;, Cmd+',
-# Cmd+Shift+') and in-app session spawns. Supported for Ghostty (1.2+) and
-# iTerm2; other terminals ignore it. A new window is still opened when the
-# terminal has none. Re-run `jcode setup-hotkey` is not required.
-# new_tab = true
 
 [notifications]
 # Desktop notifications for interactive sessions (macOS Notification Center /
