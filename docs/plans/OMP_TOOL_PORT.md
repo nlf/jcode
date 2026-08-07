@@ -1421,3 +1421,97 @@ definition, always on, is not.
 **Acceptance:** `tool_descriptions_stay_under_token_cap` still passes unchanged
 after the port, and a new test asserts the format spec is absent from the
 always-on tool definitions.
+
+---
+
+# Are omp's tests actually portable? Measured, 2026-08-07
+
+The plan's central premise is "port their tests as the spec". That was asserted
+after reading **3 of ~21 files**. Checked properly by extracting all 185 test
+files. **The premise holds, and the split between the two tiers is sharper than
+expected.**
+
+## Tier 1 imports nothing but the library
+
+Every one of the 12 files in `packages/hashline/test/` imports **only**
+`@oh-my-pi/hashline`, `bun:test`, and (in one file) `node:fs`/`os`/`path`:
+
+```
+ 12 "bun:test"
+  6 "@oh-my-pi/hashline"
+  1 "node:path"  1 "node:os"  1 "node:fs/promises"
+```
+
+**No session, no agent, no TUI, no settings.** The public surface they exercise
+is `applyEdits`, `parsePatch`, `Patch`, `Patcher`, `Recovery`,
+`InMemoryFilesystem`, `InMemorySnapshotStore`, `detectLineEnding`,
+`formatHashlineHeader` — all pure or filesystem-abstracted.
+
+**351 test cases**, distributed:
+
+| file | tests | phase |
+|---|---|---|
+| `boundary-repair.test.ts` | **88** | 5 |
+| `leniency.test.ts` | 53 | 3 (parser tolerance) |
+| `block.test.ts` | 49 | deferred (tree-sitter) |
+| `patcher.test.ts` | 29 | **3, core** |
+| `landing-shift.test.ts` | 28 | 5 (landing repair) |
+| `clipboard.test.ts` | 25 | 3 or deferred |
+| `format-v2.test.ts` | 24 | **3, core** |
+| `core-contracts.test.ts` | 21 | **3, core, start here** |
+| `snapshots.test.ts` | 12 | **3, core** |
+| `recovery-session-chain.test.ts` | 11 | 3b |
+| `diff-preview.test.ts` | 6 | 3 (renderer) |
+| `file-ops.test.ts` | 5 | **3, core** |
+
+**The v1 target is 91 tests** (core-contracts + patcher + format-v2 + snapshots
++ file-ops). That is a concrete, countable Phase 2 deliverable, replacing the
+plan's unfalsifiable "a failing suite".
+
+Deferred to Phase 5: 116 tests (boundary-repair + landing-shift). Deferred
+indefinitely: 49 (block).
+
+## Tier 2 splits cleanly into portable and coupled
+
+Measured by counting `ToolSession`/`createTools`/`Settings` references:
+
+| file | tests | coupling refs | verdict |
+|---|---|---|---|
+| `tools/glob-validate-paths.test.ts` | 10 | **0** | port directly |
+| `edit/file-snapshot-store.test.ts` | 8 | **0** | port directly |
+| `read-multi-range.test.ts` | 15 | 4 | light |
+| `read-summary.test.ts` | 18 | 4 | light |
+| `write-hashline-header.test.ts` | 8 | 5 | light |
+| `core/hashline-loop-guard.test.ts` | 6 | 9 | moderate |
+| `tools/multi-grep-path.test.ts` | 9 | 9 | moderate |
+| `core/hashline.test.ts` | 23 | 12 | moderate |
+| `edit/seen-line-guard.test.ts` | 18 | 15 | moderate |
+| `tools/grep-path-lists.test.ts` | 32 | **35** | heaviest |
+
+`tools/glob.test.ts` reports 0 tests — it uses `test(` inside a different
+structure or is a type-only file; **re-check before relying on it.**
+
+The coupling is almost entirely a **session fixture**: they construct a
+`ToolSession` object literal with `cwd`, `settings`, `getSessionFile`, etc. Our
+equivalent is a `ToolContext` with `session_id` and `working_dir`, which is
+*simpler*. So "coupled" here means "needs a fixture", not "needs the agent".
+
+**Write one `test_ctx()` helper first**; it converts most of the moderate
+column into mechanical work.
+
+## What this does and does not validate
+
+**Validated:** the tests are portable, the library API they exercise is one we
+can mirror, and Tier 1 needs no jcode integration at all. Phase 2 can start
+against `jcode-hashline` alone, before any tool is touched.
+
+**Not validated:** whether the *behaviours* they assert are compatible with
+jcode's session model. That is still what Phase 2 exists to discover; this only
+establishes that the mechanics of porting are not the obstacle.
+
+**Revised Phase 2 exit criterion**, replacing the unfalsifiable one:
+
+> 91 Rust tests ported from Tier 1 core (core-contracts 21, patcher 29,
+> format-v2 24, snapshots 12, file-ops 5), each failing with an assertion
+> rather than a compile error or `todo!()`, plus a `test_ctx()` fixture and
+> `PORTING_NOTES.md` recording every dropped test with a reason.
