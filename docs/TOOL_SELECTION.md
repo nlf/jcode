@@ -132,3 +132,15 @@ Live runs are still the right tool for the question they actually answer,
 which is *which* tool a model reaches for. That is what the bash-count
 measurement above uses them for. They are a poor instrument for what a tool
 then does.
+
+## Known unrelated failures
+
+Three `jcode-base` tests fail on this machine and are unrelated to any of the
+above. Confirmed failing at `0e09472c2`, which predates this work:
+
+- `platform::platform_tests::spawn_detached_creates_new_session`
+- `provider::tests::test_hosted_model_guard_does_not_gate_models_by_legacy_tier`
+- `session::tests::cases::streaming_guard_creates_visible_macos_sleep_assertion`
+
+Recorded so the next person does not re-derive that they are not their fault.
+They are real failures and worth fixing, just not here.
