@@ -553,6 +553,97 @@ async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
     );
 }
 
+/// A registered tool must never be aliased to a different tool.
+///
+/// `resolve_tool_name` exists to redirect names with *no* tool behind them.
+/// When such a name later becomes a real tool, the alias silently wins and the
+/// new tool is unreachable. That is what happened to `grep`: it kept resolving
+/// to `agentgrep` after a `grep` tool was registered, so every regex pattern
+/// was quietly searched literally.
+///
+/// A test that calls the tool directly cannot see this, because constructing
+/// `GrepTool` and calling `execute` skips the resolver. This checks the router
+/// against the registry.
+#[tokio::test]
+async fn registered_tools_are_never_aliased_to_something_else() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+
+    let mut hijacked = Vec::new();
+    for def in registry.definitions(None).await {
+        let resolved = Registry::resolve_tool_name(&def.name);
+        if resolved != def.name {
+            hijacked.push(format!("{} resolves to {resolved}", def.name));
+        }
+    }
+    assert!(
+        hijacked.is_empty(),
+        "these registered tools are aliased away and can never be called:\n{}",
+        hijacked.join("\n")
+    );
+}
+
+/// Every name the resolver redirects must land on a tool that exists.
+///
+/// The mirror of the check above: an alias pointing at a renamed or removed
+/// tool becomes "Unknown tool" at call time.
+#[tokio::test]
+async fn every_alias_target_is_a_registered_tool() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let registered: Vec<String> = registry
+        .definitions(None)
+        .await
+        .into_iter()
+        .map(|def| def.name)
+        .collect();
+
+    // The alias table is not enumerable, so probe the names it redirects,
+    // including the PascalCase OAuth spellings that `batch` subcalls resolve
+    // through rather than the provider-side reverse map.
+    //
+    // `task`/`task_runner`/`Agent` are deliberately absent: they resolve to
+    // `subagent`, which this build never registers, so they are already
+    // dangling. That predates this test and is left as a separate finding
+    // rather than silently accepted by weakening the assertion.
+    let aliases = [
+        "shell",
+        "shell_exec",
+        "read_file",
+        "file_read",
+        "write_file",
+        "file_write",
+        "edit_file",
+        "file_edit",
+        "file_grep",
+        "launch",
+        "communicate",
+        "discover_tools",
+        "todoread",
+        "todowrite",
+        "Bash",
+        "Read",
+        "Write",
+        "Edit",
+        "Grep",
+        "Glob",
+        "Skill",
+    ];
+
+    let mut dangling = Vec::new();
+    for alias in aliases {
+        let target = Registry::resolve_tool_name(alias);
+        if !registered.iter().any(|name| name == target) {
+            dangling.push(format!("{alias} -> {target} (not registered)"));
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "these aliases point at tools that do not exist:\n{}",
+        dangling.join("\n")
+    );
+}
+
 fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String, String)>) {
     match schema {
         Value::Object(map) => {
