@@ -1237,3 +1237,110 @@ tests, and it runs in this order:
 3. Decide and execute the `/show-agentgrep-output` question.
 4. Keep telemetry aliases; update the productivity aggregate.
 5. Delete the tool, its tests, and the git dependency.
+
+---
+
+# Decisions taken 2026-08-07, and what ast_grep means for hashline
+
+## The agentgrep deletion checklist, resolved
+
+The user's calls on the four items above:
+
+1. **Tool profiles** (`acp`, `minimal`/`lite`/`small` listing `agentgrep` with no
+   `grep`/`glob`) — **align them.** Ship the profile fix ahead of the deletion;
+   it is a bug on its own terms.
+2. **`/show-agentgrep-output`** — **delete it**, along with its config key, env
+   override, help text, autocomplete entries, config-summary line, and the
+   `render_agentgrep_output_body` renderer plus its tests. No migration, no
+   `/show-grep-output` successor. The config key goes inert, which is harmless.
+3. **Telemetry and productivity counting** — **drop it.** No interest in
+   tracking a tool that no longer exists. Accept the discontinuity in
+   historical stats rather than keeping alias entries alive.
+4. **Name-keyed display/status/ACP surfaces** — **align to `grep`/`glob`.**
+
+That removes most of the checklist above. What remains is item 1 (do it first,
+it is a real bug) and item 4 (mechanical). Items 2 and 3 become deletions rather
+than migrations, which is **less** work than the checklist assumed.
+
+## `outline` / `trace` / `smart`: superseded, not lost
+
+The concern that deleting agentgrep loses structural navigation with no
+replacement is **resolved by sequencing rather than by preservation.** The
+better answers already exist in the deferred work:
+
+- **LSP** gives real symbol navigation — definitions, references, document
+  symbols — which is what `trace` approximates textually and does worse.
+- **`ast_grep`** (tree-sitter) gives structural queries, which is what `outline`
+  approximates with ripgrep heuristics.
+
+So the disposition is: **delete now, and the capability returns properly with
+LSP and `ast_grep`.** Nothing needs to be preserved in the interim, because the
+interim replacements (`read`'s structural summary, plain `grep`) cover the
+common cases and the bespoke DSL was the part most likely to rot.
+
+This also retires the earlier "option 3: keep `outline` until `ast_grep` lands"
+recommendation. It is option 2 — drop both — with the understanding that LSP and
+`ast_grep` are the real successors.
+
+## ast_grep DOES interact with hashline, in both directions
+
+Verified in their source. This matters because it changes `ast_grep` from "a
+deferred nice-to-have" into **a tool that must be hashline-aware on the day it
+lands.**
+
+### `ast_grep` is a producer (`tools/ast-grep.ts`)
+
+```
+:2    import { formatHashlineHeader } from "@oh-my-pi/hashline";
+:10   import { recordFileSnapshot, recordSeenLinesFromBody } from "../edit/file-snapshot-store";
+:301  const tag = await recordFileSnapshot(this.session, absolutePath);
+:324  formatMatchLine(..., { useHashLines: hashContext !== undefined })
+:340  recordSeenLinesFromBody(this.session, absoluteFilePath, hashContext.tag, modelOut.join("\n"));
+:352  headerSuffix: hashContext?.tag ? `#${hashContext.tag}` : ""
+:368  outputLines.push(formatHashlineHeader(relativePath, hashContext.tag));
+```
+
+It mints tags, emits `[path#tag]` headers, numbers its match lines in hashline
+form, and records exactly the lines it displayed. **Structurally identical to
+`grep` as a producer** — which is unsurprising, since both show file content.
+
+### `ast_edit` is a producer *and* a snapshot invalidator (`tools/ast-edit.ts`)
+
+```
+:362  const tag = snapshotStore.record(canonicalSnapshotKey(absolutePath), fullText);
+:474-480  // after applying:
+      // "invalidated them. Re-record post-apply snapshots (canonical keys)
+      //  so the model's next hashline edit anchors against fresh tags."
+      const freshTag = snapshotStore.record(canonicalSnapshotKey(appliedAbsolutePath), fullText);
+      freshTagLines.push(formatHashlineHeader(relativePath, freshTag));
+```
+
+**Any tool that writes files must re-record snapshots afterwards**, or the next
+hashline edit anchors against content that no longer exists. `ast_edit` does a
+structural rewrite across many files, so it invalidates many tags at once and
+hands back a fresh header per file.
+
+### The general rule this establishes
+
+Section 3c listed producers and consumers. `ast_edit` shows the rule is
+stronger than that list implies:
+
+> **Every tool that displays file content must mint a tag and record seen
+> lines. Every tool that writes files must re-record afterwards and return the
+> fresh tag.**
+
+Our `write`, `patch`, `apply_patch`, and `multiedit` are all in the second
+category, not just `edit`. The plan says `write` records; it should say all
+four do, and that each returns its new tag the way `edit` does.
+
+### Consequence for sequencing
+
+`ast_grep`/`ast_edit` stay deferred, but **when they land they must be built
+hashline-aware from the start**, not retrofitted. Same for LSP if it ever
+displays file content (it does: `textDocument/documentSymbol` results,
+hover text, and code-action previews are all content the model may then try to
+address).
+
+Add to the Phase 3 acceptance: **a checklist item that any future file-touching
+tool is a snapshot producer or invalidator**, so this is a standing rule rather
+than a fact about six specific tools.
