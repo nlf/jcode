@@ -144,3 +144,50 @@ fn a_long_diff_is_truncated_and_says_so() {
         "5 rows plus the marker: {diff:?}"
     );
 }
+
+/// The TUI re-parses this output (`ui_diff::parse_diff_line`), and that parser
+/// begins with `raw_line.trim()`. Any leading pad this renderer adds is
+/// therefore discarded before the TUI re-pads for display. That is fine, but it
+/// means the *content* must not depend on the pad surviving: the marker has to
+/// stay adjacent to its digits so `prefix[..pos].all(is_ascii_digit)` still
+/// recognizes the row after trimming.
+#[test]
+fn padded_rows_still_parse_as_numbered_diff_lines() {
+    let mut old = String::new();
+    let mut new = String::new();
+    for i in 1..=11 {
+        old.push_str(&format!("        line{i}\n"));
+        new.push_str(&format!("        changed{i}\n"));
+    }
+
+    let diff = render_diff(&old, &new, 1, DEFAULT_MAX_DIFF_LINES);
+
+    for line in diff.lines() {
+        let trimmed = line.trim();
+        // Mirror the TUI's recognition rule.
+        let recognized = ["- ", "+ "].iter().any(|marker| {
+            trimmed
+                .find(marker)
+                .is_some_and(|pos| pos > 0 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()))
+        });
+        assert!(
+            recognized,
+            "the TUI trims the row before matching, so digits must stay flush \
+             against the marker: {line:?}"
+        );
+    }
+}
+
+/// A row must never begin with the marker after trimming, or the TUI's
+/// bare-`+` branch would treat the line number as content.
+#[test]
+fn a_trimmed_row_never_starts_with_its_marker() {
+    let diff = render_diff("alpha\n", "beta\n", 7, DEFAULT_MAX_DIFF_LINES);
+    for line in diff.lines() {
+        let trimmed = line.trim();
+        assert!(
+            !trimmed.starts_with('+') && !trimmed.starts_with('-'),
+            "a numbered row must lead with its number: {line:?}"
+        );
+    }
+}
