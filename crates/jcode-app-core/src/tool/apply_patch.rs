@@ -45,7 +45,11 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a Codex-style *** Begin Patch envelope across several files."
+        // Says what it is FOR, not just what it accepts. Asked to choose
+        // between this and `edit` from the descriptions alone, a real agent
+        // called the distinction ambiguous and inferred - correctly - that this
+        // is a compatibility shim. Better to state that than make it guess.
+        "Apply a Codex *** Begin Patch envelope given to you. Writing your own: use edit."
     }
 
     fn parameters_schema(&self) -> Value {
