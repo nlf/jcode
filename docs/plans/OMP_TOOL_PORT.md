@@ -1680,3 +1680,63 @@ accumulation across partial reads, and three concurrency cases.
 `patcher.rs` (preflight, seen-line guard, mismatch). The plan's estimate of
 "the top of 2-3 weeks" for 3a still looks right; two of the five pieces are
 done and they were the two with the least surface.
+
+---
+
+# Phase 3a running progress
+
+`crates/jcode-hashline`: **82 tests, ~1s.** Three of five v1 modules done.
+
+| module | status | tests | notes |
+|---|---|---|---|
+| `format` | done | 15 | tag proven byte-identical to omp |
+| `snapshots` | done | 19 | concurrency divergence, deliberate |
+| `prefixes` | done | 26 | the "malformed op" guard |
+| `input` | done | 22 | section splitting + path recovery |
+| `parser` + `apply` core | **next** | — | the largest remaining piece |
+| `patcher` | pending | — | preflight, seen-line guard, mismatch |
+
+## Every module has been mutation-tested
+
+Nine mutations so far, each caught by exactly the intended test and nothing
+else. This matters more than the pass count: a green suite that cannot fail is
+worse than no suite, because it licenses confidence it has not earned.
+
+| module | mutation | caught by |
+|---|---|---|
+| `format` | seed `0` → `1` | the interop collision test |
+| `format` | trim `\t`/`\r` dropped | the normalization test |
+| `snapshots` | dedup on tag, not tag+text | the collision test — their #4075 |
+| `snapshots` | replace provenance, not union | 4 tests |
+| `snapshots` | split `record` into two locks | the concurrency test |
+| `prefixes` | strip on *any* prefix | the partial-match test |
+| `prefixes` | keep metadata rows | the metadata test |
+| `prefixes` | treat `++` as a diff marker | the doubled-plus test |
+| `input` | strip keyword without its colon | the filename-mangling test |
+| `input` | any hex length is a tag | the path-with-`#` test |
+| `input` | never flag interleaved merges | that test |
+
+## What the leniency work revealed
+
+`prefixes` and `input` are both **entirely about recovering from model
+near-misses**, and their tests skew toward the *dangerous* direction rather than
+the happy path:
+
+- `prefixes`: failing to strip writes `12:` into a file; stripping real content
+  deletes part of a line. The second is worse, so hashline stripping demands
+  *every* content line carry a prefix.
+- `input`: `Update File:foo.ts` must recover, but `update_config.rs` must not
+  become `_config.rs` and land an edit on the wrong file.
+
+omp lists the exact recovery shapes in source comments as observed in benchmark
+traces. **Those comments are the most valuable thing in their codebase** — they
+are bug reports from production, and no amount of reasoning would have produced
+that list.
+
+## One estimate holding, one to watch
+
+The plan said 3a is "the top of 2-3 weeks". Four modules in, that still looks
+right, but the four done are the four with the least surface. `parser.ts` +
+`tokenizer.ts` is 48 KB against the ~40 KB of everything ported so far, and the
+applier core is another ~15 KB after removing repair. **The second half is
+larger than the first**, which is worth saying plainly rather than discovering.
