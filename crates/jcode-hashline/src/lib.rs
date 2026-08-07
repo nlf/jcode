@@ -9,6 +9,7 @@
 
 pub mod format;
 pub mod input;
+pub mod parser;
 pub mod prefixes;
 pub mod snapshots;
 
@@ -17,6 +18,7 @@ pub use format::{
     FILE_HASH_LENGTH,
 };
 pub use input::{normalize_path, parse_header_line, split_sections, RawSection};
+pub use parser::{parse_ops, Anchor, Op, ParsedOps};
 pub use prefixes::{
     is_read_metadata_line, parse_payload_text, strip_hashline_prefixes, strip_new_line_prefixes,
     strip_one_leading_hashline_prefix,
