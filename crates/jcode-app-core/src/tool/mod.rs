@@ -1,4 +1,3 @@
-mod agentgrep;
 pub mod ambient;
 mod apply_patch;
 mod bash;
@@ -195,17 +194,10 @@ impl Registry {
             let mut m = HashMap::new();
             Self::insert_tool_timed(&mut m, &mut timings, "read", read::ReadTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "write", write::WriteTool::new);
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "agentgrep",
-                agentgrep::AgentGrepTool::new,
-            );
-            // `grep` and `glob` are thin adapters onto agentgrep. They are
-            // registered under the names models already know so the curated
+            // Registered under the names models already know, so the curated
             // Claude-Code builtins have backing and are actually advertised;
             // without them a model finds its familiar search tools missing and
-            // falls back to bash plus ripgrep.
+            // falls back to bash plus ripgrep. They run on `jcode-search`.
             Self::insert_tool_timed(&mut m, &mut timings, "grep", grep_glob::GrepTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "glob", grep_glob::GlobTool::new);
             Self::insert_tool_timed(

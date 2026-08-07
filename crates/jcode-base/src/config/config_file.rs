@@ -376,16 +376,6 @@ impl Config {
     }
 
     /// Update the persisted show-agentgrep-output preference.
-    pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
-        let mut cfg = Self::load();
-        cfg.display.show_agentgrep_output = show;
-        cfg.save()?;
-        crate::logging::info(&format!(
-            "Saved display.show_agentgrep_output to config: {}",
-            show
-        ));
-        Ok(())
-    }
 
     /// Update the persisted tool-call-details preference.
     pub fn set_tool_call_details(show: bool) -> anyhow::Result<()> {

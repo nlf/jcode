@@ -45,19 +45,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentgrep"
-version = "0.1.6"
-source = "git+https://github.com/1jehuang/agentgrep.git?tag=v0.1.6#b01b804008ab0662fa14e6b60b10bff61716e6f1"
-dependencies = [
- "clap",
- "globset",
- "ignore",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3381,7 +3368,6 @@ dependencies = [
 name = "jcode-app-core"
 version = "0.1.0"
 dependencies = [
- "agentgrep",
  "anyhow",
  "async-stream",
  "async-trait",
@@ -3410,6 +3396,7 @@ dependencies = [
  "jcode-plan",
  "jcode-provider-core",
  "jcode-schema-dialect",
+ "jcode-search",
  "jcode-selfdev-types",
  "jcode-session-types",
  "jcode-setup-hints",

@@ -183,11 +183,6 @@ prompt_entry_animation = true
 # instead of the full multi-line card with diff preview (default: false)
 # compact_notifications = false
 
-# Show the full agentgrep tool output inline in the transcript instead of just
-# the one-line summary (default: false). Useful when you want to read search
-# results directly in the chat.
-# show_agentgrep_output = false
-
 # Show the dimmed technical detail (command, file path, args) next to the
 # model-provided intent on tool rows (default: false). When false, tool rows
 # with an intent show just the intent; rows without an intent still show the

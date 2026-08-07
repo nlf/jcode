@@ -84,6 +84,9 @@ pub fn classify_telemetry_tool_category(name: &str) -> TelemetryToolCategory {
         "read"
         | "glob"
         | "grep"
+        // agentgrep was removed, but historical telemetry still carries its
+        // name and must keep classifying into the same category, or past
+        // sessions silently recategorise.
         | "agentgrep"
         | "ls"
         | "conversation_search"

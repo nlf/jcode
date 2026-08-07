@@ -60,7 +60,6 @@ impl Config {
 - Animation FPS: {}
 - Redraw FPS: {}
 - Copy badge Alt label: {}
-- Show agentgrep output: {}
 - Tool call details: {}
 - Widget placement: {}
 - Theme: {}
@@ -193,7 +192,6 @@ impl Config {
             } else {
                 self.display.copy_badge_alt_label.trim()
             },
-            self.display.show_agentgrep_output,
             self.display.tool_call_details,
             match self.display.widget_placement {
                 crate::config::WidgetPlacementMode::Margin => "margin",

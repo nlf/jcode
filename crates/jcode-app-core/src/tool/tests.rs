@@ -506,7 +506,7 @@ async fn tool_descriptions_stay_under_token_cap() {
 #[tokio::test]
 async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
     // Each tool, and the shell habit it has to displace.
-    const COMPETING: &[&str] = &["grep", "glob", "read", "ls", "edit", "write", "agentgrep"];
+    const COMPETING: &[&str] = &["grep", "glob", "read", "ls", "edit", "write"];
 
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
@@ -534,7 +534,6 @@ async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
     let advantages: &[(&str, &[&str])] = &[
         ("grep", &["ignore-aware", "ranked"]),
         ("glob", &["skipping vendored"]),
-        ("agentgrep", &["symbol", "structure"]),
         ("read", &["numbered lines"]),
         ("ls", &["skipping vendored"]),
         ("edit", &["exact"]),

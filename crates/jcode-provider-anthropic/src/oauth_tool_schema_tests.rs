@@ -88,7 +88,7 @@ fn oauth_bash_schema_advertises_the_justification_escape_hatch() {
 /// the rest of the session (NLFCODE.md item 1).
 #[test]
 fn oauth_advertises_glob_and_grep_when_local_tools_back_them() {
-    let registry = vec![tool_def("grep"), tool_def("glob"), tool_def("agentgrep")];
+    let registry = vec![tool_def("grep"), tool_def("glob")];
     let formatted = format_tools(&registry, true, false);
     let names: Vec<&str> = formatted.iter().map(|t| t.name.as_str()).collect();
 
@@ -101,11 +101,6 @@ fn oauth_advertises_glob_and_grep_when_local_tools_back_them() {
     assert!(
         !names.contains(&"grep") && !names.contains(&"glob"),
         "adapters must not be advertised twice: {names:?}"
-    );
-    // agentgrep is a different tool and is still forwarded on its own.
-    assert!(
-        names.iter().any(|n| n.eq_ignore_ascii_case("agentgrep")),
-        "agentgrep must still be advertised: {names:?}"
     );
 }
 

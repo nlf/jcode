@@ -15,7 +15,6 @@ struct MessageCacheKey {
     centered: bool,
     mermaid_epoch: u64,
     mermaid_aspect_bucket: Option<u16>,
-    show_agentgrep_output: bool,
     tool_call_details: bool,
     expanded: bool,
 }
@@ -66,7 +65,6 @@ pub struct MessageCacheContext {
     pub centered: bool,
     pub mermaid_epoch: u64,
     pub mermaid_aspect_bucket: Option<u16>,
-    pub show_agentgrep_output: bool,
     pub tool_call_details: bool,
     /// Whether this specific message's detail is currently expanded by a click.
     ///
@@ -122,7 +120,6 @@ where
         centered: context.centered,
         mermaid_epoch: context.mermaid_epoch,
         mermaid_aspect_bucket: context.mermaid_aspect_bucket,
-        show_agentgrep_output: context.show_agentgrep_output,
         tool_call_details: context.tool_call_details,
         expanded: context.expanded,
     };

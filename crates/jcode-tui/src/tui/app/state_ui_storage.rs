@@ -151,6 +151,8 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                     .unwrap_or(serde_json::Value::Null),
             ),
         ]),
+        // agentgrep was removed; retained because stored sessions are replayed
+        // and re-rendered, so old transcripts still need their args summarised.
         "agentgrep" => obj(vec![
             (
                 "mode",
