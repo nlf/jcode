@@ -1515,3 +1515,90 @@ establishes that the mechanics of porting are not the obstacle.
 > format-v2 24, snapshots 12, file-ops 5), each failing with an assertion
 > rather than a compile error or `todo!()`, plus a `test_ctx()` fixture and
 > `PORTING_NOTES.md` recording every dropped test with a reason.
+
+---
+
+# Phase 3a has started: tag compatibility is PROVEN
+
+Committed 2026-08-07 as `crates/jcode-hashline`. **The plan's riskiest
+assumption is no longer an assumption.**
+
+## What was at risk
+
+The tag is the one place our implementation must agree with omp **exactly**. It
+is a content hash of the whole file, so a divergence in algorithm, seed, bit
+width, case, or normalization means a patch authored against one implementation
+is silently rejected by the other. Everything else in the format is ours to
+shape; this is not.
+
+The plan asserted `xxHash32(normalized) & 0xffff` from reading `format.ts`, but
+`Bun.hash.xxHash32` is a runtime built-in and nothing guaranteed it matched the
+standard XXH32 the Rust crates implement.
+
+## How it was verified
+
+**omp's own tests cannot verify this.** They compare `computeFileHash` against
+itself (`snapshots.test.ts:14`), which would pass for any hash function and
+proves nothing about interop.
+
+The one usable fixture is their **documented collision**
+(`snapshots.test.ts:119-124`, a regression for their issue #4075):
+
+```
+"line one 263\nline two 4471\n"  ->  1D84
+"line one 410\nline two 6970\n"  ->  1D84
+```
+
+Two specific texts asserted to produce one specific literal tag. Reproducing it
+pins **algorithm, seed, width, case, and normalization simultaneously** — a
+single fixture that constrains every degree of freedom at once.
+
+Checked first with a reference XXH32 in Python before adding any dependency, then
+against `xxhash-rust`. **Both reproduce `1D84` exactly.**
+
+## What shipped
+
+`crates/jcode-hashline`, pure and I/O-free:
+
+- `compute_file_hash` — XXH32 seed 0, low 16 bits, four uppercase hex
+- `normalize_for_hash` — trailing `[ \t\r]` per line, including the final line
+- `format_hashline_header`, `format_numbered_line`, `format_numbered_lines`
+
+**15 tests, all green.** Beyond the interop fixture they pin: trailing
+whitespace and CRLF do not change a tag (the reason normalization exists —
+otherwise every CRLF file rejects every edit), leading whitespace *does* because
+indentation is content, a missing trailing newline is a distinct state, and
+non-ASCII hashes without panicking (Rust indexes bytes, TypeScript UTF-16 code
+units — exactly the kind of difference that silently diverges a port).
+
+## The suite was mutation-tested, not assumed
+
+A passing test proves nothing until you have seen it fail:
+
+| mutation | result |
+|---|---|
+| seed `0` → `1` | **only** the collision test fails |
+| trim `[' ', '\t', '\r']` → `[' ']` | **only** the normalization test fails |
+
+The suite discriminates on exactly the properties it claims to.
+
+## The iteration loop is real
+
+`cargo test -p jcode-hashline`: **2.2s cold, 0.8s warm**, against **24s** for a
+one-line change in `jcode-app-core` (135k lines, 72 deps). That ratio is the
+argument for the crate split, now measured rather than projected.
+
+## What this does and does not settle
+
+**Settled:** we can mint omp-compatible tags in Rust; the crate boundary works;
+the test loop is fast; porting their behaviour into Rust tests is
+straightforward.
+
+**Not settled:** the parser (`input.ts` + `prefixes.ts` + `parser.ts`, ~54 KB),
+the applier, the snapshot store with `seenLines`, and every integration point in
+3c. Those are the next uncertainties and each has its own tests.
+
+**Revised confidence in the plan overall:** the mechanical claims have now been
+checked to destruction, and the one that could have killed the project passed.
+The remaining risk is no longer "can we do this" but "how long does the
+forgiveness layer take", which Phase 5 is explicitly gated on measuring.
