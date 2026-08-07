@@ -2,6 +2,92 @@ use super::*;
 use crate::storage::jcode_dir;
 use std::path::PathBuf;
 
+/// The config as this process last read it from disk.
+///
+/// [`Config::save`] needs to tell "the caller set this" apart from "the caller
+/// never touched this and is holding a stale copy". Comparing against the
+/// current file cannot distinguish them; comparing against what we loaded can.
+static LOADED_SNAPSHOT: std::sync::RwLock<Option<toml::Value>> = std::sync::RwLock::new(None);
+
+fn record_loaded_snapshot(config: &Config) {
+    if let Ok(value) = toml::Value::try_from(config)
+        && let Ok(mut slot) = LOADED_SNAPSHOT.write()
+    {
+        *slot = Some(value);
+    }
+}
+
+/// The baseline to diff a save against: what we loaded, or failing that, the
+/// current file. Falling back to the file keeps a never-loaded config from
+/// treating every default as an intentional change.
+fn save_baseline() -> toml::Value {
+    if let Ok(slot) = LOADED_SNAPSHOT.read()
+        && let Some(value) = slot.as_ref()
+    {
+        return value.clone();
+    }
+    Config::load_from_file()
+        .and_then(|cfg| toml::Value::try_from(&cfg).ok())
+        .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()))
+}
+
+/// Apply to `target` only the keys where `desired` differs from `baseline`.
+///
+/// Three-way merge: `baseline` is what this process loaded, `desired` is what
+/// it wants, and `target` starts as the current on-disk state. A key the caller
+/// never touched keeps whatever the file says, so concurrent edits survive.
+/// Tables recurse; anything else is replaced wholesale, since a partial merge
+/// of an array has no meaning here.
+fn merge_changed_keys(target: &mut toml::Value, baseline: &toml::Value, desired: &toml::Value) {
+    let (Some(desired_table), Some(baseline_table)) = (desired.as_table(), baseline.as_table())
+    else {
+        if desired != baseline {
+            *target = desired.clone();
+        }
+        return;
+    };
+
+    if !target.is_table() {
+        *target = toml::Value::Table(toml::map::Map::new());
+    }
+    let empty = toml::map::Map::new();
+
+    for (key, desired_value) in desired_table {
+        let baseline_value = baseline_table.get(key);
+        if baseline_value == Some(desired_value) {
+            // Untouched by this caller: leave the file's value alone.
+            continue;
+        }
+
+        let target_table = target.as_table_mut().expect("target coerced to table above");
+        match (desired_value.as_table(), baseline_value) {
+            (Some(_), _) => {
+                let baseline_child = baseline_value
+                    .cloned()
+                    .unwrap_or_else(|| toml::Value::Table(empty.clone()));
+                let mut child = target_table
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| toml::Value::Table(empty.clone()));
+                merge_changed_keys(&mut child, &baseline_child, desired_value);
+                target_table.insert(key.clone(), child);
+            }
+            _ => {
+                target_table.insert(key.clone(), desired_value.clone());
+            }
+        }
+    }
+
+    // A key the caller removed relative to its baseline is a deletion.
+    for key in baseline_table.keys() {
+        if !desired_table.contains_key(key)
+            && let Some(table) = target.as_table_mut()
+        {
+            table.remove(key);
+        }
+    }
+}
+
 impl Config {
     /// Get the config file path
     pub fn path() -> Option<PathBuf> {
@@ -52,6 +138,7 @@ impl Config {
         })?;
         config.display.apply_legacy_compat();
         config.repair_frozen_sponsors_optout(&content);
+        record_loaded_snapshot(&config);
         Ok(Some(config))
     }
 
@@ -94,7 +181,17 @@ impl Config {
         );
     }
 
-    /// Save config to file
+    /// Save config to file, preserving concurrent edits to untouched settings.
+    ///
+    /// A whole-struct serialize would write back every field this process last
+    /// loaded, so a save for one unrelated setting silently reverts anything
+    /// another session (or the user's editor) changed in the meantime. That is
+    /// not hypothetical: it is what
+    /// [`Self::repair_frozen_sponsors_optout`] exists to clean up after, and it
+    /// has eaten hand-written `[display.colors]` palettes.
+    ///
+    /// So diff against the config as this process loaded it and apply only the
+    /// keys that actually changed, on top of whatever is on disk now.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
 
@@ -103,8 +200,25 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
 
-        let content = toml::to_string_pretty(self)?;
+        let desired = toml::Value::try_from(self)?;
+
+        // The state this process started from. Anything differing from it is an
+        // intentional change by this caller; anything matching it is untouched
+        // and must not be forced back over a concurrent edit.
+        let baseline = save_baseline();
+
+        // Start from what is on disk right now, so a concurrent edit is the
+        // thing being merged into rather than the thing being overwritten.
+        let mut merged = Self::load_from_file()
+            .and_then(|cfg| toml::Value::try_from(&cfg).ok())
+            .unwrap_or_else(|| baseline.clone());
+        merge_changed_keys(&mut merged, &baseline, &desired);
+
+        let content = toml::to_string_pretty(&merged)?;
         std::fs::write(&path, content)?;
+        if let Ok(mut slot) = LOADED_SNAPSHOT.write() {
+            *slot = Some(merged);
+        }
         Self::invalidate_cache();
         Ok(())
     }

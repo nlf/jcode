@@ -164,3 +164,97 @@ fn reported_display_config_survives_a_real_config_file_round_trip() {
     }
     Config::invalidate_cache();
 }
+
+/// A save by a process holding a stale config must not revert someone else's edits.
+///
+/// This is the bug that ate a hand-written 22-role Gruvbox palette: session A
+/// loads the config, session B writes `[display.colors]`, then session A saves
+/// an unrelated setting and `to_string_pretty(self)` puts A's empty color map
+/// back over B's work. Everything not touched by the saver must survive.
+#[test]
+fn saving_one_setting_does_not_revert_a_concurrent_edit() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let path = Config::path().expect("config path");
+    std::fs::write(&path, "[display]\ncentered = false\n").expect("seed config");
+    Config::invalidate_cache();
+
+    // Session A loads, and will later save having changed exactly one field.
+    let mut session_a = Config::load();
+    assert!(session_a.display.colors.is_empty());
+
+    // Session B writes a palette straight to the file, as a user or another
+    // jcode session would.
+    std::fs::write(
+        &path,
+        "[display]\ncentered = false\n\n[display.colors]\nerror = \"#fb4934\"\nai = \"#b8bb26\"\n",
+    )
+    .expect("concurrent edit");
+
+    // Session A now saves its unrelated change from its stale copy.
+    session_a.display.centered = true;
+    session_a.save().expect("save");
+
+    Config::invalidate_cache();
+    let result = crate::config::config();
+    assert!(result.display.centered, "the saver's own change must land");
+    assert_eq!(
+        result.display.colors.len(),
+        2,
+        "a concurrent edit to an untouched setting must survive the save"
+    );
+    assert_eq!(
+        result.display.colors.get("error").map(String::as_str),
+        Some("#fb4934")
+    );
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    Config::invalidate_cache();
+}
+
+/// A caller that deliberately clears a setting must still be able to.
+///
+/// The merge must not be so conservative that removal becomes impossible:
+/// changed-to-empty is a real change, distinct from never-touched.
+#[test]
+fn save_still_applies_a_deliberate_removal() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let path = Config::path().expect("config path");
+    std::fs::write(
+        &path,
+        "[display]\ncentered = true\n\n[display.colors]\nerror = \"#fb4934\"\n",
+    )
+    .expect("seed config");
+    Config::invalidate_cache();
+
+    let mut cfg = Config::load();
+    assert_eq!(cfg.display.colors.len(), 1);
+    cfg.display.colors.clear();
+    cfg.save().expect("save");
+
+    Config::invalidate_cache();
+    let result = crate::config::config();
+    assert!(
+        result.display.colors.is_empty(),
+        "clearing a setting the caller loaded must actually clear it"
+    );
+    assert!(result.display.centered, "untouched settings still survive");
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    Config::invalidate_cache();
+}
