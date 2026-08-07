@@ -7,6 +7,9 @@
 //! ignore, and does. This refuses the call and names the tool instead, which is
 //! the difference between a preference and a rule.
 
+pub mod rules;
 pub mod tokenize;
 
 pub use tokenize::{segments, skip_word, without_leading_assignments, Segment};
+
+pub use rules::{check, Decision, Rule, DEFAULT_RULES};
