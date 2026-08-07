@@ -33,7 +33,18 @@ const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands
 const BASH_TOOL_DESCRIPTION: &str =
     "Run a bash command: builds, tests, git. Not to search, read, or edit files.";
 const WINDOWS_SHELL_TOOL_DESCRIPTION: &str =
-    "Run a Windows cmd.exe command (compatibility name `bash`). Use cmd.exe syntax, not Bash.";
+    "Run a cmd.exe command: builds, tests, git. Not to search, read, or edit files.";
+
+/// Both platform descriptions, so a test can check the one this build does not
+/// compile. Only the active constant reaches the registry, so asserting on the
+/// registry alone lets the inactive one drift.
+#[cfg(test)]
+pub(crate) fn bash_tool_descriptions_for_test() -> [(&'static str, &'static str); 2] {
+    [
+        ("unix", BASH_TOOL_DESCRIPTION),
+        ("windows", WINDOWS_SHELL_TOOL_DESCRIPTION),
+    ]
+}
 
 /// Build a clear timeout message. The `timeout` param is in milliseconds, which
 /// agents frequently mistake for seconds (e.g. passing 1000 thinking it means

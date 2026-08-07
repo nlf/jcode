@@ -17,6 +17,9 @@ mod edit;
 mod gmail;
 mod goal;
 mod grep_glob;
+
+#[cfg(test)]
+pub(crate) use bash::bash_tool_descriptions_for_test;
 pub mod inflight;
 mod invalid;
 mod ls;

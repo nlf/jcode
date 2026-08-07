@@ -480,6 +480,18 @@ async fn tool_descriptions_stay_under_token_cap() {
         "tool descriptions over the {DESCRIPTION_TOKEN_CAP}-token cap:\n{}",
         over_cap.join("\n")
     );
+
+    // The registry exposes only this platform's shell description, so the
+    // other constant is invisible to the loop above and could exceed the cap
+    // unnoticed on the platform that builds it.
+    for (platform, description) in crate::tool::bash_tool_descriptions_for_test() {
+        let tokens = crate::util::estimate_tokens(description);
+        assert!(
+            tokens <= DESCRIPTION_TOKEN_CAP,
+            "{platform} shell description is ~{tokens} tokens, over the \
+             {DESCRIPTION_TOKEN_CAP}-token cap: {description}"
+        );
+    }
 }
 
 /// Tools that compete with a shell equivalent must say so in their
@@ -553,6 +565,21 @@ async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
         "bash description should name its own wrong uses: {}",
         bash.description
     );
+    // The registry only ever exposes the description for the platform being
+    // built, so checking `bash.description` alone lets the other constant
+    // drift unnoticed. It had: the Windows text carried no such steer until
+    // this was checked. Assert both source constants, on every platform.
+    for (platform, description) in crate::tool::bash_tool_descriptions_for_test() {
+        let lower = description.to_lowercase();
+        assert!(
+            lower.contains("not to"),
+            "{platform} description must name its own wrong uses: {description}"
+        );
+        assert!(
+            lower.contains("builds, tests, git"),
+            "{platform} description must say what the shell is still for: {description}"
+        );
+    }
 }
 
 /// A registered tool must never be aliased to a different tool.

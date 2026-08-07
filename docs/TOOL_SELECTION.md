@@ -100,6 +100,23 @@ short by deferring the full action set to its own `discover` action, and
 `batch` keeps its worked example in the `tool_calls` parameter description
 rather than the tool description.
 
+The saving is measurable, not theoretical. Same trivial prompt, binaries built
+at `287fe9932` and at HEAD, reading the cached prompt size off the token line:
+
+| | prompt tokens |
+|---|---|
+| Before | 31,470 |
+| After | 30,943 |
+
+527 tokens off every request, paid on every turn of every session.
+
+One trap when checking this: `bash` has two descriptions, selected by
+`cfg!(windows)`. The registry only ever exposes the one for the platform being
+built, so a test that reads `bash.description` cannot see the other, and the
+Windows text drifted, first missing the tool-selection steer entirely and then
+exceeding the cap once it was added. `bash_tool_descriptions_for_test` returns
+both constants so they are checked on every platform.
+
 A related trap, hit three times while doing this: several tests asserted on
 exact sentences of tool copy, so a later reword that preserved the meaning left
 them failing on main. Assert what the text has to *say*, not the sentence it
@@ -176,6 +193,15 @@ above. Confirmed failing at `0e09472c2`, which predates this work:
 - `platform::platform_tests::spawn_detached_creates_new_session`
 - `provider::tests::test_hosted_model_guard_does_not_gate_models_by_legacy_tier`
 - `session::tests::cases::streaming_guard_creates_visible_macos_sleep_assertion`
+
+Four more in the `jcode` CLI crate, also confirmed failing at `0e09472c2`:
+
+- `cli::commands::restart::restart_tests::pending_restore_returns_false_for_unarmed_snapshot`
+- `cli::commands::restart::restart_tests::restart_clear_removes_saved_snapshot`
+- `cli::commands::restart::restart_tests::restart_save_writes_empty_snapshot_with_auto_restore_flag`
+- `cli::commands::tests::run_auto_poke_followup_targets_below_threshold_todos`
+
+`cargo test --workspace --lib` is otherwise green.
 
 Recorded so the next person does not re-derive that they are not their fault.
 They are real failures and worth fixing, just not here.
