@@ -389,14 +389,34 @@ fn is_binary_file(path: &Path) -> bool {
 ///    a name match, so it is offered first.
 /// 3. **Fuzzy filename matches** in the target directory, as before.
 ///
-/// Shared with `edit` and `multiedit`, which resolve paths the same way and had
-/// the same bare message.
+/// Shared with `edit`, `multiedit`, and `ls`, which resolve paths the same way
+/// and had the same bare message.
 pub(crate) fn file_not_found_message(
     requested: &str,
     resolved: &Path,
     working_dir: Option<&Path>,
 ) -> String {
-    let mut message = format!("File not found: {requested}");
+    path_not_found_message("File", requested, resolved, working_dir)
+}
+
+/// As above, but for a caller looking for a directory rather than a file, so the
+/// message does not tell the model a directory is a "File".
+pub(crate) fn directory_not_found_message(
+    requested: &str,
+    resolved: &Path,
+    working_dir: Option<&Path>,
+) -> String {
+    path_not_found_message("Directory", requested, resolved, working_dir)
+}
+
+fn path_not_found_message(
+    noun: &str,
+    requested: &str,
+    resolved: &Path,
+    working_dir: Option<&Path>,
+) -> String {
+    let want_dir = noun == "Directory";
+    let mut message = format!("{noun} not found: {requested}");
 
     // Only meaningful when the working directory actually took part. Two ways
     // it did not: an absolute request, and a `~` request, which `resolve_path`
@@ -415,12 +435,12 @@ pub(crate) fn file_not_found_message(
         ));
     }
 
-    if let Some(hit) = find_path_near_working_dir(resolved, working_dir) {
+    if let Some(hit) = find_path_near_working_dir(resolved, working_dir, want_dir) {
         message.push_str(&format!("\nDid you mean: {hit}"));
         return message;
     }
 
-    let suggestions = find_similar_files(resolved);
+    let suggestions = find_similar_paths(resolved, want_dir);
     if !suggestions.is_empty() {
         message.push_str(&format!("\nDid you mean: {}", suggestions.join(", ")));
     }
@@ -428,17 +448,25 @@ pub(crate) fn file_not_found_message(
     message
 }
 
-/// Look for the same filename one directory level away, which catches a path
-/// that dropped or duplicated a level.
+/// Look for the same name one directory level away, which catches a path that
+/// dropped or duplicated a level.
 ///
 /// Two directions, both real mistakes. Given a working directory `/w/repo` and a
 /// miss at `/w/repo/src/main.rs`: the file may sit at `/w/repo/main.rs` (a level
 /// too many), or the request may have been rooted a level too high, so
 /// `/w/main.rs` is checked as well.
 ///
+/// `want_dir` decides what counts as a hit. Suggesting a *file* to a caller that
+/// asked for a directory sends it somewhere it cannot use, so the kinds must
+/// match.
+///
 /// Deliberately narrow. It only ever returns a path that exists, so a suggestion
 /// is never invented, and it does not walk the tree.
-fn find_path_near_working_dir(resolved: &Path, working_dir: Option<&Path>) -> Option<String> {
+fn find_path_near_working_dir(
+    resolved: &Path,
+    working_dir: Option<&Path>,
+    want_dir: bool,
+) -> Option<String> {
     let file_name = resolved.file_name()?;
     let parent = resolved.parent()?;
 
@@ -455,11 +483,22 @@ fn find_path_near_working_dir(resolved: &Path, working_dir: Option<&Path>) -> Op
 
     candidates
         .into_iter()
-        .find(|candidate| candidate != resolved && candidate.is_file())
+        .find(|candidate| {
+            candidate != resolved
+                && if want_dir {
+                    candidate.is_dir()
+                } else {
+                    candidate.is_file()
+                }
+        })
         .map(|candidate| candidate.display().to_string())
 }
 
-fn find_similar_files(path: &Path) -> Vec<String> {
+/// Fuzzy name matches in the target directory.
+///
+/// `want_dir` filters by kind for the same reason as above: a caller that asked
+/// for a directory cannot use a file, and vice versa.
+fn find_similar_paths(path: &Path, want_dir: bool) -> Vec<String> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let filename = path.file_name().map(|s| s.to_string_lossy().to_lowercase());
 
@@ -467,6 +506,10 @@ fn find_similar_files(path: &Path) -> Vec<String> {
 
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.filter_map(|e| e.ok()) {
+            let is_dir = entry.path().is_dir();
+            if is_dir != want_dir {
+                continue;
+            }
             let name = entry.file_name().to_string_lossy().to_lowercase();
             if let Some(ref target) = filename {
                 // Simple similarity check

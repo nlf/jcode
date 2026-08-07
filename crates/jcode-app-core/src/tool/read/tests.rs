@@ -643,3 +643,86 @@ async fn edit_reports_the_same_context_as_read() {
         "edit resolves paths the same way and should explain itself the same way: {message}"
     );
 }
+
+/// A caller that asked for a directory cannot use a file, so a same-named file
+/// must not be offered as the suggestion. Without the kind filter the fuzzy
+/// matcher would happily point `ls` at a regular file.
+#[test]
+fn a_directory_miss_is_not_offered_a_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    // A *file* named `build` sits where a directory named `build` was wanted.
+    std::fs::write(cwd.join("build"), "not a directory\n").expect("write");
+    std::fs::create_dir(cwd.join("src")).expect("mkdir");
+
+    let resolved = cwd.join("src").join("build");
+    let message = directory_not_found_message("src/build", &resolved, Some(cwd));
+
+    assert!(message.starts_with("Directory not found:"), "{message}");
+    assert!(
+        !message.contains("Did you mean"),
+        "the only nearby match is a file, which a directory lookup cannot use: {message}"
+    );
+}
+
+/// The mirror of the above: a real directory one level up is a valid hit.
+#[test]
+fn a_directory_one_level_up_is_suggested() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    let real = cwd.join("fixtures");
+    std::fs::create_dir(&real).expect("mkdir");
+    std::fs::create_dir(cwd.join("tests")).expect("mkdir");
+
+    let resolved = cwd.join("tests").join("fixtures");
+    let message = directory_not_found_message("tests/fixtures", &resolved, Some(cwd));
+
+    assert!(
+        message.contains(&real.display().to_string()),
+        "a real directory one level up should be offered: {message}"
+    );
+}
+
+/// And the file direction still ignores directories, so `read` is never sent to
+/// a directory it cannot read.
+#[test]
+fn a_file_miss_is_not_offered_a_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cwd = temp.path();
+    std::fs::create_dir(cwd.join("notes.md")).expect("mkdir a directory with a file-ish name");
+    std::fs::create_dir(cwd.join("docs")).expect("mkdir");
+
+    let resolved = cwd.join("docs").join("notes.md");
+    let message = file_not_found_message("docs/notes.md", &resolved, Some(cwd));
+
+    assert!(
+        !message.contains("Did you mean"),
+        "the only nearby match is a directory, which read cannot use: {message}"
+    );
+}
+
+#[tokio::test]
+async fn ls_reports_the_same_context_as_read() {
+    use crate::tool::Tool as _;
+    use crate::tool::ls::LsTool;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let tool = LsTool::new();
+    let error = tool
+        .execute(
+            json!({ "path": "nope_xyz" }),
+            make_ctx(temp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("listing a missing directory must fail");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("Directory not found: nope_xyz"),
+        "{message}"
+    );
+    assert!(
+        message.contains("working directory"),
+        "ls resolves paths the same way and should explain itself the same way: {message}"
+    );
+}

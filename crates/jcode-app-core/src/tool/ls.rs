@@ -79,7 +79,11 @@ impl Tool for LsTool {
         let ignore_extra = params.ignore.clone();
 
         if !base.exists() {
-            return Err(anyhow::anyhow!("Directory not found: {}", base_path));
+            return Err(anyhow::anyhow!(super::read::directory_not_found_message(
+                &base_path,
+                &base,
+                ctx.working_dir.as_deref(),
+            )));
         }
 
         if !base.is_dir() {
