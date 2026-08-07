@@ -193,8 +193,13 @@ fn the_limits_match_omps() {
     assert_eq!(MULTI_FILE_PER_FILE_MATCHES, 20);
     assert_eq!(SINGLE_FILE_MATCHES, 200);
     assert_eq!(INTERNAL_TOTAL_CAP, 2000);
-    assert!(
-        INTERNAL_TOTAL_CAP >= DEFAULT_FILE_LIMIT * MULTI_FILE_PER_FILE_MATCHES,
-        "the internal cap must cover a full window or the window cannot be filled"
-    );
+    // A const block, so this is checked at compile time: the relationship is
+    // between constants, and a build that violates it should not link rather
+    // than fail a test run.
+    const {
+        assert!(
+            INTERNAL_TOTAL_CAP >= DEFAULT_FILE_LIMIT * MULTI_FILE_PER_FILE_MATCHES,
+            "the internal cap must cover a full window or the window cannot be filled"
+        )
+    };
 }
