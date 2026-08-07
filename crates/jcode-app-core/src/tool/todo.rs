@@ -768,12 +768,12 @@ impl Tool for TodoTool {
                             "feedback_loop_relevance": {
                                 "type": "string",
                                 "enum": ["indirect", "representative", "acceptance_aligned"],
-                                "description": "How directly the checks represent observable acceptance behavior through public interfaces rather than an internal proxy."
+                                "description": "How directly the checks observe acceptance behavior through public interfaces, not a proxy."
                             },
                             "feedback_loop_coverage": {
                                 "type": "string",
                                 "enum": ["narrow", "main_paths", "edge_and_integration_paths"],
-                                "description": "How broadly the checks exercise main workflows, integration boundaries, edge cases, packaging, and likely failure modes."
+                                "description": "Coverage: main workflows, integration boundaries, edge cases, packaging, likely failure modes."
                             },
                             "delivery_state": {
                                 "type": "string",

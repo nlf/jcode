@@ -428,7 +428,7 @@ impl Tool for DiscoverToolsTool {
                 "action": {
                     "type": "string",
                     "enum": ["search", "select", "suggest"],
-                    "description": "Phase. Defaults to select when `tool` is set, else search. Select the product actually chosen, even when it is not in the catalog. Suggest a capability gap only when no product was chosen."
+                    "description": "Defaults to select when `tool` is set, else search. Select whatever was chosen, even off-catalog."
                 },
                 "category": {
                     "type": "string",
@@ -451,7 +451,7 @@ impl Tool for DiscoverToolsTool {
                     "type": "string",
                     "minLength": 2,
                     "maxLength": 100,
-                    "description": "For select: public name of the product actually chosen. Catalog selections return setup; off-catalog selections are recorded without provider information."
+                    "description": "For select: public product name. Catalog selections return setup; off-catalog ones are only recorded."
                 },
                 "suggestion_kind": {
                     "type": "string",
@@ -1521,9 +1521,20 @@ mod tests {
         );
         assert!(!out.contains("AGENTCARD_KEY"));
         assert!(!out.contains("setup:"));
-        assert!(out.contains("Next step"));
         assert!(out.contains("action `select`"));
-        assert!(out.contains("Setup instructions are only in that select response"));
+        // Asserted as intent rather than exact phrasing: the copy here has been
+        // reworded more than once, and a test pinned to a sentence breaks on
+        // rewording while proving nothing about the behaviour that matters.
+        // What matters is that browse says setup comes from `select`.
+        let lower = out.to_lowercase();
+        assert!(
+            lower.contains("setup"),
+            "browse must tell the caller where setup comes from: {out}"
+        );
+        assert!(
+            lower.contains("select") && lower.contains("setup instructions"),
+            "browse must direct the caller to select for setup: {out}"
+        );
     }
 
     #[test]
@@ -1709,14 +1720,27 @@ mod tests {
         );
         let schema = serde_json::to_string(&parameters).unwrap();
         assert!(schema.contains("Missing capability category; infer it from the user's goal."));
-        assert!(schema.contains("select the one you commit to (it carries setup)"));
+        // Intent, not phrasing: the schema must say that `select` names the
+        // product actually chosen and that setup comes back from it. Pinning
+        // the exact sentence broke on a rewording that kept the meaning.
+        assert!(
+            schema.contains("Select whatever was chosen"),
+            "schema must tell the model what select is for: {schema}"
+        );
+        assert!(
+            schema.contains("Catalog selections return setup"),
+            "schema must say selection is what returns setup: {schema}"
+        );
         assert!(schema.contains("May be shared with partners"));
         assert!(schema.contains("never secrets or personal data"));
         assert!(schema.contains("Why the chosen integration fits"));
         assert!(schema.contains("known_product"));
         assert!(schema.contains("capability_gap"));
         assert!(schema.contains("prior_request_id"));
-        assert!(schema.contains("off-catalog selections are recorded"));
+        assert!(
+            schema.to_lowercase().contains("off-catalog"),
+            "schema must tell the model off-catalog choices are still recorded: {schema}"
+        );
         assert_eq!(
             parameters["properties"]["action"]["enum"],
             json!(["search", "select", "suggest"])

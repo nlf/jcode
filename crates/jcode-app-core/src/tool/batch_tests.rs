@@ -3,10 +3,20 @@ use serde_json::json;
 
 #[test]
 fn description_includes_parallel_tool_call_example() {
-    assert!(BATCH_DESCRIPTION.contains("Run independent tool calls in parallel"));
-    assert!(BATCH_DESCRIPTION.contains(r#""tool_calls": ["#));
-    assert!(BATCH_DESCRIPTION.contains(r#""tool": "read""#));
-    assert!(BATCH_DESCRIPTION.contains(r#""tool": "agentgrep""#));
+    // The worked example used to live in BATCH_DESCRIPTION, which is always-on
+    // prompt cost capped at ~20 estimated tokens; the example alone was ~110.
+    // It now lives in the `tool_calls` parameter description, where the repo's
+    // policy puts behavioral guidance. Both halves are still required: the
+    // description must say what the tool is for, and the example must survive
+    // somewhere, because the nested call shape is not obvious without one.
+    assert!(BATCH_DESCRIPTION.contains("parallel"));
+    assert!(
+        crate::util::estimate_tokens(BATCH_DESCRIPTION) <= 20,
+        "batch description is always-on cost: {BATCH_DESCRIPTION}"
+    );
+
+    assert!(BATCH_TOOL_CALLS_DESCRIPTION.contains(r#""tool":"read""#));
+    assert!(BATCH_TOOL_CALLS_DESCRIPTION.contains("intent"));
 }
 
 #[test]
@@ -161,7 +171,10 @@ fn test_schema_only_requires_tool() {
 fn test_schema_keeps_flat_generic_subcall_shape() {
     let schema = generic_batch_schema();
 
-    assert!(schema["properties"]["tool_calls"]["description"].is_null());
+    // `tool_calls` now carries the worked example, moved off the always-on
+    // tool description. What this test guards is the *shape*: a flat subcall
+    // with exactly `tool` and `intent` and no nested `parameters` wrapper.
+    assert!(schema["properties"]["tool_calls"]["description"].is_string());
     assert!(schema["properties"]["tool_calls"]["items"]["description"].is_null());
     assert_eq!(
         schema["properties"]["tool_calls"]["items"]["properties"]

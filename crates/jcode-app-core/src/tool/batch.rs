@@ -9,28 +9,18 @@ use std::collections::HashMap;
 
 const MAX_PARALLEL: usize = 10;
 
-const BATCH_DESCRIPTION: &str = r#"Run independent tool calls in parallel instead of making them sequentially. Example:
-{
-  "intent": "Inspect the relevant files in parallel",
-  "tool_calls": [
-    {
-      "tool": "read",
-      "intent": "Read the configuration",
-      "file_path": "src/config.rs",
-      "start_line": 1,
-      "limit": 200
-    },
-    {
-      "tool": "agentgrep",
-      "intent": "Find configuration usage",
-      "query": "Config",
-      "path": "src",
-      "glob": "**/*.rs",
-      "max_files": 20,
-      "max_regions": 20
-    }
-  ]
-}"#;
+/// The tool description is always-on prompt cost and capped at ~20 estimated
+/// tokens, so the worked example lives in the `tool_calls` parameter
+/// description instead, which is where the repo's policy puts behavioral
+/// guidance.
+const BATCH_DESCRIPTION: &str =
+    "Run independent tool calls in parallel rather than one after another.";
+
+/// One short example is enough to make the nested call shape unambiguous; the
+/// second call in the old example only repeated the pattern, at prompt cost
+/// paid on every request.
+const BATCH_TOOL_CALLS_DESCRIPTION: &str =
+    r#"Each needs `tool` and `intent` plus that tool's own parameters, e.g. {"tool":"read","file_path":"a.rs"}"#;
 
 pub(crate) fn generic_batch_schema() -> Value {
     json!({
@@ -40,6 +30,7 @@ pub(crate) fn generic_batch_schema() -> Value {
             "intent": super::intent_schema_property(),
             "tool_calls": {
                 "type": "array",
+                "description": BATCH_TOOL_CALLS_DESCRIPTION,
                 "items": {
                     "type": "object",
                     "required": ["tool", "intent"],
