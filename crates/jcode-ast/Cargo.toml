@@ -1,0 +1,13 @@
+[package]
+name = "jcode-ast"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The engine: pattern compilation, metavariable binding ($VAR, $$$ARGS) and
+# matching are all upstream. We write orchestration, not a matcher.
+ast-grep-core = "0.39"
+# SupportLang and the bundled grammars. Selecting individual tree-sitter
+# grammars instead would cut ~45 crates, but ast-grep-language is what maps a
+# file extension to a language, which is most of what a tool needs.
+ast-grep-language = "0.39"
