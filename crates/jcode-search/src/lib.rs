@@ -7,6 +7,7 @@
 //! agent, matching `jcode-hashline`.
 
 pub mod paths;
+pub mod render;
 pub mod select;
 pub mod walk;
 
@@ -25,3 +26,5 @@ pub use select::{
 pub use walk::{
     find_files, resolve_targets, search_contents, SearchError, Target, WalkOptions, MAX_FILE_BYTES,
 };
+
+pub use render::{common_prefix, format_match_line, render, render_paths};
