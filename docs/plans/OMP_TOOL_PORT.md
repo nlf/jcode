@@ -1740,3 +1740,67 @@ right, but the four done are the four with the least surface. `parser.ts` +
 `tokenizer.ts` is 48 KB against the ~40 KB of everything ported so far, and the
 applier core is another ~15 KB after removing repair. **The second half is
 larger than the first**, which is worth saying plainly rather than discovering.
+
+---
+
+# Phase 3a: the v1 pipeline is complete
+
+`crates/jcode-hashline`: **134 tests, ~1s, clippy clean.** An authored patch can
+now be split, parsed, and applied end to end.
+
+| module | tests | note |
+|---|---|---|
+| `format` | 15 | tag proven byte-identical to omp |
+| `snapshots` | 19 | concurrency-safe, a deliberate divergence |
+| `prefixes` | 26 | the "malformed op" guard |
+| `input` | 22 | section splitting + path recovery |
+| `parser` | 24 | headers, bodies, and the leniency |
+| `apply` | 28 | splice, original-line semantics, phantom line |
+
+Remaining for a usable tool: the **patcher** (preflight, hash validation, the
+seen-line guard, mismatch messages), then the jcode integration in 3b/3c.
+
+## Mutation testing earned its keep
+
+Nineteen mutations across six modules. Sixteen were caught immediately. **Three
+survived, and each survivor exposed something real** — which is the entire
+argument for doing it, since a suite that cannot fail licenses confidence it has
+not earned.
+
+| survivor | what it revealed | fix |
+|---|---|---|
+| removing the block/register guard | the forms *were* refused, but as "unrecognized syntax" rather than "not supported yet" — so a model would retry identically | a dedicated `Unsupported` variant, refused by name |
+| moving a replacement body to its range's end | invisible for a lone replacement; only differs when another insert is anchored inside the same range, where two blocks silently swap | pinned that interleaving case |
+| (first attempt at a lock-split race) | **rejected by the borrow checker** before it could run | none needed; Rust refused to express it |
+
+## Writing tests first caught two bugs I would have shipped
+
+Both in phantom-line handling, both silent:
+
+- **EOF appends landed after the terminator**, producing a blank line before
+  every appended block.
+- **Writing into an empty file left a leading blank**, because the single empty
+  element was treated as a phantom rather than as the whole file.
+
+omp handles both explicitly in `insertAtEnd`. I had read that function and still
+got it wrong, which is a reasonable argument for porting *tests* rather than
+code.
+
+And one **test expectation** was wrong rather than the code: I expected an
+append to drop the trailing newline. It must not — that rewrites the file's
+final byte and shows up as a spurious "no newline at end of file" in every diff.
+
+## Estimate check
+
+The plan said 3a was "the top of 2-3 weeks". Six of seven modules are done in
+one session, which looks like an overestimate — but honestly:
+
+- The **repair layer is excluded**, and that is 83% of `apply.ts` by line count.
+- **Block ops and clipboard registers are excluded**, which is `block.ts` (10.5
+  KB) plus `clipboard.ts` (7.6 KB) and their 74 tests.
+- The **jcode integration** (3b, 3c) is untouched, and that is where the six
+  `file_path`-keyed consumers and the renderer dependency live.
+
+So the format core was cheaper than estimated; the claim that the *whole* of 3a
+fits in a week remains unproven, and the integration is the part with jcode-side
+unknowns rather than portable behaviour.
