@@ -10,6 +10,7 @@ pub mod apply;
 pub mod envelope;
 pub mod fuzzy;
 pub mod hunks;
+pub mod plan;
 pub mod shape;
 
 pub use fuzzy::{
@@ -28,3 +29,5 @@ pub use shape::{
 };
 
 pub use apply::{apply_hunk, apply_hunks, create_content, ApplyError};
+
+pub use plan::{plan, summary, FileOutcome, FileSource, HunkError, PatchPlan};
