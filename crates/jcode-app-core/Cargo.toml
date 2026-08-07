@@ -51,6 +51,7 @@ uuid = { version = "1", features = ["v4", "v5"] }
 # `embeddings` feature to jcode-base rather than depending on jcode-embedding.
 jcode-import-core = { path = "../jcode-import-core" }
 jcode-hashline = { path = "../jcode-hashline" }
+jcode-search = { path = "../jcode-search" }
 
 # OAuth
 base64 = "0.22"

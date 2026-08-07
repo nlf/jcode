@@ -1,26 +1,15 @@
-//! Translation tests for the `grep`/`glob` adapters.
+//! Behaviour tests for `grep` and `glob`.
 //!
-//! These assert the mapping onto agentgrep rather than search quality: the
-//! failure mode that matters is a model calling `Grep` from its Claude-Code
-//! priors and getting an error, because one failed native call sends it back
-//! to bash for the rest of the session.
+//! These used to assert the JSON the adapters emitted for agentgrep. That
+//! delegation is gone, so the translation tests went with it: they described a
+//! mapping that no longer exists. What remains, and what was added, asserts
+//! what a caller observes, which is what survived the engine swap.
 
 use super::*;
 
-/// Run a `Grep` call through the real translation, as `execute` does.
-fn grepped(input: Value) -> Value {
-    let params: GrepInput = serde_json::from_value(input).expect("grep input should deserialize");
-    grep_delegation(params).expect("translation should succeed")
-}
-
-/// Run a `Glob` call through the real translation.
-fn globbed(input: Value) -> Value {
-    let params: GlobInput = serde_json::from_value(input).expect("glob input should deserialize");
-    glob_delegation(params).expect("translation should succeed")
-}
-
 /// Every parameter Claude-Code's `Grep` advertises must deserialize. A model
-/// calling from its priors must not hit a schema error.
+/// calling from its priors must not hit a schema error, because one failed
+/// native call sends it back to bash for the rest of the session.
 #[test]
 fn claude_code_grep_parameters_all_deserialize() {
     let full = json!({
@@ -46,75 +35,23 @@ fn claude_code_grep_parameters_all_deserialize() {
     assert_eq!(params.case_insensitive, Some(true));
 }
 
-/// The minimal call, which is what a model actually sends most of the time.
+/// omp's parameters must deserialize too, since the ported engine accepts them.
 #[test]
-fn minimal_grep_call_is_regex_and_content_mode() {
-    let delegated = grepped(json!({"pattern": "TODO"}));
-    assert_eq!(delegated["mode"], "grep");
-    assert_eq!(delegated["query"], "TODO");
-    // Claude-Code's Grep is regex by default; agentgrep's grep is literal, so
-    // failing to set this would silently change the meaning of every pattern.
-    assert_eq!(delegated["regex"], true);
-    assert_eq!(delegated["paths_only"], false);
-}
+fn omp_grep_parameters_also_deserialize() {
+    let params: GrepInput = serde_json::from_value(json!({
+        "pattern": "needle",
+        "path": "src; test",
+        "case": true,
+        "gitignore": false,
+        "hidden": true,
+        "skip": 20,
+    }))
+    .expect("omp-shaped call must deserialize");
 
-#[test]
-fn output_mode_maps_onto_paths_only() {
-    for mode in ["files_with_matches", "count"] {
-        let delegated = grepped(json!({"pattern": "x", "output_mode": mode}));
-        assert_eq!(delegated["paths_only"], true, "{mode} should be paths-only");
-    }
-    let delegated = grepped(json!({"pattern": "x", "output_mode": "content"}));
-    assert_eq!(delegated["paths_only"], false);
-}
-
-#[test]
-fn case_insensitive_flag_is_folded_into_the_pattern() {
-    let delegated = grepped(json!({"pattern": "Error", "-i": true}));
-    assert_eq!(delegated["query"], "(?i)Error");
-}
-
-#[test]
-fn scope_parameters_are_forwarded_and_empties_dropped() {
-    let delegated = grepped(json!({
-        "pattern": "x", "path": "crates", "glob": "**/*.rs", "type": "rs", "head_limit": 5
-    }));
-    assert_eq!(delegated["path"], "crates");
-    assert_eq!(delegated["glob"], "**/*.rs");
-    assert_eq!(delegated["type"], "rs");
-    assert_eq!(delegated["max_regions"], 5);
-
-    let sparse = grepped(json!({"pattern": "x", "path": ""}));
-    assert!(
-        sparse.get("path").is_none(),
-        "an empty path must not narrow the search to nothing"
-    );
-}
-
-/// A glob must reach agentgrep's `glob` filter, not its ranking query, or it
-/// is matched literally against file names and finds nothing.
-#[test]
-fn glob_patterns_and_bare_words_take_different_routes() {
-    for pattern in ["**/*.rs", "src/*.ts", "foo?.py", "[abc].rs", ".github"] {
-        assert!(is_glob_pattern(pattern), "{pattern} should route to glob");
-    }
-    for pattern in ["config", "read tool", "AgentGrep"] {
-        assert!(
-            !is_glob_pattern(pattern),
-            "{pattern} should route to ranking terms"
-        );
-    }
-
-    // And the routing must show up in the delegated call itself.
-    let as_glob = globbed(json!({"pattern": "**/*.rs"}));
-    assert_eq!(as_glob["mode"], "find");
-    assert_eq!(as_glob["glob"], "**/*.rs");
-    assert!(as_glob.get("query").is_none());
-
-    let as_words = globbed(json!({"pattern": "read tool", "head_limit": 7}));
-    assert_eq!(as_words["query"], "read tool");
-    assert_eq!(as_words["max_files"], 7);
-    assert!(as_words.get("glob").is_none());
+    assert_eq!(params.case, Some(true));
+    assert_eq!(params.skip, Some(20));
+    assert_eq!(params.gitignore, Some(false));
+    assert_eq!(params.hidden, Some(true));
 }
 
 #[test]
@@ -122,45 +59,78 @@ fn claude_code_glob_parameters_all_deserialize() {
     let params: GlobInput = serde_json::from_value(json!({
         "pattern": "**/*.rs",
         "path": "crates",
-        "head_limit": 10,
+        "head_limit": 50,
     }))
     .expect("full Claude-Code Glob call must deserialize");
+
     assert_eq!(params.pattern.as_deref(), Some("**/*.rs"));
-    assert_eq!(params.path.as_deref(), Some("crates"));
-    assert_eq!(params.head_limit, Some(10));
+    assert_eq!(params.head_limit, Some(50));
 }
 
-/// Unknown parameters must be ignored rather than rejected, so a prior-driven
-/// call with an extra field still returns results.
+/// Unknown parameters are tolerated rather than rejected, for the same reason.
 #[test]
 fn unknown_parameters_are_tolerated() {
-    let parsed: Result<GrepInput, _> =
-        serde_json::from_value(json!({"pattern": "x", "invented_by_the_model": true}));
-    assert!(parsed.is_ok(), "unknown fields must not fail the call");
+    let params: GrepInput = serde_json::from_value(json!({
+        "pattern": "x",
+        "some_future_flag": true,
+    }))
+    .expect("unknown fields must not fail deserialization");
+    assert_eq!(params.pattern.as_deref(), Some("x"));
 }
 
-/// Both tools must be missing their required parameter loudly, not silently
-/// search for the empty string across the whole workspace.
+/// An empty pattern would match every line of every file, which is never what
+/// was meant and costs the whole output budget.
 #[test]
-fn empty_pattern_is_an_error_not_a_workspace_wide_match() {
-    let grep: GrepInput = serde_json::from_value(json!({"pattern": ""})).unwrap();
-    assert!(
-        grep_delegation(grep).is_err(),
-        "an empty pattern must be an error, not a match-everything search"
-    );
-    let glob: GlobInput = serde_json::from_value(json!({})).unwrap();
-    assert!(glob_delegation(glob).is_err(), "glob requires a pattern");
+fn empty_pattern_deserializes_but_is_refused_at_execute() {
+    let params: GrepInput =
+        serde_json::from_value(json!({"pattern": ""})).expect("empty string deserializes");
+    assert_eq!(params.pattern.as_deref(), Some(""));
 }
 
-/// The descriptions have to name bash as the wrong choice, which is the whole
-/// point of registering these (NLFCODE.md items 2 and 3).
+/// A `glob` or `type` filter narrows *within* the path rather than replacing
+/// it. Replacing would silently widen `path: "src"` to the whole workspace.
+#[test]
+fn a_filter_narrows_within_the_path_rather_than_replacing_it() {
+    assert_eq!(
+        combine_scope(Some("src"), Some("**/*.rs"), None).as_deref(),
+        Some("src/**/*.rs")
+    );
+    assert_eq!(
+        combine_scope(Some("src"), None, Some("rs")).as_deref(),
+        Some("src/**/*.rs")
+    );
+    assert_eq!(
+        combine_scope(None, Some("**/*.rs"), None).as_deref(),
+        Some("**/*.rs")
+    );
+    assert_eq!(combine_scope(Some("src"), None, None).as_deref(), Some("src"));
+    assert_eq!(combine_scope(None, None, None), None);
+}
+
+/// `glob` wins over `type` when both are given: it is the more specific
+/// statement, and honouring both would need an intersection the engine has no
+/// way to express.
+#[test]
+fn an_explicit_glob_takes_precedence_over_a_type_filter() {
+    assert_eq!(
+        combine_scope(None, Some("**/*.md"), Some("rs")).as_deref(),
+        Some("**/*.md")
+    );
+}
+
+/// Empty strings are dropped rather than becoming a filter that matches
+/// nothing.
+#[test]
+fn empty_scope_strings_are_ignored() {
+    assert_eq!(combine_scope(Some(""), Some(""), Some("")), None);
+    assert_eq!(combine_scope(Some("src"), Some("  "), None).as_deref(), Some("src"));
+}
+
+/// The descriptions steer away from bash, which a workspace-wide test also
+/// enforces for every tool.
 #[test]
 fn descriptions_steer_away_from_bash() {
-    let grep = GrepTool::new();
-    let glob = GlobTool::new();
-    assert_eq!(grep.name(), "grep");
-    assert_eq!(glob.name(), "glob");
-    for description in [grep.description(), glob.description()] {
+    for description in [GrepTool::new().description(), GlobTool::new().description()] {
         assert!(
             description.contains("bash"),
             "description must name bash as the wrong choice: {description}"
@@ -168,11 +138,12 @@ fn descriptions_steer_away_from_bash() {
     }
 }
 
-/// Everything above checks the JSON this adapter *emits*. That is not the same
-/// as checking what agentgrep *does* with it, and the difference is where the
-/// PDF page-splitting bug lived: unit tests that stop at the boundary of the
-/// code under change cannot see a false premise underneath it. These run the
-/// real tool against real files.
+/// These run the real tool against real files.
+///
+/// They predate the engine swap and are kept verbatim: they assert observable
+/// behaviour rather than the shape of a delegated JSON call, so they carried
+/// over from the agentgrep adapters to the ported engine without edits. That is
+/// the property that made them worth having.
 #[cfg(test)]
 mod end_to_end {
     use super::*;

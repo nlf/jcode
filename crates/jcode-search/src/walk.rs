@@ -39,6 +39,16 @@ pub enum SearchError {
     NotFound(String),
 }
 
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+// Implemented so callers can use `?` through boundaries that require a standard
+// error, such as a tokio blocking task, without restating the message.
+impl std::error::Error for SearchError {}
+
 impl SearchError {
     pub fn message(&self) -> String {
         match self {
