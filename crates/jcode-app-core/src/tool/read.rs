@@ -566,14 +566,15 @@ fn handle_pdf_file(path: &Path, file_path: &str, selection: Option<&[usize]>) ->
     };
 
     // Extract text from PDF
-    match jcode_pdf::extract_text(path) {
-        Ok(text) => {
+    match jcode_pdf::extract_text_by_page(path) {
+        Ok(pages) => {
             let mut output = String::new();
             output.push_str(&format!("PDF: {} ({})\n", file_path, size_str));
             output.push_str(&format!("{}\n", "=".repeat(60)));
 
-            // Split into pages (pdf_extract uses form feed \x0c as page separator)
-            let pages: Vec<&str> = text.split('\x0c').collect();
+            // Real page boundaries from the extractor. Splitting the combined
+            // text on `\x0c` used to be the approach, but nothing emits that
+            // separator, so every document looked like a single page.
             let page_count = pages.len();
 
             match selection {
