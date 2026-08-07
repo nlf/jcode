@@ -86,11 +86,11 @@ pub fn resolve_tool_name(name: &str) -> &str {
         "file_write" => "write",
         "edit_file" => "edit",
         "file_edit" => "edit",
-        // The native grep tool was removed in favor of agentgrep, but models
-        // still frequently call `grep` (and OAuth's `file_grep`). agentgrep's
-        // grep mode accepts `pattern` as an alias for `query`, so these calls
-        // work as-is.
-        "grep" | "file_grep" => "agentgrep",
+        // `grep` is a real registered tool again, so it must not be aliased
+        // away: routing it to agentgrep sends it to a search that is *literal*
+        // by default, silently changing the meaning of every regex pattern.
+        // `file_grep` has no tool of its own and still needs the alias.
+        "file_grep" => "grep",
         "skill" | "Skill" => "skill_manage",
         // The integration catalog tool was renamed from `discover_tools`;
         // models trained on or resuming from the old vocabulary still emit it.
@@ -104,7 +104,8 @@ pub fn resolve_tool_name(name: &str) -> &str {
         "Read" => "read",
         "Write" => "write",
         "Edit" => "edit",
-        "Grep" => "agentgrep",
+        "Grep" => "grep",
+        "Glob" => "glob",
         "Agent" => "subagent",
         "ScheduleWakeup" => "schedule",
         other => other,
@@ -119,7 +120,27 @@ mod tests {
     fn resolve_tool_name_strips_function_namespace_before_alias_resolution() {
         assert_eq!(resolve_tool_name("functions.bash"), "bash");
         assert_eq!(resolve_tool_name("functions.shell_exec"), "bash");
-        assert_eq!(resolve_tool_name("functions.file_grep"), "agentgrep");
+        assert_eq!(resolve_tool_name("functions.file_grep"), "grep");
+    }
+
+    /// `grep` and `glob` are real registered tools, so they must resolve to
+    /// themselves rather than being aliased away.
+    ///
+    /// `grep` used to alias to `agentgrep`, left over from when no grep tool
+    /// existed. That silently defeated the adapter: agentgrep's grep mode is
+    /// *literal* by default while the `grep` tool passes `regex: true`, so
+    /// every pattern with an alternation or anchor quietly matched nothing.
+    /// `Glob` had no mapping at all and failed as "Unknown tool" in a `batch`
+    /// subcall, which is the one path that does not get the provider-side
+    /// reverse mapping.
+    #[test]
+    fn search_tools_resolve_to_themselves_not_to_agentgrep() {
+        assert_eq!(resolve_tool_name("grep"), "grep");
+        assert_eq!(resolve_tool_name("glob"), "glob");
+        assert_eq!(resolve_tool_name("Grep"), "grep");
+        assert_eq!(resolve_tool_name("Glob"), "glob");
+        // agentgrep is a different tool and keeps its own name.
+        assert_eq!(resolve_tool_name("agentgrep"), "agentgrep");
     }
 
     #[test]
@@ -138,7 +159,11 @@ mod tests {
         assert_eq!(resolve_tool_name("Bash"), "bash");
         assert_eq!(resolve_tool_name("Write"), "write");
         assert_eq!(resolve_tool_name("Edit"), "edit");
-        assert_eq!(resolve_tool_name("Grep"), "agentgrep");
+        // `Grep` mapped to agentgrep while no grep tool existed. There is one
+        // now, and agentgrep's grep mode is literal by default, so keeping the
+        // old target silently defeated the adapter's regex handling.
+        assert_eq!(resolve_tool_name("Grep"), "grep");
+        assert_eq!(resolve_tool_name("Glob"), "glob");
         assert_eq!(resolve_tool_name("Agent"), "subagent");
         assert_eq!(resolve_tool_name("ScheduleWakeup"), "schedule");
         assert_eq!(resolve_tool_name("Skill"), "skill_manage");

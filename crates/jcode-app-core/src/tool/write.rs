@@ -33,7 +33,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Write a whole file. Not `>` redirection or a heredoc in bash."
+        "Write a whole file, with content sent verbatim. Not `>` or a heredoc in bash."
     }
 
     fn parameters_schema(&self) -> Value {

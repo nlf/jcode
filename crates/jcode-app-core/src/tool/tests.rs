@@ -195,8 +195,11 @@ fn test_resolve_tool_name_oauth_aliases() {
     assert_eq!(Registry::resolve_tool_name("task_runner"), "subagent");
     assert_eq!(Registry::resolve_tool_name("task"), "subagent");
     assert_eq!(Registry::resolve_tool_name("launch"), "open");
-    assert_eq!(Registry::resolve_tool_name("grep"), "agentgrep");
-    assert_eq!(Registry::resolve_tool_name("file_grep"), "agentgrep");
+    // `grep` is a registered tool again, so it resolves to itself; aliasing it
+    // to agentgrep sent regex patterns to a literal search.
+    assert_eq!(Registry::resolve_tool_name("grep"), "grep");
+    assert_eq!(Registry::resolve_tool_name("glob"), "glob");
+    assert_eq!(Registry::resolve_tool_name("file_grep"), "grep");
     assert_eq!(Registry::resolve_tool_name("todo_read"), "todo");
     assert_eq!(Registry::resolve_tool_name("todo_write"), "todo");
     assert_eq!(Registry::resolve_tool_name("todoread"), "todo");
@@ -508,6 +511,33 @@ async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
         silent.is_empty(),
         "these tools compete with bash but do not say so:\n{}",
         silent.join("\n")
+    );
+
+    // NLFCODE.md item 3 asks for more than a prohibition: each description has
+    // to state what the tool does *better* than the shell equivalent. A bare
+    // "not bash" is an instruction to obey rather than a reason to prefer, and
+    // a model weighing a narrow tool against a universal one needs the reason.
+    let advantages: &[(&str, &[&str])] = &[
+        ("grep", &["ignore-aware", "ranked"]),
+        ("glob", &["skipping vendored"]),
+        ("agentgrep", &["symbol", "structure"]),
+        ("read", &["numbered lines"]),
+        ("ls", &["skipping vendored"]),
+        ("edit", &["exact"]),
+        ("write", &["verbatim"]),
+    ];
+    let mut unmotivated = Vec::new();
+    for (name, claims) in advantages {
+        let def = definitions.iter().find(|d| d.name == *name).unwrap();
+        let lower = def.description.to_lowercase();
+        if !claims.iter().any(|claim| lower.contains(claim)) {
+            unmotivated.push(format!("{name}: {}", def.description));
+        }
+    }
+    assert!(
+        unmotivated.is_empty(),
+        "these descriptions forbid bash without saying what they do better:\n{}",
+        unmotivated.join("\n")
     );
 
     // Bash itself must point away from the work these tools do, so the steer

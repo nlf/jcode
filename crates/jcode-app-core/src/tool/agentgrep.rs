@@ -185,7 +185,7 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search code and file names, with outline and trace modes. Not bash."
+        "Search code by symbol and structure, not just lines. Not grep in bash."
     }
 
     fn parameters_schema(&self) -> Value {

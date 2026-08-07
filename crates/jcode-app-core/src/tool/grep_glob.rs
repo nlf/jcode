@@ -71,7 +71,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents by regex. You MUST use this, not grep or rg in bash."
+        "Search file contents by regex, ignore-aware and ranked. Not grep or rg in bash."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -178,7 +178,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files by name or path pattern. You MUST use this, not find or ls in bash."
+        "Find files by name or pattern, skipping vendored dirs. Not find in bash."
     }
 
     fn parameters_schema(&self) -> Value {
