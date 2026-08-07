@@ -6,6 +6,7 @@
 //! Pure and I/O-free so it tests in about a second without compiling the agent,
 //! matching `jcode-hashline` and `jcode-search`.
 
+pub mod envelope;
 pub mod fuzzy;
 
 pub use fuzzy::{
@@ -13,3 +14,5 @@ pub use fuzzy::{
     find_exact_sequence, find_fuzzy_sequence, leading_whitespace, levenshtein_distance,
     normalize_for_fuzzy, seek_sequence, similarity, SequenceMatch, DEFAULT_FUZZY_THRESHOLD,
 };
+
+pub use envelope::{parse, parse_streaming, Hunk, Operation, ParseError};
