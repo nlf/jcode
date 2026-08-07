@@ -27,6 +27,19 @@ thread_local! {
     static EMIT_REASONING_STUBS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Restore the previous stub setting on drop, so a panic inside the scope
+/// cannot leave the flag set. Without this, a later render on the same thread
+/// would emit stub markers into a consumer that cannot parse them, and the
+/// leak would outlive the panic that caused it. Restoring the *previous* value
+/// rather than `false` also makes nesting behave.
+struct ReasoningStubScope(bool);
+
+impl Drop for ReasoningStubScope {
+    fn drop(&mut self) {
+        EMIT_REASONING_STUBS.with(|flag| flag.set(self.0));
+    }
+}
+
 /// Render `f` with hidden-reasoning stubs enabled.
 ///
 /// Opt-in because `render_messages` feeds more than the transcript: the remote
@@ -35,10 +48,10 @@ thread_local! {
 /// build asks for stubs, so every other consumer keeps seeing reasoning simply
 /// omitted, exactly as before.
 pub fn with_reasoning_stubs<T>(f: impl FnOnce() -> T) -> T {
+    let previous = EMIT_REASONING_STUBS.with(std::cell::Cell::get);
+    let _scope = ReasoningStubScope(previous);
     EMIT_REASONING_STUBS.with(|flag| flag.set(true));
-    let result = f();
-    EMIT_REASONING_STUBS.with(|flag| flag.set(false));
-    result
+    f()
 }
 
 fn reasoning_stubs_enabled() -> bool {

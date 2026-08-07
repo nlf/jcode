@@ -2535,3 +2535,87 @@ fn reasoning_stubs_are_absent_unless_explicitly_requested() {
         "the opt-in must not leak into later renders: {after:?}"
     );
 }
+
+/// The scope must survive a panic inside it. The flag lives in a thread-local,
+/// so an early return that never runs the reset would leave every later render
+/// on this thread emitting stub markers into consumers that cannot parse them.
+/// Fails against the pre-guard implementation, which reset the flag on the
+/// straight-line path only.
+#[test]
+fn a_panic_inside_the_stub_scope_does_not_leak_the_flag() {
+    let mut session = Session::create_with_id(
+        "session_reasoning_stub_panic_test".to_string(),
+        None,
+        Some("reasoning stub panic test".to_string()),
+    );
+    session.add_message(
+        Role::Assistant,
+        vec![
+            ContentBlock::ReasoningTrace {
+                text: "PANICPROBE thinking".to_string(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::session::with_reasoning_stubs(|| {
+            panic!("boom");
+        })
+    }));
+    assert!(panicked.is_err(), "the panic must actually have happened");
+
+    // Only meaningful when the active mode hides reasoning; otherwise no render
+    // emits stubs and a leaked flag would be invisible either way.
+    if crate::config::config().display.reasoning_enabled() {
+        return;
+    }
+    let after = render_messages(&session);
+    assert!(
+        after.iter().all(|m| m.role != "reasoning_stub"),
+        "a panic inside the scope must not leave stubs enabled: {after:?}"
+    );
+    assert!(
+        after.iter().all(|m| !m.content.contains("PANICPROBE")),
+        "a panic inside the scope must not leak reasoning text: {after:?}"
+    );
+}
+
+/// Nesting restores the outer state rather than clearing it, so an inner scope
+/// cannot silently disable stubs for the remainder of an outer one.
+#[test]
+fn a_nested_stub_scope_restores_the_outer_scope() {
+    let mut session = Session::create_with_id(
+        "session_reasoning_stub_nesting_test".to_string(),
+        None,
+        Some("reasoning stub nesting test".to_string()),
+    );
+    session.add_message(
+        Role::Assistant,
+        vec![
+            ContentBlock::ReasoningTrace {
+                text: "NESTPROBE thinking".to_string(),
+            },
+            ContentBlock::Text {
+                text: "the answer".to_string(),
+                cache_control: None,
+            },
+        ],
+    );
+
+    if crate::config::config().display.reasoning_enabled() {
+        return;
+    }
+    let inner_then_outer = crate::session::with_reasoning_stubs(|| {
+        let _ = crate::session::with_reasoning_stubs(|| render_messages(&session));
+        render_messages(&session)
+    });
+    assert!(
+        inner_then_outer.iter().any(|m| m.role == "reasoning_stub"),
+        "the outer scope must still emit stubs after an inner one ends: \
+         {inner_then_outer:?}"
+    );
+}
