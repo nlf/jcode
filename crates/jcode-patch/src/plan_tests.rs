@@ -252,12 +252,12 @@ fn the_summary_marks_each_file_by_operation() {
     assert!(summary.starts_with("Success."), "{summary}");
     assert!(summary.contains("A added.txt"), "{summary}");
     assert!(
-        summary.contains("M changed.txt"),
-        "a rename is an M on the original path: {summary}"
+        summary.contains("M changed.txt -> moved.txt"),
+        "a rename is an M on the original path, naming where it went: {summary}"
     );
     assert!(summary.contains("D gone.txt"), "{summary}");
     assert!(
-        !summary.contains("moved.txt"),
-        "the destination is not listed separately: {summary}"
+        !summary.contains("A moved.txt") && !summary.contains("D changed.txt"),
+        "a rename must not become a delete plus an add: {summary}"
     );
 }

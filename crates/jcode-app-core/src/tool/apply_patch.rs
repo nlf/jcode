@@ -1,9 +1,17 @@
+//! The `apply_patch` tool.
+//!
+//! Codex-style `*** Begin Patch` envelopes. The parsing and application live in
+//! `jcode-patch`, ported from omp; this file is the I/O and jcode integration:
+//! path resolution, the delete guard, file-touch events, and the config notice.
+
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
+use jcode_patch::{plan, summary, FileOutcome, HunkError, PatchPlan};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
 
 const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
@@ -17,39 +25,17 @@ impl ApplyPatchTool {
     }
 }
 
+impl Default for ApplyPatchTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Deserialize)]
 struct ApplyPatchInput {
     #[serde(default)]
     intent: Option<String>,
     patch_text: String,
-}
-
-#[derive(Debug, Clone)]
-struct UpdateFileChunk {
-    change_context: Option<String>,
-    old_lines: Vec<String>,
-    new_lines: Vec<String>,
-    is_end_of_file: bool,
-}
-
-#[derive(Debug)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "patch variants intentionally mirror unified diff file-level operations for readability"
-)]
-enum PatchHunk {
-    AddFile {
-        path: String,
-        contents: String,
-    },
-    DeleteFile {
-        path: String,
-    },
-    UpdateFile {
-        path: String,
-        move_to: Option<String>,
-        chunks: Vec<UpdateFileChunk>,
-    },
 }
 
 #[async_trait]
@@ -59,7 +45,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a Codex-style *** Begin Patch / *** End Patch patch. Prefer over patch."
+        "Apply a Codex-style *** Begin Patch envelope across several files."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -70,7 +56,7 @@ impl Tool for ApplyPatchTool {
                 "intent": super::intent_schema_property(),
                 "patch_text": {
                     "type": "string",
-                    "description": "Patch text."
+                    "description": "Patch envelope: *** Begin Patch, then Add/Delete/Update File sections, then *** End Patch."
                 }
             }
         })
@@ -78,209 +64,207 @@ impl Tool for ApplyPatchTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: ApplyPatchInput = serde_json::from_value(input)?;
-        let hunks = parse_apply_patch(&params.patch_text)?;
+        let hunks =
+            jcode_patch::parse(&params.patch_text).map_err(|error| anyhow::anyhow!(error.message()))?;
 
-        // A patch can reach config.toml through any hunk kind (add, update,
-        // move), so watch the file across the whole invocation rather than
-        // threading before/after content through each branch.
-        let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
+        if hunks.is_empty() {
+            return Err(anyhow::anyhow!(
+                "This patch contains no file sections. Add at least one \
+                 '*** Add File:', '*** Delete File:' or '*** Update File:' section."
+            ));
+        }
 
-        let mut results = Vec::new();
-        let mut touched_paths = Vec::new();
-
+        // Read every file the patch names, once, before planning. Planning is
+        // pure, so it cannot read for itself, and doing it here means a file
+        // read twice by two hunks sees the same content both times.
+        let mut contents: HashMap<String, String> = HashMap::new();
         for hunk in &hunks {
-            match hunk {
-                PatchHunk::AddFile { path, contents } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
-                    if let Some(parent) = resolved.parent() {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
-                    tokio::fs::write(&resolved, contents).await?;
-                    let diff = generate_diff_summary("", contents);
-                    publish_file_touch(
-                        &ctx,
-                        &resolved,
-                        path,
-                        "created",
-                        &diff,
-                        params.intent.as_deref(),
-                    );
-                    touched_paths.push(path.clone());
-                    if diff.is_empty() {
-                        results.push(format!("✓ {}: created", path));
-                    } else {
-                        results.push(format!("✓ {}: created\n{}", path, diff));
-                    }
-                }
-                PatchHunk::DeleteFile { path } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
-                    // `resolve_path` passes absolute paths through unchanged, so
-                    // a patch can name any file on disk. The bash gate does not
-                    // cover this path, so apply the same absolute deny here
-                    // (#604). Only the catastrophic tier: ordinary file deletes
-                    // are this tool's normal job.
-                    let risk_ctx =
-                        jcode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
-                    if jcode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
-                        results.push(format!(
-                            "✗ {}: refused, this path is protected and must never \
-                             be deleted by an agent",
-                            path
-                        ));
-                        continue;
-                    }
-                    let old_contents = tokio::fs::read_to_string(&resolved)
-                        .await
-                        .unwrap_or_default();
-                    if tokio::fs::remove_file(&resolved).await.is_ok() {
-                        let diff = generate_diff_summary(&old_contents, "");
-                        publish_file_touch(
-                            &ctx,
-                            &resolved,
-                            path,
-                            "deleted",
-                            &diff,
-                            params.intent.as_deref(),
-                        );
-                        touched_paths.push(path.clone());
-                        if diff.is_empty() {
-                            results.push(format!("✓ {}: deleted", path));
-                        } else {
-                            results.push(format!("✓ {}: deleted\n{}", path, diff));
-                        }
-                    } else {
-                        results.push(format!("✗ {}: failed to delete", path));
-                    }
-                }
-                PatchHunk::UpdateFile {
-                    path,
-                    move_to,
-                    chunks,
-                } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
-                    match apply_update_chunks(&resolved, chunks).await {
-                        Ok((old_contents, new_contents)) => {
-                            let diff = generate_diff_summary(&old_contents, &new_contents);
-                            if let Some(dest) = move_to {
-                                let dest_resolved = ctx.resolve_path(Path::new(dest));
-                                if let Some(parent) = dest_resolved.parent() {
-                                    tokio::fs::create_dir_all(parent).await?;
-                                }
-                                tokio::fs::write(&dest_resolved, &new_contents).await?;
-                                let _ = tokio::fs::remove_file(&resolved).await;
-                                publish_file_touch(
-                                    &ctx,
-                                    &resolved,
-                                    path,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                publish_file_touch(
-                                    &ctx,
-                                    &dest_resolved,
-                                    dest,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                touched_paths.push(path.clone());
-                                touched_paths.push(dest.clone());
-                                if diff.is_empty() {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks), moved to {}",
-                                        path,
-                                        chunks.len(),
-                                        dest
-                                    ));
-                                } else {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks), moved to {}\n{}",
-                                        path,
-                                        chunks.len(),
-                                        dest,
-                                        diff
-                                    ));
-                                }
-                            } else {
-                                tokio::fs::write(&resolved, &new_contents).await?;
-                                publish_file_touch(
-                                    &ctx,
-                                    &resolved,
-                                    path,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                touched_paths.push(path.clone());
-                                if diff.is_empty() {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks)",
-                                        path,
-                                        chunks.len()
-                                    ));
-                                } else {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks)\n{}",
-                                        path,
-                                        chunks.len(),
-                                        diff
-                                    ));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            results.push(format!("✗ {}: {}", path, e));
-                        }
-                    }
-                }
+            if contents.contains_key(&hunk.path) {
+                continue;
+            }
+            let resolved = ctx.resolve_path(Path::new(&hunk.path));
+            if let Ok(text) = tokio::fs::read_to_string(&resolved).await {
+                contents.insert(hunk.path.clone(), text);
             }
         }
 
-        if results.is_empty() {
-            Ok(ToolOutput::new("No changes applied"))
-        } else {
-            let mut body = results.join("\n");
-            config_watch.finish(&mut body);
-            let output = ToolOutput::new(body);
-            if touched_paths.len() == 1 {
-                Ok(output.with_title(touched_paths[0].clone()))
-            } else {
-                Ok(output.with_title(format!("{} files", touched_paths.len())))
+        let result = plan(&hunks, &|path: &str| contents.get(path).cloned());
+
+        // A patch can reach config.toml through any hunk, so watch the file
+        // across the whole commit rather than threading content through each
+        // branch.
+        let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
+        let committed = commit(&result, &ctx, params.intent.as_deref()).await?;
+
+        if let Some(message) = failure_message(&result, &committed) {
+            return Err(anyhow::anyhow!(message));
+        }
+
+        let mut body = summary(&committed);
+        for outcome in &committed {
+            if let Some(diff) = render_diff(outcome, &contents) {
+                // A moved file's diff is headed by where it ended up, not where
+                // it came from: a real agent reported the pre-move path as
+                // "slightly misleading" because the file is no longer there.
+                let heading = match outcome {
+                    FileOutcome::Updated {
+                        path,
+                        moved_to: Some(destination),
+                        ..
+                    } => format!("{path} -> {destination}"),
+                    other => other.path().to_string(),
+                };
+                body.push_str(&format!("\n\n{heading}\n{diff}"));
             }
         }
+        config_watch.finish(&mut body);
+
+        let title = match committed.len() {
+            1 => committed[0].path().to_string(),
+            n => format!("{n} files"),
+        };
+        Ok(ToolOutput::new(body).with_title(title))
     }
 }
 
-fn publish_file_touch(
+/// Write the planned outcomes, stopping at the first that fails.
+///
+/// Returns what actually landed, which is not the same as what was planned: a
+/// write can fail for reasons planning cannot see, and the caller has to be
+/// told the truth about the disk rather than about the plan.
+async fn commit(
+    result: &PatchPlan,
+    ctx: &ToolContext,
+    intent: Option<&str>,
+) -> Result<Vec<FileOutcome>> {
+    let mut committed = Vec::new();
+
+    for outcome in &result.outcomes {
+        let resolved = ctx.resolve_path(Path::new(outcome.path()));
+
+        match outcome {
+            FileOutcome::Created { content, .. } => {
+                if let Some(parent) = resolved.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(&resolved, content).await?;
+                publish(ctx, &resolved, outcome.path(), "created", intent, FileOp::Write);
+            }
+            FileOutcome::Deleted { path } => {
+                // `resolve_path` passes absolute paths through unchanged, so a
+                // patch can name any file on disk. The bash gate does not cover
+                // this path, so the same absolute deny applies here (#604).
+                // Only the catastrophic tier: ordinary file deletes are this
+                // tool's normal job.
+                let risk = jcode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
+                if jcode_command_risk::is_catastrophic_target(&resolved, &risk) {
+                    return Err(anyhow::anyhow!(
+                        "{path}: refused, this path is protected and must never be \
+                         deleted by an agent"
+                    ));
+                }
+                tokio::fs::remove_file(&resolved).await?;
+                publish(ctx, &resolved, path, "deleted", intent, FileOp::Edit);
+            }
+            FileOutcome::Updated {
+                path,
+                moved_to,
+                content,
+            } => match moved_to {
+                Some(destination) => {
+                    let target = ctx.resolve_path(Path::new(destination));
+                    if let Some(parent) = target.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    tokio::fs::write(&target, content).await?;
+                    tokio::fs::remove_file(&resolved).await?;
+                    publish(ctx, &target, path, "moved", intent, FileOp::Edit);
+                }
+                None => {
+                    tokio::fs::write(&resolved, content).await?;
+                    publish(ctx, &resolved, path, "modified", intent, FileOp::Edit);
+                }
+            },
+        }
+
+        committed.push(outcome.clone());
+    }
+
+    Ok(committed)
+}
+
+/// The message for a patch that did not fully apply.
+///
+/// Built from what was actually committed rather than what was planned, so a
+/// caller is never told a file landed when its write failed.
+fn failure_message(result: &PatchPlan, committed: &[FileOutcome]) -> Option<String> {
+    let (path, error) = result.failure.as_ref()?;
+    let mut message = match error {
+        HunkError::Missing => format!("{path}: file does not exist"),
+        HunkError::Exists => format!("{path}: file already exists"),
+        HunkError::Parse(detail) => format!("{path}: {detail}"),
+        HunkError::Apply(inner) => format!("{path}: {}", inner.message()),
+    };
+
+    if !committed.is_empty() {
+        let applied: Vec<&str> = committed.iter().map(FileOutcome::path).collect();
+        message.push_str(&format!(
+            "\n\nAlready applied, and still on disk: {}. Re-read these before retrying.",
+            applied.join(", ")
+        ));
+    }
+    if !result.skipped.is_empty() {
+        message.push_str(&format!(
+            "\n\nNOT applied, because {path} failed first: {}",
+            result.skipped.join(", ")
+        ));
+    }
+    Some(message)
+}
+
+fn render_diff(outcome: &FileOutcome, before: &HashMap<String, String>) -> Option<String> {
+    let old = before.get(outcome.path()).map(String::as_str).unwrap_or("");
+    let new = match outcome {
+        FileOutcome::Created { content, .. } => content.as_str(),
+        FileOutcome::Updated { content, .. } => content.as_str(),
+        FileOutcome::Deleted { .. } => "",
+    };
+    let diff = super::tool_diff::render_diff(
+        old,
+        new,
+        1,
+        super::tool_diff::DEFAULT_MAX_DIFF_LINES,
+    );
+    (!diff.trim().is_empty()).then_some(diff)
+}
+
+fn publish(
     ctx: &ToolContext,
     resolved: &Path,
     display_path: &str,
     verb: &str,
-    diff: &str,
     intent: Option<&str>,
+    op: FileOp,
 ) {
-    let detail = build_file_touch_preview(diff);
     Bus::global().publish(BusEvent::FileTouch(FileTouch {
         session_id: ctx.session_id.clone(),
         path: resolved.to_path_buf(),
-        op: FileOp::Edit,
+        op,
         intent: intent
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string),
-        summary: Some(format!("{} via apply_patch", verb)),
-        detail,
+            .map(str::to_string)
+            .filter(|value| !value.trim().is_empty()),
+        summary: Some(format!("{verb} {display_path}")),
+        detail: None,
     }));
-    let _ = display_path;
 }
 
+/// Trim a diff for the file-touch event's preview.
+#[allow(dead_code)]
 fn build_file_touch_preview(diff: &str) -> Option<String> {
     let trimmed = diff.trim();
     if trimmed.is_empty() {
         return None;
     }
-
     let mut lines = trimmed.lines();
     let mut preview = lines
         .by_ref()
@@ -288,343 +272,16 @@ fn build_file_touch_preview(diff: &str) -> Option<String> {
         .collect::<Vec<_>>()
         .join("\n");
     let mut truncated = lines.next().is_some();
-
     if preview.len() > FILE_TOUCH_PREVIEW_MAX_BYTES {
         preview = crate::util::truncate_str(&preview, FILE_TOUCH_PREVIEW_MAX_BYTES)
             .trim_end()
             .to_string();
         truncated = true;
     }
-
     if truncated {
         preview.push_str("\n…");
     }
-
     Some(preview)
-}
-
-async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<(String, String)> {
-    let original_contents = tokio::fs::read_to_string(path).await?;
-    let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
-
-    if original_lines.last().is_some_and(String::is_empty) {
-        original_lines.pop();
-    }
-
-    let replacements = compute_replacements(&original_lines, path, chunks)?;
-    let mut new_lines = apply_replacements(original_lines, &replacements);
-
-    if !new_lines.last().is_some_and(String::is_empty) {
-        new_lines.push(String::new());
-    }
-    Ok((original_contents, new_lines.join("\n")))
-}
-
-/// Compact line-numbered diff, rendered by the shared tool renderer.
-fn generate_diff_summary(old: &str, new: &str) -> String {
-    super::tool_diff::render_diff(old, new, 1, super::tool_diff::DEFAULT_MAX_DIFF_LINES)
-}
-
-fn compute_replacements(
-    original_lines: &[String],
-    path: &Path,
-    chunks: &[UpdateFileChunk],
-) -> Result<Vec<(usize, usize, Vec<String>)>> {
-    let mut replacements: Vec<(usize, usize, Vec<String>)> = Vec::new();
-    let mut line_index: usize = 0;
-
-    for chunk in chunks {
-        if let Some(ctx_line) = &chunk.change_context {
-            if let Some(idx) = seek_sequence(
-                original_lines,
-                std::slice::from_ref(ctx_line),
-                line_index,
-                false,
-            ) {
-                line_index = idx + 1;
-            } else {
-                anyhow::bail!(
-                    "Failed to find context '{}' in {}",
-                    ctx_line,
-                    path.display()
-                );
-            }
-        }
-
-        if chunk.old_lines.is_empty() {
-            let insertion_idx = if original_lines.last().is_some_and(String::is_empty) {
-                original_lines.len() - 1
-            } else {
-                original_lines.len()
-            };
-            replacements.push((insertion_idx, 0, chunk.new_lines.clone()));
-            continue;
-        }
-
-        let mut pattern: &[String] = &chunk.old_lines;
-        let mut found = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
-
-        let mut new_slice: &[String] = &chunk.new_lines;
-
-        if found.is_none() && pattern.last().is_some_and(String::is_empty) {
-            pattern = &pattern[..pattern.len() - 1];
-            if new_slice.last().is_some_and(String::is_empty) {
-                new_slice = &new_slice[..new_slice.len() - 1];
-            }
-            found = seek_sequence(original_lines, pattern, line_index, chunk.is_end_of_file);
-        }
-
-        if let Some(start_idx) = found {
-            replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
-            line_index = start_idx + pattern.len();
-        } else {
-            anyhow::bail!(
-                "Failed to find expected lines in {}:\n{}",
-                path.display(),
-                chunk.old_lines.join("\n"),
-            );
-        }
-    }
-
-    replacements.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-    Ok(replacements)
-}
-
-fn apply_replacements(
-    mut lines: Vec<String>,
-    replacements: &[(usize, usize, Vec<String>)],
-) -> Vec<String> {
-    for (start_idx, old_len, new_segment) in replacements.iter().rev() {
-        let start_idx = *start_idx;
-        let old_len = *old_len;
-
-        for _ in 0..old_len {
-            if start_idx < lines.len() {
-                lines.remove(start_idx);
-            }
-        }
-
-        for (offset, new_line) in new_segment.iter().enumerate() {
-            lines.insert(start_idx + offset, new_line.clone());
-        }
-    }
-
-    lines
-}
-
-fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
-    if pattern.is_empty() {
-        return Some(start);
-    }
-
-    if pattern.len() > lines.len() {
-        return None;
-    }
-
-    let search_start = if eof && lines.len() >= pattern.len() {
-        lines.len() - pattern.len()
-    } else {
-        start
-    };
-
-    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
-        if lines[i..i + pattern.len()] == *pattern {
-            return Some(i);
-        }
-    }
-
-    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
-        let mut ok = true;
-        for (p_idx, pat) in pattern.iter().enumerate() {
-            if lines[i + p_idx].trim_end() != pat.trim_end() {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return Some(i);
-        }
-    }
-
-    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
-        let mut ok = true;
-        for (p_idx, pat) in pattern.iter().enumerate() {
-            if lines[i + p_idx].trim() != pat.trim() {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return Some(i);
-        }
-    }
-
-    None
-}
-
-fn parse_apply_patch(input: &str) -> Result<Vec<PatchHunk>> {
-    let lines: Vec<&str> = input.lines().collect();
-
-    let start = lines
-        .iter()
-        .position(|l| l.trim() == "*** Begin Patch")
-        .ok_or_else(|| anyhow::anyhow!("Patch must contain *** Begin Patch"))?;
-
-    let mut hunks = Vec::new();
-    let mut i = start + 1;
-
-    while i < lines.len() {
-        let line = lines[i].trim_end();
-        if line.trim() == "*** End Patch" {
-            break;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Add File: ") {
-            let path = path.trim().to_string();
-            i += 1;
-            let mut contents = String::new();
-            while i < lines.len() {
-                let current = lines[i];
-                if current.starts_with("*** ") {
-                    break;
-                }
-                if let Some(added) = current.strip_prefix('+') {
-                    contents.push_str(added);
-                    contents.push('\n');
-                }
-                i += 1;
-            }
-            hunks.push(PatchHunk::AddFile { path, contents });
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Delete File: ") {
-            hunks.push(PatchHunk::DeleteFile {
-                path: path.trim().to_string(),
-            });
-            i += 1;
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Update File: ") {
-            let path = path.trim().to_string();
-            i += 1;
-
-            let mut move_to = None;
-            if i < lines.len()
-                && let Some(target) = lines[i].trim_end().strip_prefix("*** Move to: ")
-            {
-                move_to = Some(target.trim().to_string());
-                i += 1;
-            }
-
-            let mut chunks = Vec::new();
-            let mut is_first_chunk = true;
-
-            while i < lines.len() {
-                let current = lines[i].trim_end();
-
-                if current.starts_with("*** ") && current != "*** End of File" {
-                    break;
-                }
-
-                if current.trim().is_empty()
-                    && !current.starts_with(' ')
-                    && !current.starts_with('+')
-                    && !current.starts_with('-')
-                {
-                    i += 1;
-                    continue;
-                }
-
-                let change_context;
-                if current == "@@" {
-                    change_context = None;
-                    i += 1;
-                } else if let Some(ctx) = current.strip_prefix("@@ ") {
-                    change_context = Some(ctx.to_string());
-                    i += 1;
-                } else if is_first_chunk {
-                    change_context = None;
-                } else {
-                    break;
-                }
-
-                let mut old_lines = Vec::new();
-                let mut new_lines = Vec::new();
-                let mut is_end_of_file = false;
-                let mut had_diff_lines = false;
-
-                while i < lines.len() {
-                    let cl = lines[i];
-
-                    if cl == "*** End of File" {
-                        is_end_of_file = true;
-                        i += 1;
-                        break;
-                    }
-
-                    if cl.starts_with("*** ") || cl.starts_with("@@") {
-                        break;
-                    }
-
-                    if let Some(content) = cl.strip_prefix(' ') {
-                        old_lines.push(content.to_string());
-                        new_lines.push(content.to_string());
-                        had_diff_lines = true;
-                    } else if let Some(content) = cl.strip_prefix('+') {
-                        new_lines.push(content.to_string());
-                        had_diff_lines = true;
-                    } else if let Some(content) = cl.strip_prefix('-') {
-                        old_lines.push(content.to_string());
-                        had_diff_lines = true;
-                    } else if cl.is_empty() {
-                        old_lines.push(String::new());
-                        new_lines.push(String::new());
-                        had_diff_lines = true;
-                    } else {
-                        if had_diff_lines {
-                            break;
-                        }
-                        i += 1;
-                        continue;
-                    }
-
-                    i += 1;
-                }
-
-                if had_diff_lines || change_context.is_some() {
-                    chunks.push(UpdateFileChunk {
-                        change_context,
-                        old_lines,
-                        new_lines,
-                        is_end_of_file,
-                    });
-                }
-
-                is_first_chunk = false;
-            }
-
-            if chunks.is_empty() {
-                anyhow::bail!("Update file hunk for '{}' has no changes", path);
-            }
-
-            hunks.push(PatchHunk::UpdateFile {
-                path,
-                move_to,
-                chunks,
-            });
-            continue;
-        }
-
-        i += 1;
-    }
-
-    if hunks.is_empty() {
-        anyhow::bail!("No valid patch directives found");
-    }
-
-    Ok(hunks)
 }
 
 #[cfg(test)]

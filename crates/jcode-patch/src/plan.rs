@@ -203,14 +203,21 @@ fn plan_one(hunk: &Hunk, source: &dyn FileSource) -> Result<FileOutcome, HunkErr
 pub fn summary(outcomes: &[FileOutcome]) -> String {
     let mut lines = vec!["Success. Updated the following files:".to_string()];
     for outcome in outcomes {
-        // A rename is reported as a modification of the original path, matching
-        // omp, rather than as a delete plus an add.
-        let (marker, path) = match outcome {
-            FileOutcome::Created { path, .. } => ('A', path),
-            FileOutcome::Updated { path, .. } => ('M', path),
-            FileOutcome::Deleted { path } => ('D', path),
+        // A rename stays an M on the ORIGINAL path, matching omp, rather than
+        // becoming a delete plus an add. The destination is appended because
+        // omitting it made a real agent report the move as missing: it read
+        // "M old.txt", saw old.txt gone from disk, and called the output wrong.
+        let line = match outcome {
+            FileOutcome::Created { path, .. } => format!("A {path}"),
+            FileOutcome::Deleted { path } => format!("D {path}"),
+            FileOutcome::Updated {
+                path,
+                moved_to: Some(destination),
+                ..
+            } => format!("M {path} -> {destination}"),
+            FileOutcome::Updated { path, .. } => format!("M {path}"),
         };
-        lines.push(format!("{marker} {path}"));
+        lines.push(line);
     }
     lines.join("\n")
 }
