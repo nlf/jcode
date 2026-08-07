@@ -53,13 +53,7 @@ struct NormalizedReadRange {
 }
 
 impl NormalizedReadRange {
-    fn next_offset(self) -> usize {
-        self.offset + self.limit
-    }
 
-    fn next_start_line(self) -> usize {
-        self.next_offset() + 1
-    }
 }
 
 /// Parse a `pages` selection such as "3", "2-5", or "1,4,9-11" into 1-based
@@ -190,7 +184,7 @@ impl Tool for ReadTool {
                 "intent": super::intent_schema_property(),
                 "file_path": {
                     "type": "string",
-                    "description": "Path to a file. Read it here, not with cat/head/sed in bash: numbered lines are required to edit it."
+                    "description": "Path to a file. Scope it like foo.rs:50-100 or :5-16,960-973. Not cat/head/sed in bash."
                 },
                 "offset": {
                     "type": "integer",
@@ -219,7 +213,33 @@ impl Tool for ReadTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: ReadInput = serde_json::from_value(input)?;
+        let mut params: ReadInput = serde_json::from_value(input)?;
+
+        // An inline selector (`foo.rs:50-100`) is peeled off the path, matching
+        // omp, whose read takes one `path` and no range parameters. Ours keeps
+        // offset/start_line/end_line/limit because models send them and the
+        // curated OAuth Read schema advertises them, so this is an additional
+        // spelling rather than a replacement.
+        //
+        // The peel is skipped when the literal path exists, so a file genuinely
+        // named `notes:1-2` is read rather than truncated.
+        let mut selector_ranges: Vec<jcode_search::LineRange> = Vec::new();
+        if !ctx.resolve_path(Path::new(&params.file_path)).exists() {
+            let split = jcode_search::split_path_and_selector(&params.file_path);
+            if let Some(selector) = split.selector.as_deref() {
+                match jcode_search::selector_line_ranges(Some(selector)) {
+                    Ok(Some(ranges)) => {
+                        selector_ranges = ranges;
+                        params.file_path = split.path;
+                    }
+                    // A selector-shaped suffix with impossible bounds is a
+                    // mistake worth reporting, not a filename.
+                    Err(error) => return Err(anyhow::anyhow!(error.message())),
+                    Ok(None) => {}
+                }
+            }
+        }
+
         let range = normalize_read_range(&params)?;
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
@@ -259,44 +279,63 @@ impl Tool for ReadTool {
         // Read file
         let content = tokio::fs::read_to_string(&path).await?;
 
-        // Single-pass: count lines while building output
-        let mut output = String::with_capacity(range.limit.min(2000) * 80);
-        let mut total_lines = 0usize;
-        let mut truncated_line_count = 0usize;
         // Which lines this call actually put in front of the model. `edit`'s
         // seen-line guard is checked against these, so a line clipped at
         // MAX_LINE_LEN still counts: the model saw the line and its number,
         // which is what anchoring an edit to it requires.
         let mut seen_lines: Vec<usize> = Vec::new();
-        let end_exclusive = range.offset + range.limit;
+        let mut truncated_line_count = 0usize;
+        let file_lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let total_lines = file_lines.len();
+
+        // A selector resolves through the ported window logic, which brings
+        // omp's asymmetric context padding and window merging. An explicit
+        // offset/limit keeps the older single-window path so those parameters
+        // mean exactly what they say.
+        let windows = if selector_ranges.is_empty() {
+            let start = range.offset + 1;
+            let end = (range.offset + range.limit).min(total_lines).max(start);
+            vec![jcode_read::Window { start, end }]
+        } else {
+            jcode_read::resolve(
+                &jcode_read::Request {
+                    ranges: selector_ranges.clone(),
+                    limit: params.limit,
+                },
+                total_lines,
+            )
+        };
+
+        let mut output = String::new();
         {
             use std::fmt::Write;
-            for (i, line) in content.lines().enumerate() {
-                total_lines = i + 1;
-                if i < range.offset {
-                    continue;
+            let mut previous_end: Option<usize> = None;
+            for window in &windows {
+                if previous_end.is_some() {
+                    let _ = writeln!(output, "{}", jcode_read::ELISION);
                 }
-                if i >= end_exclusive {
-                    // Still need to count remaining lines
-                    continue;
+                for number in window.start..=window.end.min(total_lines) {
+                    let Some(line) = file_lines.get(number - 1) else {
+                        continue;
+                    };
+                    seen_lines.push(number);
+                    if line.len() > MAX_LINE_LEN {
+                        truncated_line_count += 1;
+                        let _ = writeln!(
+                            output,
+                            "{:>5}\t{}...",
+                            number,
+                            crate::util::truncate_str(line, MAX_LINE_LEN)
+                        );
+                    } else {
+                        let _ = writeln!(output, "{:>5}\t{}", number, line);
+                    }
                 }
-                let line_num = i + 1;
-                seen_lines.push(line_num);
-                if line.len() > MAX_LINE_LEN {
-                    truncated_line_count += 1;
-                    let _ = writeln!(
-                        output,
-                        "{:>5}\t{}...",
-                        line_num,
-                        crate::util::truncate_str(line, MAX_LINE_LEN)
-                    );
-                } else {
-                    let _ = writeln!(output, "{:>5}\t{}", line_num, line);
-                }
+                previous_end = Some(window.end);
             }
         }
 
-        let end = end_exclusive.min(total_lines);
+        let end = windows.last().map(|w| w.end.min(total_lines)).unwrap_or(0);
 
         // Publish file touch event for swarm coordination
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
@@ -328,12 +367,27 @@ impl Tool for ReadTool {
 
         // Add metadata
         if end < total_lines {
-            let continuation_hint = match range.style {
-                ReadRangeStyle::OffsetLimit => format!("offset={}", range.next_offset()),
-                ReadRangeStyle::StartEnd => format!("start_line={}", range.next_start_line()),
+            // The hint is derived from where reading actually stopped, not from
+            // the request. A selector read populates no offset/limit, so
+            // deriving it from `range` produced nonsense like `offset=5000` on
+            // a 200-line file - found by running a real agent, which quoted it
+            // back verbatim.
+            //
+            // A selector read is continued with a selector, since that is the
+            // spelling the caller used and mixing the two is what produced the
+            // confusion.
+            let continuation_hint = if !selector_ranges.is_empty() {
+                format!("{}:{}- to continue", params.file_path, end + 1)
+            } else {
+                match range.style {
+                    ReadRangeStyle::OffsetLimit => format!("offset={} to continue", end),
+                    ReadRangeStyle::StartEnd => {
+                        format!("start_line={} to continue", end + 1)
+                    }
+                }
             };
             output.push_str(&format!(
-                "\n... {} more lines (use {} to continue)\n",
+                "\n... {} more lines (use {})\n",
                 total_lines - end,
                 continuation_hint
             ));

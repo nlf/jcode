@@ -868,3 +868,247 @@ async fn an_empty_file_returns_its_own_message_without_a_header() {
 
     assert_eq!(output.output, "(empty file)");
 }
+
+/// omp's read takes one `path` carrying an inline selector. Ours accepts that
+/// spelling alongside the explicit range parameters, so a model that has read
+/// omp's docs or seen a `file:line` reference anywhere can use it directly.
+#[tokio::test]
+async fn an_inline_selector_scopes_the_read() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:50-52" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-basic"),
+        )
+        .await
+        .expect("read");
+
+    assert!(output.output.contains("50\tline 50"), "{}", output.output);
+    assert!(output.output.contains("52\tline 52"), "{}", output.output);
+    assert!(
+        !output.output.contains("line 100"),
+        "the selector should scope the read: {}",
+        output.output
+    );
+}
+
+/// omp pads an explicit range asymmetrically: one line above, three below.
+/// That padding is why a follow-up edit's anchor usually lands inside what was
+/// already shown.
+#[tokio::test]
+async fn a_selector_read_carries_omps_context_padding() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:50-52" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-pad"),
+        )
+        .await
+        .expect("read");
+
+    assert!(output.output.contains("49\tline 49"), "one line above: {}", output.output);
+    assert!(output.output.contains("55\tline 55"), "three below: {}", output.output);
+    assert!(!output.output.contains("48\tline 48"), "no more above: {}", output.output);
+    assert!(!output.output.contains("56\tline 56"), "no more below: {}", output.output);
+}
+
+/// Several ranges in one selector, which is the thing our explicit parameters
+/// cannot express at all.
+#[tokio::test]
+async fn a_multi_range_selector_returns_both_windows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:10-12,100-102" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-multi"),
+        )
+        .await
+        .expect("read");
+
+    assert!(output.output.contains("10\tline 10"), "{}", output.output);
+    assert!(output.output.contains("100\tline 100"), "{}", output.output);
+    assert!(
+        !output.output.contains("50\tline 50"),
+        "the gap between windows must not be shown: {}",
+        output.output
+    );
+    assert!(
+        output.output.contains(jcode_read::ELISION),
+        "the gap must be marked: {}",
+        output.output
+    );
+}
+
+/// The count form: `:50+10` is fifty through fifty-nine.
+#[tokio::test]
+async fn a_count_selector_spans_exactly_that_many_lines() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:50+10" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-count"),
+        )
+        .await
+        .expect("read");
+
+    assert!(output.output.contains("59\tline 59"), "{}", output.output);
+    // 59 plus three lines of trailing context, and no further.
+    assert!(!output.output.contains("63\tline 63"), "{}", output.output);
+}
+
+/// A file genuinely named `notes:1-2` must be read, not truncated to `notes`.
+#[tokio::test]
+async fn an_existing_file_wins_over_the_selector_reading_of_its_name() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("notes:1-2"), "real file\n").expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "notes:1-2" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-literal"),
+        )
+        .await
+        .expect("the literal file should be read");
+
+    assert!(output.output.contains("real file"), "{}", output.output);
+}
+
+/// A selector with impossible bounds is a mistake worth reporting rather than
+/// a filename to look for.
+#[tokio::test]
+async fn an_impossible_selector_is_reported() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\n").expect("write");
+
+    let error = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:100-50" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-bad"),
+        )
+        .await
+        .expect_err("a backwards range should be refused");
+
+    assert!(
+        error.to_string().contains("end must be >= start"),
+        "{error}"
+    );
+}
+
+/// A selector read still mints a hashline tag, so an edit can follow it.
+#[tokio::test]
+async fn a_selector_read_still_records_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:50-52" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "sel-tag"),
+        )
+        .await
+        .expect("read");
+
+    let header = output.output.lines().next().unwrap_or_default();
+    assert!(header.starts_with("[f.txt#"), "{header}");
+
+    let snapshot = crate::tool::hashline_store::for_session("sel-tag")
+        .head("f.txt")
+        .expect("a selector read should record provenance");
+    // Seen lines are the padded window, not the raw request: those are the
+    // lines actually put in front of the model.
+    let seen = snapshot.seen_lines.expect("seen lines recorded");
+    assert!(seen.contains(&49), "leading context counts as seen");
+    assert!(seen.contains(&55), "trailing context counts as seen");
+    assert!(!seen.contains(&1), "unshown lines must not be recorded");
+}
+
+/// The continuation hint must describe where reading actually stopped.
+///
+/// Found by a live agent quoting it back: a selector read populates no
+/// offset/limit, so deriving the hint from the request produced `offset=5000`
+/// on a 200-line file. The existing tests all used explicit ranges, where the
+/// request and the stopping point happen to agree.
+#[tokio::test]
+async fn a_truncated_selector_read_hints_with_a_selector() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({ "file_path": "f.txt:50-52" }),
+            make_ctx_in_session(temp.path().to_path_buf(), "hint-sel"),
+        )
+        .await
+        .expect("read");
+
+    assert!(
+        output.output.contains("145 more lines"),
+        "the count must reflect what is left after line 55: {}",
+        output.output
+    );
+    assert!(
+        output.output.contains("f.txt:56-"),
+        "a selector read continues with a selector: {}",
+        output.output
+    );
+    assert!(
+        !output.output.contains("offset=5000"),
+        "the hint must not come from the unpopulated request: {}",
+        output.output
+    );
+}
+
+/// The hint must never point past the end of the file, whichever spelling was
+/// used, or the model asks for lines that cannot exist.
+#[tokio::test]
+async fn a_continuation_hint_never_points_past_the_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let body: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(temp.path().join("f.txt"), body).expect("write");
+
+    for args in [
+        json!({ "file_path": "f.txt:10-12" }),
+        json!({ "file_path": "f.txt", "limit": 5 }),
+        json!({ "file_path": "f.txt", "start_line": 10, "end_line": 12 }),
+    ] {
+        let output = ReadTool::new()
+            .execute(
+                args.clone(),
+                make_ctx_in_session(temp.path().to_path_buf(), "hint-bounds"),
+            )
+            .await
+            .expect("read");
+
+        for token in output.output.split_whitespace() {
+            let number = token
+                .trim_start_matches("offset=")
+                .trim_start_matches("start_line=")
+                .trim_start_matches("f.txt:")
+                .trim_end_matches('-');
+            if token.starts_with("offset=")
+                || token.starts_with("start_line=")
+                || token.starts_with("f.txt:")
+            {
+                let value: usize = number.parse().unwrap_or(0);
+                assert!(
+                    value <= 101,
+                    "hint {token:?} points past a 100-line file, for {args}"
+                );
+            }
+        }
+    }
+}
