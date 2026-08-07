@@ -50,7 +50,7 @@ impl Tool for LsTool {
     }
 
     fn description(&self) -> &str {
-        "List directory contents."
+        "List directory contents, skipping vendored dirs. Not `ls` in bash."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -60,7 +60,7 @@ impl Tool for LsTool {
                 "intent": super::intent_schema_property(),
                 "path": {
                     "type": "string",
-                    "description": "Directory path."
+                    "description": "Directory path. Lists here, not via ls/find in bash; node_modules, target and .git are skipped."
                 },
                 "ignore": {
                     "type": "array",

@@ -477,6 +477,52 @@ async fn tool_descriptions_stay_under_token_cap() {
     );
 }
 
+/// Tools that compete with a shell equivalent must say so in their
+/// description.
+///
+/// Regression for NLFCODE.md items 2 and 3: these were terse stubs
+/// ("Search code and file names.", "List directory contents.") and against a
+/// known-universal `Bash` a stub loses the comparison every time. The narrow
+/// tool has to earn its place. This stays inside the ~20-token cap above, so
+/// the steer must be short; longer rationale belongs in the parameter
+/// descriptions or the system prompt.
+#[tokio::test]
+async fn tools_competing_with_bash_name_it_as_the_wrong_choice() {
+    // Each tool, and the shell habit it has to displace.
+    const COMPETING: &[&str] = &["grep", "glob", "read", "ls", "edit", "write", "agentgrep"];
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let definitions = registry.definitions(None).await;
+
+    let mut silent = Vec::new();
+    for name in COMPETING {
+        let Some(def) = definitions.iter().find(|d| d.name == *name) else {
+            panic!("{name} should be registered");
+        };
+        if !def.description.to_lowercase().contains("bash") {
+            silent.push(format!("{name}: {}", def.description));
+        }
+    }
+    assert!(
+        silent.is_empty(),
+        "these tools compete with bash but do not say so:\n{}",
+        silent.join("\n")
+    );
+
+    // Bash itself must point away from the work these tools do, so the steer
+    // is visible from whichever description the model reads first.
+    let bash = definitions
+        .iter()
+        .find(|d| d.name == "bash")
+        .expect("bash should be registered");
+    assert!(
+        bash.description.to_lowercase().contains("not to"),
+        "bash description should name its own wrong uses: {}",
+        bash.description
+    );
+}
+
 fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String, String)>) {
     match schema {
         Value::Object(map) => {

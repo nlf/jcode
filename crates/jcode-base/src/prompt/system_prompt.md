@@ -23,6 +23,17 @@ There may be other jcode agents working in the codebase. The harness handles thi
 You can't interact with interactive commands. Use non-interactive instead.
 In a closed feedback loop, keep iterating.
 
+## Tool selection
+
+Use the purpose-built tool, not bash, whenever one exists.
+
+- Searching file contents: `grep`. Never `grep` or `rg` through bash.
+- Finding files by name: `glob`. Never `find` or `ls -R` through bash.
+- Reading a file: `read`. Never `cat`, `head`, `tail`, or `sed -n` through bash.
+- Listing a directory: `ls`. Changing a file: `edit`. Creating one: `write`.
+
+These give numbered, ignore-aware, token-budgeted output that bash cannot, and reading through `read` is what makes a file editable. Reserve bash for what has no tool: builds, tests, git, and package managers. A read-only exploration of a codebase should need no bash at all.
+
 ## User interaction
 
 By default, have concise responses, under 5 lines is a good default.

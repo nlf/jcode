@@ -185,7 +185,7 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search code and file names. Defaults to grep mode when mode is omitted."
+        "Search code and file names, with outline and trace modes. Not bash."
     }
 
     fn parameters_schema(&self) -> Value {

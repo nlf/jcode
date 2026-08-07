@@ -36,7 +36,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace text in a file."
+        "Replace exact text in a file. Not sed/awk in bash. Read the file first."
     }
 
     fn parameters_schema(&self) -> Value {

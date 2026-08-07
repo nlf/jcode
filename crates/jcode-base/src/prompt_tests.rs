@@ -16,6 +16,45 @@ fn test_default_system_prompt_no_claude_code_identity() {
     );
 }
 
+/// The prompt must state a tool-selection preference.
+///
+/// Regression for NLFCODE.md item 2: the prompt previously carried no
+/// tool-selection guidance at all, and no "prefer X over bash" phrasing
+/// existed anywhere in the crates. Against a known-universal `Bash`, a model
+/// with no instruction to the contrary reaches for the shell, so a read-only
+/// exploration ran almost entirely through it.
+#[test]
+fn system_prompt_states_a_tool_selection_preference() {
+    let prompt = DEFAULT_SYSTEM_PROMPT;
+    assert!(
+        prompt.contains("## Tool selection"),
+        "the prompt must have a tool-selection section"
+    );
+
+    // Each tool that competes with a shell equivalent has to be named, or the
+    // model is left to guess which shell habits are the wrong ones.
+    for tool in ["grep", "glob", "read", "ls", "edit", "write"] {
+        assert!(
+            prompt.contains(&format!("`{tool}`")),
+            "tool-selection guidance must name `{tool}`"
+        );
+    }
+    // And the shell commands they replace.
+    for shell in ["rg", "find", "cat", "sed -n"] {
+        assert!(
+            prompt.contains(shell),
+            "guidance must name the shell equivalent '{shell}' as the wrong choice"
+        );
+    }
+
+    // Bash keeps a legitimate purpose, so the guidance must say what it is
+    // rather than reading as a blanket ban it would be right to ignore.
+    assert!(
+        prompt.contains("Reserve bash for"),
+        "the guidance must say what bash is still for"
+    );
+}
+
 #[test]
 fn mermaid_prompt_module_follows_capability() {
     let (enabled, _) = build_system_prompt_split_with_capabilities(
