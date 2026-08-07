@@ -11,15 +11,34 @@ that says it worked.
 Same prompt, same model, before and after. Prompt: *"Read-only: find where the
 ReadTool schema is defined and tell me which parameters it advertises."*
 
-| | bash calls per run | tools actually used |
-|---|---|---|
-| Before | 2, 2, 3 | `bash`, `agentgrep` |
-| After | 0 across 20 runs | `grep`, `glob`, `read`, `ls`, `batch` |
+Six runs each, counted from the `--ndjson` stream by
+`scripts/count_tool_calls.py`:
 
-The last 5 of those runs were measured on the final binary, after the alias fix
-in `dddfab2ea` changed which tool a `grep` call actually reaches. Earlier runs
-were still zero-bash but were routing through `agentgrep`, so they measured the
-prompt and description work rather than the adapters.
+| | bash calls per run | mean | tools actually used |
+|---|---|---|---|
+| Before (`5b3924637~1`) | 2, 0, 1, 0, 2, 0 | 0.83 | `bash`, `agentgrep`, `ls`, `read` |
+| After (HEAD) | 0, 0, 0, 0, 0, 0 | 0 | `grep`, `glob`, `read` |
+
+The load-bearing result is the right-hand column, not the zero. `grep` and
+`glob` are chosen, repeatedly, on every run; before this work they could not be
+called at all. On a larger exploration task the same holds:
+
+| | tools used |
+|---|---|
+| Before | `Read`x5, `agentgrep`, `ls` |
+| After | `glob`, `grep`x2, `read`x5 |
+
+Two caveats worth keeping. The before column is *variable* rather than
+uniformly bad: three of six baseline runs already used no bash, because the
+model sometimes reached for `agentgrep` unprompted, so this removes a fallback
+rather than eliminating a certainty. And an earlier version of this table read
+"2, 2, 3" against "0 across 20 runs", which overstated both ends: the baseline
+came from three unrepresentative runs and the after figure used the unsound
+counting method described below.
+
+Counting and aggregation tasks ("how many files, which is largest") still go
+to bash, before and after, since no native tool counts lines. That is out of
+scope here.
 
 Reproduce by building a binary at `5b3924637~1` and one at HEAD, then running
 each against its own socket:
@@ -28,22 +47,32 @@ each against its own socket:
 ./target/selfdev/jcode run --no-update --socket /tmp/probe.sock '<prompt>'
 ```
 
-Count tools from **both** forms in the output. A top-level call prints
-`[toolname]`, but a call nested inside `batch` prints only
-`--- [N] toolname ---`, so counting `^\[[a-z_]+\]` alone reports `batch` and
-silently misses every tool it ran. An early version of this measurement had
-that bug: it would have scored a run that used `batch` to shell out as
-zero-bash. The conclusion survived re-measurement, but the method was wrong.
+Count from the `--ndjson` stream, never from the human-readable transcript:
 
-```bash
-top=$(echo "$out" | grep -oE '^\[[a-z_]+\]' | tr -d '[]')
-sub=$(echo "$out" | grep -oE '^ *→ --- \[[0-9]+\] [a-z_]+ ---' \
-      | sed -E 's/.*\] ([a-z_]+) ---/\1/')
-printf '%s\n%s' "$top" "$sub" | grep -cx bash
+```
+jcode run --no-update --ndjson --socket /tmp/probe.sock '<prompt>' 2>/dev/null \
+  | python3 scripts/count_tool_calls.py
 ```
 
-Sanity-check the counter with a prompt that deliberately shells out through
-`batch` before trusting a zero.
+The transcript cannot answer this question. A top-level call prints
+`[toolname]`, but a call inside `batch` appears only in a preview that shows
+the *first* sub-call, so a batch containing `read` and `bash` prints
+`--- [1] read ---` and the bash call is invisible. Two successive versions of
+this measurement got that wrong: the first counted only `[toolname]` and saw
+just `batch`; the second added the `--- [N] name ---` form and still missed
+everything after the first sub-call. The script reassembles the streamed
+`tool_input` deltas instead, which carry the whole batch payload.
+
+Verify the counter before trusting a zero. Three controls, all passing:
+
+| prompt | expected | reported |
+|---|---|---|
+| batch with `read` then `bash` | bash ≥ 1 | `bash=1` |
+| batch with three `bash` calls | bash = 3 | `bash=3` |
+| no tools at all | bash = 0 | `bash=0` |
+
+The middle one is the important control: the previous method reported `bash=1`
+for three calls, so it would have understated any non-zero result too.
 
 ## What was wrong
 
