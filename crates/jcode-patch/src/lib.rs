@@ -1,0 +1,15 @@
+//! Patch application: the `apply_patch` tool's engine.
+//!
+//! Ported from oh-my-pi's `src/edit/apply-patch/` and `src/edit/modes/patch.ts`,
+//! behaviour-first: their tests are the specification, not their code.
+//!
+//! Pure and I/O-free so it tests in about a second without compiling the agent,
+//! matching `jcode-hashline` and `jcode-search`.
+
+pub mod fuzzy;
+
+pub use fuzzy::{
+    adjust_indentation, count_leading_whitespace, find_closest_sequence, find_context_line,
+    find_exact_sequence, find_fuzzy_sequence, leading_whitespace, levenshtein_distance,
+    normalize_for_fuzzy, seek_sequence, similarity, SequenceMatch, DEFAULT_FUZZY_THRESHOLD,
+};

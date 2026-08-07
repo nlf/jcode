@@ -11,6 +11,7 @@ members = [
     "crates/jcode-agent-runtime",
     "crates/jcode-app-core",
     "crates/jcode-hashline",
+    "crates/jcode-patch",
     "crates/jcode-search",
     "crates/jcode-base",
     "crates/jcode-tui",

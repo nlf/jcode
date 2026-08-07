@@ -3734,6 +3734,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-patch"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "jcode-pdf"
 version = "0.1.0"
 dependencies = [
