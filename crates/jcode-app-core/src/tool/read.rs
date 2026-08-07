@@ -87,9 +87,7 @@ fn parse_page_selection(spec: &str) -> Result<Vec<usize>> {
                     return Err(anyhow::anyhow!("page numbers are 1-based, got '{part}'"));
                 }
                 if end < start {
-                    return Err(anyhow::anyhow!(
-                        "page range '{part}' ends before it starts"
-                    ));
+                    return Err(anyhow::anyhow!("page range '{part}' ends before it starts"));
                 }
                 pages.extend(start..=end);
             }
@@ -409,9 +407,7 @@ pub(crate) fn file_not_found_message(
     let used_working_dir = requested_path.is_relative()
         && !requested.starts_with('~')
         && working_dir.is_some_and(|cwd| resolved.starts_with(cwd));
-    if used_working_dir
-        && let Some(cwd) = working_dir
-    {
+    if used_working_dir && let Some(cwd) = working_dir {
         message.push_str(&format!(
             "\nResolved to {} against the working directory {}.",
             resolved.display(),
@@ -634,7 +630,11 @@ fn is_pdf_file(path: &Path) -> bool {
 
 /// Handle reading a PDF file - extract text content
 #[cfg(feature = "pdf")]
-fn handle_pdf_file(path: &Path, file_path: &str, selection: Option<&[usize]>) -> Result<ToolOutput> {
+fn handle_pdf_file(
+    path: &Path,
+    file_path: &str,
+    selection: Option<&[usize]>,
+) -> Result<ToolOutput> {
     // Get file metadata
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();

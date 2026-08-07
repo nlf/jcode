@@ -172,7 +172,14 @@ fn read_tool_schema_advertises_what_the_implementation_accepts() {
         .as_object()
         .expect("read schema properties should be an object");
 
-    for field in ["file_path", "start_line", "end_line", "offset", "limit", "pages"] {
+    for field in [
+        "file_path",
+        "start_line",
+        "end_line",
+        "offset",
+        "limit",
+        "pages",
+    ] {
         assert!(
             properties.contains_key(field),
             "'{field}' is accepted by ReadInput and must be advertised"
@@ -544,7 +551,10 @@ async fn the_read_tool_surfaces_the_richer_message() {
         .expect_err("reading a missing file must fail");
     let message = error.to_string();
 
-    assert!(message.contains("File not found: docs/notes.md"), "{message}");
+    assert!(
+        message.contains("File not found: docs/notes.md"),
+        "{message}"
+    );
     assert!(
         message.contains("working directory"),
         "the tool must carry the context, not just the helper: {message}"
@@ -606,8 +616,8 @@ fn a_relative_miss_without_a_working_directory_says_nothing_extra() {
 
 #[tokio::test]
 async fn edit_reports_the_same_context_as_read() {
-    use crate::tool::edit::EditTool;
     use crate::tool::Tool as _;
+    use crate::tool::edit::EditTool;
 
     let temp = tempfile::tempdir().expect("tempdir");
     let tool = EditTool::new();
@@ -624,7 +634,10 @@ async fn edit_reports_the_same_context_as_read() {
         .expect_err("editing a missing file must fail");
     let message = error.to_string();
 
-    assert!(message.contains("File not found: nope/missing.txt"), "{message}");
+    assert!(
+        message.contains("File not found: nope/missing.txt"),
+        "{message}"
+    );
     assert!(
         message.contains("working directory"),
         "edit resolves paths the same way and should explain itself the same way: {message}"
