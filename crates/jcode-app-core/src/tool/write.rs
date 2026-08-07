@@ -76,6 +76,26 @@ impl Tool for WriteTool {
         // Write the file
         tokio::fs::write(&path, &params.content).await?;
 
+        // Record the new content so a hashline edit later in this turn can
+        // anchor to it without a re-read.
+        //
+        // This is ergonomics, not safety. The tag is a hash of the file, so an
+        // unrecorded write is already caught: the model's stale tag would not
+        // match the new content and the edit would be refused, which is the
+        // right answer. What recording buys is that the refusal is unnecessary
+        // in the first place, and that the store's error can say "unknown tag"
+        // rather than misattributing a write this session made to a concurrent
+        // modification.
+        //
+        // No seen lines. The model authored this content, so it has seen all of
+        // it, but `seen_lines` records what was *displayed* with line numbers,
+        // and claiming that here would be a different assertion than `read`'s.
+        super::hashline_store::for_session(&ctx.session_id).record(
+            &params.file_path,
+            &params.content,
+            None,
+        );
+
         let _new_len = params.content.len();
         let line_count = params.content.lines().count();
         let diff = if let Some(old) = old_content.as_deref() {

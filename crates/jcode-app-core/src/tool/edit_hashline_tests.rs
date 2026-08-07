@@ -581,3 +581,47 @@ mod documented_syntax {
         );
     }
 }
+
+/// `write` records what it wrote, so an edit later in the same turn can anchor
+/// to it without a re-read.
+///
+/// Safety does not depend on this: an unrecorded write would leave the model
+/// holding a tag that no longer matches the file, and the edit would be refused,
+/// which is correct. This is about not forcing a redundant read.
+#[tokio::test]
+async fn an_edit_can_follow_a_write_without_re_reading() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("f.txt");
+
+    let written = crate::tool::write::WriteTool::new()
+        .execute(
+            json!({ "file_path": "f.txt", "content": "one\ntwo\n" }),
+            ctx(temp.path().to_path_buf(), "hl-write"),
+        )
+        .await
+        .expect("write");
+
+    // The tag write recorded is the hash of what it wrote, which the store can
+    // now hand back for the path.
+    let tag = crate::tool::hashline_store::for_session("hl-write")
+        .head("f.txt")
+        .expect("write should have recorded a snapshot")
+        .hash;
+    assert!(!written.output.is_empty(), "write should report something");
+
+    EditTool::new()
+        .execute(
+            json!({
+                "file_path": "f.txt",
+                "input": format!("[f.txt#{tag}]\nPUT 1.=1:\n+ONE"),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-write"),
+        )
+        .await
+        .expect("an edit should anchor to the tag write recorded");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "ONE\ntwo\n"
+    );
+}
