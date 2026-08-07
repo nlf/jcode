@@ -133,6 +133,19 @@ which is *which* tool a model reaches for. That is what the bash-count
 measurement above uses them for. They are a poor instrument for what a tool
 then does.
 
+**The above was half wrong, and the correction is the more useful lesson.**
+The live runs were right that something was broken; the in-process test was
+right that the adapter was correct. Both were true. `resolve_tool_name` mapped
+`grep` to `agentgrep`, a leftover alias from when no grep tool existed, so live
+calls never reached the adapter at all. The in-process test constructs
+`GrepTool` directly and skips the resolver, so it could not see the router that
+decided the tool was never called.
+
+When a live observation and a unit test disagree, neither is necessarily lying.
+The gap between them is a real layer, and that layer is where the bug is.
+`registered_tools_are_never_aliased_to_something_else` and
+`every_alias_target_is_a_registered_tool` now cover that layer.
+
 ## Known unrelated failures
 
 Three `jcode-base` tests fail on this machine and are unrelated to any of the
@@ -144,3 +157,10 @@ above. Confirmed failing at `0e09472c2`, which predates this work:
 
 Recorded so the next person does not re-derive that they are not their fault.
 They are real failures and worth fixing, just not here.
+
+One more, found by the alias-integrity test: `task`, `task_runner` and `Agent`
+all resolve to `subagent`, which is never registered as a tool in this build,
+though the name is referenced from the Anthropic provider's curated list and
+the claude-cli runtime. Calling any of them fails with "Unknown tool". Those
+three are excluded from `every_alias_target_is_a_registered_tool` with a
+comment, so the test passes on the rest rather than being weakened to hide it.
