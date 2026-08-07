@@ -2536,6 +2536,10 @@ fn render_tool_message_colors_high_token_badge() {
     assert_eq!(badge_span.style.fg, Some(rgb(224, 118, 118)));
 }
 
+/// multiedit was removed as a subset of edit's hashline mode, but stored
+/// sessions are replayed and re-rendered, so a transcript recorded before the
+/// removal must still show its diff rather than degrade to a bare tool name.
+/// That is what this pins, which is why it outlives the tool.
 #[test]
 fn render_tool_message_shows_inline_diff_for_pascal_case_multiedit() {
     let msg = DisplayMessage {

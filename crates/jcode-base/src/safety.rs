@@ -569,7 +569,6 @@ mod tests {
             assert_eq!(sys.classify("bash"), ActionTier::RequiresPermission);
             assert_eq!(sys.classify("write"), ActionTier::RequiresPermission);
             assert_eq!(sys.classify("edit"), ActionTier::RequiresPermission);
-            assert_eq!(sys.classify("multiedit"), ActionTier::RequiresPermission);
             assert_eq!(sys.classify("patch"), ActionTier::RequiresPermission);
             assert_eq!(sys.classify("apply_patch"), ActionTier::RequiresPermission);
             assert_eq!(sys.classify("communicate"), ActionTier::RequiresPermission);

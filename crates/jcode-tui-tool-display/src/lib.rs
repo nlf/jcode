@@ -31,6 +31,12 @@ pub fn canonical_tool_name(name: &str) -> &str {
     }
 }
 
+/// Whether a tool name denotes a file-modifying tool.
+///
+/// `multiedit` is retained here although the tool was removed: stored sessions
+/// are replayed and re-rendered, so a transcript recorded before the removal
+/// must still display its diffs rather than degrade to a bare tool name. The
+/// same applies to every other display-side match on the name below.
 pub fn is_edit_tool_name(name: &str) -> bool {
     matches!(
         canonical_tool_name(name),

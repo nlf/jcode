@@ -1088,7 +1088,6 @@ fn to_claude_tool_name(name: &str) -> String {
         "read" => "Read",
         "write" => "Write",
         "edit" => "Edit",
-        "multiedit" => "MultiEdit",
         "patch" => "Patch",
         "apply_patch" => "ApplyPatch",
         "glob" => "Glob",
@@ -1117,7 +1116,10 @@ fn to_internal_tool_name(name: &str) -> String {
         "Read" => "read",
         "Write" => "write",
         "Edit" => "edit",
-        "MultiEdit" => "multiedit",
+        // The CLI may still emit MultiEdit. multiedit was removed as a
+        // subset of edit, so route it to edit rather than to a name the
+        // registry cannot resolve, which would fail as "Unknown tool".
+        "MultiEdit" => "edit",
         "Patch" => "patch",
         "ApplyPatch" => "apply_patch",
         "Glob" => "glob",

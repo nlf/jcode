@@ -8,7 +8,7 @@ use std::time::Instant;
 fn review_session_read_only_guardrails() -> &'static str {
     "Important constraints for this session:\n\
 - This session is analysis-only. Do not do the work yourself.\n\
-- Do not modify files or repo state. Do not call `edit`, `write`, `multiedit`, `patch`, `apply_patch`, or destructive `bash`/`git` commands.\n\
+- Do not modify files or repo state. Do not call `edit`, `write`, `patch`, `apply_patch`, or destructive `bash`/`git` commands.\n\
 - Do not continue implementation, fix issues, or take follow-up actions yourself.\n\
 - If additional work is needed, describe it in your DM to the parent session instead.\n\
 \n"

@@ -103,8 +103,8 @@ async fn main() -> Result<()> {
         input: json!({"file_path": "sample.txt", "old_string": "alpha", "new_string": "alpha1"}),
     });
     cases.push(ToolCase {
-        name: "multiedit",
-        label: "multiedit sample.txt",
+        name: "edit",
+        label: "edit sample.txt",
         input: json!({
             "file_path": "sample.txt",
             "edits": [

@@ -331,7 +331,7 @@ bing_market = "en-US"
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
 # acp keeps core coding tools plus batch for generic ACP clients.
-# minimal keeps core coding tools only: bash, read, write, edit, multiedit,
+# minimal keeps core coding tools only: bash, read, write, edit,
 # apply_patch, patch, agentgrep, glob, grep, and ls.
 profile = "full"
 # Explicit allow-list. When non-empty, only these tools are exposed.

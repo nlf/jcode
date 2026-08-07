@@ -131,6 +131,8 @@ fn tool_marker_summary(name: &str, input: &serde_json::Value) -> String {
             let field = match name {
                 "bash" => "command",
                 "read" | "write" => "file_path",
+                // multiedit was removed; retained because stored sessions
+                // are replayed and still carry its calls.
                 "edit" | "multiedit" => "file_path",
                 "agentgrep" | "websearch" => "query",
                 "webfetch" => "url",

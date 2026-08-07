@@ -419,7 +419,7 @@ fn is_binary_file(path: &Path) -> bool {
 ///    a name match, so it is offered first.
 /// 3. **Fuzzy filename matches** in the target directory, as before.
 ///
-/// Shared with `edit`, `multiedit`, and `ls`, which resolve paths the same way
+/// Shared with `edit` and `ls`, which resolve paths the same way
 /// and had the same bare message.
 pub(crate) fn file_not_found_message(
     requested: &str,

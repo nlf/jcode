@@ -29,7 +29,6 @@ mod invalid;
 mod ls;
 pub mod mcp;
 mod memory;
-mod multiedit;
 mod open;
 mod patch;
 mod read;
@@ -216,12 +215,6 @@ impl Registry {
                 side_panel::SidePanelTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "edit", edit::EditTool::new);
-            Self::insert_tool_timed(
-                &mut m,
-                &mut timings,
-                "multiedit",
-                multiedit::MultiEditTool::new,
-            );
             Self::insert_tool_timed(&mut m, &mut timings, "patch", patch::PatchTool::new);
             Self::insert_tool_timed(
                 &mut m,

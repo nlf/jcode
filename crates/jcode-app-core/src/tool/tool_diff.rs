@@ -1,6 +1,6 @@
 //! The one diff renderer for tool output.
 //!
-//! `edit`, `multiedit`, `patch`, and `apply_patch` each grew their own
+//! `edit`, `patch`, and `apply_patch` each grew their own
 //! near-identical `generate_diff`, and they drifted: two stripped every line's
 //! leading whitespace with `.trim()`, so the model was shown indented code
 //! rendered flush left and lost the structure the indentation carried. The
