@@ -138,8 +138,12 @@ pub struct Prepared {
 /// Validate and apply a section in memory.
 ///
 /// `enforce_seen_lines` mirrors omp's `enforceSeenLines`, which ships **off**
-/// in their settings. On is the safer default here because our bash tool can
-/// still show file content the store never recorded.
+/// in their settings, and ships off here too. Turning it on rejects edits to
+/// lines the store never recorded as displayed, which sounds strictly safer but
+/// misfires: our bash tool can put file content in front of the model without
+/// the store ever seeing it, so the guard would refuse edits the model is in
+/// fact well-informed about. It is exposed as a config key for anyone who wants
+/// the stricter behaviour.
 pub fn prepare(
     store: &SnapshotStore,
     path: &str,

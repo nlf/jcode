@@ -4,7 +4,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
 const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;

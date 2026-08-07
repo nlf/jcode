@@ -14,6 +14,7 @@ mod debug_socket;
 mod discover;
 mod discover_secrets;
 mod edit;
+mod edit_hashline;
 mod gmail;
 mod goal;
 mod grep_glob;

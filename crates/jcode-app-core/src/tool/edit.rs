@@ -22,9 +22,29 @@ struct EditInput {
     #[serde(default)]
     intent: Option<String>,
     file_path: String,
+    // Optional because a hashline call carries its edits in `input` instead.
+    // Validated in `execute`, where a missing pair can be reported alongside a
+    // missing `input` as one message rather than as a deserialization error the
+    // model cannot act on.
+    #[serde(default)]
+    old_string: Option<String>,
+    #[serde(default)]
+    new_string: Option<String>,
+    /// Hashline patch text: `[path#TAG]` headers and line-anchored ops.
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    replace_all: bool,
+}
+
+/// The old exact-replacement shape, after `execute` has established that both
+/// strings are present. Lets the rest of the function keep using plain `String`
+/// fields rather than unwrapping an `Option` at every use.
+struct EditReplace {
+    intent: Option<String>,
+    file_path: String,
     old_string: String,
     new_string: String,
-    #[serde(default)]
     replace_all: bool,
 }
 
@@ -35,30 +55,34 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact text in a file. Not sed/awk in bash. Read the file first."
+        "Replace exact text, or apply a hashline patch. Not sed/awk in bash. Read first."
     }
 
     fn parameters_schema(&self) -> Value {
         json!({
             "type": "object",
-            "required": ["file_path", "old_string", "new_string"],
+            "required": ["file_path"],
             "properties": {
                 "intent": super::intent_schema_property(),
                 "file_path": {
                     "type": "string",
-                    "description": "File path."
+                    "description": "File path. Required in both modes; for a multi-file patch, any file it touches."
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "Text to replace."
+                    "description": "Text to replace. Use with new_string."
                 },
                 "new_string": {
                     "type": "string",
-                    "description": "Replacement text."
+                    "description": "Replacement text. Use with old_string."
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Hashline patch: the [path#TAG] header from read, then line-anchored ops. Best for multi-file edits."
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "Replace all matches."
+                    "description": "Replace all matches. Only with old_string/new_string."
                 }
             }
         })
@@ -67,11 +91,47 @@ impl Tool for EditTool {
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: EditInput = serde_json::from_value(input)?;
 
-        if params.old_string == params.new_string {
+        // Two shapes, and exactly one must be present. Reporting the mix
+        // explicitly beats letting the old path win, which would silently apply
+        // half of what was asked for.
+        let has_replace = params.old_string.is_some() || params.new_string.is_some();
+        if let Some(hashline) = params.input.as_deref() {
+            if has_replace {
+                return Err(anyhow::anyhow!(
+                    "Pass either `input` (hashline) or `old_string`/`new_string`, not both."
+                ));
+            }
+            return super::edit_hashline::execute_hashline(
+                hashline,
+                params.intent.as_deref(),
+                &ctx,
+            )
+            .await;
+        }
+
+        let (old_string, new_string) = match (params.old_string, params.new_string) {
+            (Some(old), Some(new)) => (old, new),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "edit needs either `input` (a hashline patch) or both `old_string` and \\
+                     `new_string`."
+                ));
+            }
+        };
+
+        if old_string == new_string {
             return Err(anyhow::anyhow!(
                 "old_string and new_string must be different"
             ));
         }
+
+        let params = EditReplace {
+            intent: params.intent,
+            file_path: params.file_path,
+            old_string,
+            new_string,
+            replace_all: params.replace_all,
+        };
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
 

@@ -467,8 +467,8 @@ pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool
                 &["edit"],
                 ApiTool {
                     name: "Edit".to_string(),
-                    description: "Performs exact string replacements in files.".to_string(),
-                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["file_path","old_string","new_string"],"additionalProperties":false}),
+                    description: "Performs exact string replacements in files, or applies a hashline patch.".to_string(),
+                    input_schema: json!({"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"input":{"type":"string","description":"Hashline patch: the [path#TAG] header read returned, then line-anchored operations. Preferred for large or multi-file edits."},"replace_all":{"type":"boolean","default":false}},"required":["file_path"],"additionalProperties":false}),
                     cache_control: None,
                 },
             ),

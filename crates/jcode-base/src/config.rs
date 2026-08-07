@@ -572,6 +572,14 @@ pub struct ToolConfig {
     pub disabled: Vec<String>,
     /// Disable all built-in tools unless `enabled` is provided.
     pub disable_base_tools: bool,
+    /// Refuse a hashline edit to a line no `read` in this session displayed.
+    ///
+    /// omp's `enforceSeenLines`, and off by default as they ship it. On sounds
+    /// strictly safer, but `bash` can put file content in front of the model
+    /// without the snapshot store ever seeing it, so the guard refuses edits the
+    /// model is in fact well-informed about. Turn it on to trade that for a
+    /// guarantee that edits only touch lines `read` actually showed.
+    pub edit_enforce_seen_lines: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
