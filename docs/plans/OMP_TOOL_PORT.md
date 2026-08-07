@@ -1804,3 +1804,69 @@ one session, which looks like an overestimate — but honestly:
 So the format core was cheaper than estimated; the claim that the *whole* of 3a
 fits in a week remains unproven, and the integration is the part with jcode-side
 unknowns rather than portable behaviour.
+
+---
+
+# Phase 3a is done: 152 tests, ~1s
+
+`crates/jcode-hashline` now takes an authored patch from text to a validated,
+applied result. Seven modules, all mutation-tested, clippy clean.
+
+| module | tests | what it settles |
+|---|---|---|
+| `format` | 15 | tags are byte-identical to omp's |
+| `snapshots` | 19 | provenance, bounded, concurrency-safe |
+| `prefixes` | 26 | echoed `read` output cannot become file content |
+| `input` | 22 | sections split; near-miss paths recover |
+| `parser` | 24 | ops parse; nine separator spellings all land |
+| `apply` | 28 | splice against original lines; phantom line handled |
+| `patcher` | 18 | tag validation, seen-line guard, no-op detection |
+
+## What is deliberately not here
+
+- **The repair layer** — 83% of `apply.ts`. Phase 5, gated on measurement.
+- **Block ops (`N*`)** — needs tree-sitter. `block.test.ts` is 49 cases.
+- **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
+- **Recovery (3-way merge on drift)** — `recovery.ts`, 12.6 KB.
+- **All jcode integration** — 3b and 3c, where the real remaining risk lives.
+
+Both excluded features are refused with a message naming them as unimplemented,
+rather than falling through to "unrecognized syntax". That distinction came out
+of mutation testing and matters: a model told its syntax is wrong retries the
+same thing.
+
+## Mutation testing: 25 mutations, 3 survivors, 3 real defects
+
+Every module was mutation-tested rather than trusted. The survivors are the
+return on that:
+
+| survivor | revealed |
+|---|---|
+| removing the block/register guard | the forms were refused, but as "unrecognized syntax" — a model would retry identically |
+| moving a replacement body to its range end | invisible for a lone replacement; swaps two blocks when an insert is anchored inside the same range |
+| a lock-split race | **rejected by the borrow checker** before it could run |
+
+Plus two bugs caught by writing tests first, both in phantom-line handling, both
+silent: EOF appends landing after the terminator, and an empty file gaining a
+leading blank. I had read omp's `insertAtEnd` and still got both wrong — which
+is the argument for porting tests rather than code, made concrete.
+
+And one case where **my test was wrong, not the code**: I expected an append to
+drop the trailing newline. It must not; that shows up as a spurious "no newline
+at end of file" in every diff.
+
+## Estimate, honestly
+
+The plan said 3a was "the top of 2-3 weeks". The format core took one session.
+That is not evidence the estimate was wrong, because what shipped excludes the
+repair layer, block ops, registers, recovery, and every jcode integration point.
+
+**The remaining risk is concentrated in 3b/3c, not in the format.** Specifically:
+the six `file_path`-keyed consumers, the renderer needing a snapshot-store
+handle, the OAuth curated-schema question, and the `batch` concurrency
+interaction — which the store now handles, but which nothing has exercised
+end to end.
+
+**Next, in order:** wire `read` to mint tags and record provenance; wire `edit`
+to accept hashline as a second addressing mode alongside string matching; then
+measure the failed-edit rate that Phase 5's gate depends on.
