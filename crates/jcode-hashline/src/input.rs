@@ -14,6 +14,7 @@
 //! those outright converts a recoverable near-miss into a failed turn, and the
 //! whole point of hashline is that near-misses should land.
 
+use crate::format::FILE_HASH_SEP;
 use crate::format::FILE_HASH_LENGTH;
 
 /// One file's section of a patch: a header plus the raw body beneath it.
@@ -242,3 +243,28 @@ fn merge_same_path_sections(sections: Vec<RawSection>) -> Vec<RawSection> {
 #[cfg(test)]
 #[path = "input_tests.rs"]
 mod input_tests;
+
+/// Paths named by `[path#tag]` headers, for display.
+///
+/// Deliberately a light scan rather than [`split_sections`]: callers are
+/// renderers, often working on partially streamed input, and a summary line is
+/// not worth failing over. A line that does not look like a header is skipped.
+///
+/// This lives here because three separate renderers need it, and each writing
+/// its own is how the codebase ended up with five copies of `generate_diff`.
+pub fn header_paths(input: &str) -> Vec<String> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let inner = line.trim().strip_prefix('[')?.strip_suffix(']')?;
+            let (path, tag) = inner.rsplit_once(FILE_HASH_SEP)?;
+            // Requiring a hex tag keeps ordinary bracketed text in a patch body
+            // from being read as a header.
+            if path.is_empty() || tag.is_empty() || !tag.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            Some(path.to_string())
+        })
+        .collect()
+}
+

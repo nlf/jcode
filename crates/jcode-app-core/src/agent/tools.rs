@@ -115,7 +115,20 @@ pub(super) fn print_tool_summary(tool: &ToolCall) {
         }
         "read" | "write" | "edit" => {
             if let Some(path) = tool.input.get("file_path").and_then(|v| v.as_str()) {
-                println!("{}", path);
+                // A hashline patch names its real targets in `input`; file_path
+                // is only one of them. Printing that alone reads as a complete
+                // account of the call while hiding every other file it changed.
+                let sections = tool
+                    .input
+                    .get("input")
+                    .and_then(|v| v.as_str())
+                    .map(jcode_hashline::header_paths)
+                    .unwrap_or_default();
+                match sections.len() {
+                    0 | 1 => println!("{}", path),
+                    2 => println!("{} and {}", path, sections[1]),
+                    n => println!("{} and {} more files", path, n - 1),
+                }
             }
         }
         "glob" | "grep" => {

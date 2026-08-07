@@ -20,7 +20,7 @@ pub use format::{
     compute_file_hash, format_hashline_header, format_numbered_line, format_numbered_lines,
     FILE_HASH_LENGTH,
 };
-pub use input::{normalize_path, parse_header_line, split_sections, RawSection};
+pub use input::{header_paths, normalize_path, parse_header_line, split_sections, RawSection};
 pub use parser::{parse_ops, Anchor, Op, ParsedOps};
 pub use patcher::{preflight, prepare, Prepared, PreflightError, RejectReason, SectionInput, SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS};
 pub use prefixes::{

@@ -259,3 +259,50 @@ fn anonymous_sections_do_not_merge() {
     let sections = split_sections("CUT 1.=1", None).unwrap();
     assert_eq!(sections.len(), 1);
 }
+
+/// `header_paths` backs three renderers. Its job is to name every file a patch
+/// touches, so the collapsed tool call cannot claim a multi-file edit was a
+/// single-file one.
+#[test]
+fn header_paths_names_every_section() {
+    let paths = header_paths("[a.txt#A1B2]\nPUT 1=1:\n+A\n[b/c.rs#FFFF]\nCUT 2=3");
+    assert_eq!(paths, vec!["a.txt".to_string(), "b/c.rs".to_string()]);
+}
+
+/// Bracketed text in a patch body is common in real code. Counting it as a
+/// header would make an ordinary edit claim to touch files it never named.
+#[test]
+fn header_paths_ignores_bracketed_body_text() {
+    let paths = header_paths("[a.txt#A1B2]\nPUT 1=1:\n+let v = map[key#name];\n+// see [TODO#soon]");
+    assert_eq!(
+        paths,
+        vec!["a.txt".to_string()],
+        "only the real header should count"
+    );
+}
+
+/// A tag is hex. `[note#hello]` is prose, not a section.
+#[test]
+fn header_paths_requires_a_hex_tag() {
+    assert!(header_paths("[note#hello]\nPUT 1=1:\n+x").is_empty());
+}
+
+/// Renderers see partially streamed input, so this must degrade quietly rather
+/// than panic or report nonsense.
+#[test]
+fn header_paths_tolerates_truncated_input() {
+    assert!(header_paths("[a.txt#A1B").is_empty());
+    assert!(header_paths("").is_empty());
+    assert!(header_paths("[]").is_empty());
+    assert!(header_paths("[#ABCD]").is_empty(), "an empty path is not a section");
+}
+
+/// A path containing '#' must still resolve: the split takes the last one, so
+/// the tag is what follows the final separator.
+#[test]
+fn header_paths_splits_on_the_last_separator() {
+    assert_eq!(
+        header_paths("[weird#name.txt#A1B2]"),
+        vec!["weird#name.txt".to_string()]
+    );
+}

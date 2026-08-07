@@ -208,10 +208,15 @@ async fn commit(
         }
     }
 
-    let title = prepared
-        .first()
-        .map(|section| section.path.clone())
-        .unwrap_or_default();
+    // The title is what the TUI shows on the collapsed tool call. Naming only
+    // the first path hides that a multi-file patch touched anything else, which
+    // is the one thing about this tool a reviewer most needs to see.
+    let title = match prepared.len() {
+        0 => String::new(),
+        1 => prepared[0].path.clone(),
+        2 => format!("{} and {}", prepared[0].path, prepared[1].path),
+        n => format!("{} and {} more files", prepared[0].path, n - 1),
+    };
     Ok(ToolOutput::new(body).with_title(title))
 }
 

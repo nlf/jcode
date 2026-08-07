@@ -3,10 +3,20 @@ use similar::TextDiff;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Tracks a pending file edit for diff generation.
-pub(crate) struct PendingFileDiff {
+/// One file's pre-edit content, captured before the tool runs.
+pub(crate) struct PendingFile {
     pub(crate) file_path: String,
     pub(crate) original_content: String,
+}
+
+/// Every file one tool call is about to change.
+///
+/// A hashline patch can touch several files in one call, so this is a list
+/// rather than a single entry. Capturing only `file_path` would show one diff
+/// and silently drop the rest, which is worse than showing none: it reads as a
+/// complete account of what the call did.
+pub(crate) struct PendingFileDiff {
+    pub(crate) files: Vec<PendingFile>,
 }
 
 #[derive(Default)]
@@ -39,17 +49,37 @@ impl RemoteDiffTracker {
                 "edit" | "write" | "multiedit"
             )
             && let Ok(input) = serde_json::from_str::<Value>(&self.current_tool_input)
-            && let Some(file_path) = input.get("file_path").and_then(|v| v.as_str())
         {
-            let resolved = resolve_diff_path(file_path);
-            let original = std::fs::read_to_string(&resolved).unwrap_or_default();
-            self.pending_diffs.insert(
-                id.to_string(),
-                PendingFileDiff {
-                    file_path: resolved.to_string_lossy().to_string(),
-                    original_content: original,
-                },
-            );
+            let mut paths: Vec<String> = Vec::new();
+            if let Some(file_path) = input.get("file_path").and_then(|v| v.as_str()) {
+                paths.push(file_path.to_string());
+            }
+            // A hashline patch names its real targets in `input`, and
+            // `file_path` is only one of them.
+            if let Some(patch) = input.get("input").and_then(|v| v.as_str()) {
+                for path in crate::tui::ui::tools_ui::hashline_section_paths(patch) {
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
+            }
+
+            let files: Vec<PendingFile> = paths
+                .iter()
+                .map(|path| {
+                    let resolved = resolve_diff_path(path);
+                    let original = std::fs::read_to_string(&resolved).unwrap_or_default();
+                    PendingFile {
+                        file_path: resolved.to_string_lossy().to_string(),
+                        original_content: original,
+                    }
+                })
+                .collect();
+
+            if !files.is_empty() {
+                self.pending_diffs
+                    .insert(id.to_string(), PendingFileDiff { files });
+            }
         }
 
         self.current_tool_id = None;
@@ -59,11 +89,38 @@ impl RemoteDiffTracker {
 
     pub(crate) fn finish_tool(&mut self, id: &str, name: &str, output: &str) -> String {
         if let Some(pending) = self.pending_diffs.remove(id) {
-            let new_content = std::fs::read_to_string(&pending.file_path).unwrap_or_default();
-            let diff =
-                generate_unified_diff(&pending.original_content, &new_content, &pending.file_path);
-            if !diff.is_empty() {
-                return format!("[{}] {}\n{}", name, pending.file_path, diff);
+            let changed: Vec<(String, String)> = pending
+                .files
+                .iter()
+                .filter_map(|file| {
+                    let new_content =
+                        std::fs::read_to_string(&file.file_path).unwrap_or_default();
+                    let diff = generate_unified_diff(
+                        &file.original_content,
+                        &new_content,
+                        &file.file_path,
+                    );
+                    if diff.is_empty() {
+                        // A file the patch named but did not change. Skipping it
+                        // keeps the output about what actually happened.
+                        None
+                    } else {
+                        Some((file.file_path.clone(), diff))
+                    }
+                })
+                .collect();
+
+            if !changed.is_empty() {
+                let heading = match changed.len() {
+                    1 => changed[0].0.clone(),
+                    n => format!("{} and {} more files", changed[0].0, n - 1),
+                };
+                let body = changed
+                    .iter()
+                    .map(|(_, diff)| diff.as_str())
+                    .collect::<Vec<_>>()
+                    .join("");
+                return format!("[{}] {}\n{}", name, heading, body);
             }
         }
 

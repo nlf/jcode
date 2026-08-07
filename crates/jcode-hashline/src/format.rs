@@ -11,7 +11,7 @@ use xxhash_rust::xxh32::xxh32;
 pub const FILE_HASH_LENGTH: usize = 4;
 
 /// Separator between a path and its tag in a section header.
-const FILE_HASH_SEP: char = '#';
+pub(crate) const FILE_HASH_SEP: char = '#';
 /// Separator between a line number and its content in numbered output.
 const LINE_BODY_SEP: char = ':';
 

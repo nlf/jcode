@@ -26,6 +26,7 @@ jcode-app-core = { path = "../jcode-app-core", default-features = false }
 # Pure math kernels for the idle animations (3D samplers, glyph chooser,
 # HSV->RGB). Pinned to opt-level = 3 in all profiles via workspace Cargo.toml so
 # the hot trig loops stay optimized even in debug/selfdev builds.
+jcode-hashline = { path = "../jcode-hashline" }
 jcode-tui-anim = { path = "../jcode-tui-anim" }
 
 # Async runtime

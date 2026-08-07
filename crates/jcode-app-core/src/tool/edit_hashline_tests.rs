@@ -625,3 +625,35 @@ async fn an_edit_can_follow_a_write_without_re_reading() {
         "ONE\ntwo\n"
     );
 }
+
+/// The collapsed tool call in the TUI shows the title. A multi-file patch that
+/// names only its first file hides the rest, which is precisely what a reviewer
+/// needs to see. Found by running a real agent, not by a test.
+#[tokio::test]
+async fn the_title_names_every_file_a_patch_touched() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("a.txt"), "alpha\n").expect("a");
+    std::fs::write(temp.path().join("b.txt"), "beta\n").expect("b");
+    let tag_a = read_tag(temp.path(), "hl-title", "a.txt").await;
+    let tag_b = read_tag(temp.path(), "hl-title", "b.txt").await;
+
+    let output = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "a.txt",
+                "input": format!(
+                    "[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#{tag_b}]\nPUT 1.=1:\n+BETA"
+                ),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-title"),
+        )
+        .await
+        .expect("multi-file edit");
+
+    let title = output.title.unwrap_or_default();
+    assert!(
+        title.contains("a.txt") && title.contains("b.txt"),
+        "the title should name both files, got {title:?}"
+    );
+}
+

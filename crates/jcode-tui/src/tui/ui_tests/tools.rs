@@ -1572,3 +1572,91 @@ fn expanded_tool_detail_frame_has_no_gaps() {
         );
     }
 }
+
+/// A hashline patch touching several files must say so in the collapsed
+/// summary. Showing only `file_path` hides every other file the call modified,
+/// which is the thing a reviewer most needs to notice.
+///
+/// Found by watching a real agent edit two files and seeing one name.
+#[test]
+fn a_multi_file_hashline_edit_names_more_than_its_first_file() {
+    let tool = ToolCall {
+        id: "call_edit_multi".to_string(),
+        name: "edit".to_string(),
+        input: serde_json::json!({
+            "file_path": "a.txt",
+            "input": "[a.txt#A1B2]\nPUT 1=1:\n+A\n[b.txt#C3D4]\nPUT 1=1:\n+B",
+        }),
+        intent: None,
+        thought_signature: None,
+    };
+
+    let summary = tools_ui::get_tool_summary_with_budget(&tool, 80, Some(80));
+    assert!(
+        summary.contains("a.txt") && summary.contains("b.txt"),
+        "both files should appear: summary={summary:?}"
+    );
+}
+
+/// Three or more collapses to a count rather than listing everything, so the
+/// summary stays one line.
+#[test]
+fn many_files_collapse_to_a_count() {
+    let tool = ToolCall {
+        id: "call_edit_many".to_string(),
+        name: "edit".to_string(),
+        input: serde_json::json!({
+            "file_path": "a.txt",
+            "input": "[a.txt#A1B2]\nPUT 1=1:\n+A\n[b.txt#C3D4]\nPUT 1=1:\n+B\n[c.txt#E5F6]\nPUT 1=1:\n+C",
+        }),
+        intent: None,
+        thought_signature: None,
+    };
+
+    let summary = tools_ui::get_tool_summary_with_budget(&tool, 80, Some(80));
+    assert!(
+        summary.contains("a.txt") && summary.contains("2 more"),
+        "expected a count for the rest: summary={summary:?}"
+    );
+}
+
+/// An ordinary single-file edit must be unchanged: no suffix, just the path.
+#[test]
+fn a_single_file_edit_summary_is_unchanged() {
+    let tool = ToolCall {
+        id: "call_edit_one".to_string(),
+        name: "edit".to_string(),
+        input: serde_json::json!({
+            "file_path": "a.txt",
+            "old_string": "x",
+            "new_string": "y",
+        }),
+        intent: None,
+        thought_signature: None,
+    };
+
+    let summary = tools_ui::get_tool_summary_with_budget(&tool, 80, Some(80));
+    assert_eq!(summary, "a.txt");
+}
+
+/// Bracketed text inside a patch body must not be mistaken for a section
+/// header, or an ordinary edit would claim to touch files it never named.
+#[test]
+fn bracketed_body_text_is_not_counted_as_a_section() {
+    let tool = ToolCall {
+        id: "call_edit_brackets".to_string(),
+        name: "edit".to_string(),
+        input: serde_json::json!({
+            "file_path": "a.txt",
+            "input": "[a.txt#A1B2]\nPUT 1=1:\n+let x = map[key#value];\n+// see [TODO#later]",
+        }),
+        intent: None,
+        thought_signature: None,
+    };
+
+    let summary = tools_ui::get_tool_summary_with_budget(&tool, 80, Some(80));
+    assert_eq!(
+        summary, "a.txt",
+        "body text that merely looks bracketed should not inflate the count"
+    );
+}

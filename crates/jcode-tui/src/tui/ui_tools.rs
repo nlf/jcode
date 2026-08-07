@@ -857,6 +857,15 @@ pub(crate) fn get_tool_activity_detail(tool: &ToolCall) -> String {
     }
 }
 
+/// Paths named by `[path#tag]` headers in a hashline patch.
+///
+/// Delegates to the hashline crate so the renderers cannot drift from the
+/// format they are describing.
+pub(crate) fn hashline_section_paths(input: &str) -> Vec<String> {
+    jcode_hashline::header_paths(input)
+}
+
+
 pub(super) fn get_tool_summary_with_budget(
     tool: &ToolCall,
     bash_max_chars: usize,
@@ -941,16 +950,33 @@ pub(super) fn get_tool_summary_with_budget(
                     .unwrap_or_else(|| path.to_string()),
             }
         }
-        "write" | "edit" => tool
-            .input
-            .get("file_path")
-            .and_then(|v| v.as_str())
-            .map(|p| {
-                max_width
-                    .map(|w| truncate_path_display(p, w))
-                    .unwrap_or_else(|| p.to_string())
-            })
-            .unwrap_or_default(),
+        "write" | "edit" => {
+            // A hashline patch carries its real targets in `input`, as
+            // [path#tag] headers, and `file_path` names only one of them. Using
+            // file_path alone would silently hide every other file the call
+            // touched, so count the headers and say so.
+            let extra_sections = tool
+                .input
+                .get("input")
+                .and_then(|v| v.as_str())
+                .map(hashline_section_paths)
+                .unwrap_or_default();
+            let path = tool
+                .input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .map(|p| {
+                    max_width
+                        .map(|w| truncate_path_display(p, w))
+                        .unwrap_or_else(|| p.to_string())
+                })
+                .unwrap_or_default();
+            match extra_sections.len() {
+                0 | 1 => path,
+                2 => format!("{path} and {}", extra_sections[1]),
+                n => format!("{path} and {} more files", n - 1),
+            }
+        }
         "multiedit" => {
             let path = tool
                 .input
