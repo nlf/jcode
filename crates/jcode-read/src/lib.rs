@@ -7,6 +7,7 @@
 //! matching `jcode-hashline`, `jcode-search` and `jcode-patch`.
 
 pub mod render;
+pub mod target;
 pub mod window;
 
 pub use window::{
@@ -18,3 +19,5 @@ pub use render::{
     can_merge_brace_pair, format_line, format_merged_brace, header_anchor, render, Numbering,
     ELISION,
 };
+
+pub use target::{check as check_write_target, Misfire};

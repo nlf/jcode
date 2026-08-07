@@ -58,6 +58,17 @@ impl Tool for WriteTool {
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
+        // Refuse a write that is really a misdispatched read, before creating
+        // any directories: `a.txt:1-2;b/c.txt:3-4` would otherwise be a nested
+        // tree in the workspace, and `notes.md:50-100` a file nothing will ever
+        // look at again. The check is skipped when the literal path exists, so
+        // a real file with a colon in its name stays writable.
+        if let Some(misfire) =
+            jcode_read::check_write_target(&params.file_path, &params.content, path.exists())
+        {
+            return Err(anyhow::anyhow!(misfire.message()));
+        }
+
         // Create parent directories if needed
         if let Some(parent) = path.parent()
             && !parent.exists()
@@ -300,5 +311,126 @@ mod tests {
         let diff = generate_diff_summary(old, new);
 
         assert!(diff.is_empty(), "No changes should produce empty diff");
+    }
+}
+
+#[cfg(test)]
+mod misfire_tests {
+    use super::*;
+    use crate::tool::{ToolContext, ToolExecutionMode};
+
+    fn ctx(dir: &std::path::Path) -> ToolContext {
+        ToolContext {
+            session_id: "write-misfire".to_string(),
+            message_id: "m".to_string(),
+            tool_call_id: "t".to_string(),
+            working_dir: Some(dir.to_path_buf()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        }
+    }
+
+    /// A model meaning to READ `notes.md:50-100` and dispatching to write does
+    /// not get an error without this: it gets a file by that literal name,
+    /// which nothing will ever look at again.
+    #[tokio::test]
+    async fn a_misdispatched_read_is_refused_rather_than_creating_a_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let error = WriteTool::new()
+            .execute(
+                json!({ "file_path": "notes.md:50-100", "content": "" }),
+                ctx(temp.path()),
+            )
+            .await
+            .expect_err("a selector-shaped target with no content must be refused");
+
+        assert!(error.to_string().contains("use read"), "{error}");
+        assert!(
+            !temp.path().join("notes.md:50-100").exists(),
+            "the literal file must not have been created"
+        );
+    }
+
+    /// omp's #6809. The directory tree is the damage: `b/` would be created as
+    /// a real directory in the workspace.
+    #[tokio::test]
+    async fn a_semicolon_joined_read_list_creates_no_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let error = WriteTool::new()
+            .execute(
+                json!({ "file_path": "a.txt:1-2;b/c.txt:3-4", "content": "x" }),
+                ctx(temp.path()),
+            )
+            .await
+            .expect_err("a selector list must be refused even with content");
+
+        assert!(error.to_string().contains("one read per path"), "{error}");
+        assert!(
+            !temp.path().join("a.txt:1-2;b").exists(),
+            "no directory tree should have been created"
+        );
+    }
+
+    /// Non-empty content means the model meant to write a file, whatever it
+    /// called it.
+    #[tokio::test]
+    async fn content_makes_a_selector_shaped_name_writable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        WriteTool::new()
+            .execute(
+                json!({ "file_path": "odd:1-2", "content": "real content" }),
+                ctx(temp.path()),
+            )
+            .await
+            .expect("a non-empty write is never blocked");
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("odd:1-2")).expect("written"),
+            "real content"
+        );
+    }
+
+    /// A real file with a colon in its name stays writable, including emptying
+    /// it.
+    #[tokio::test]
+    async fn an_existing_file_can_still_be_truncated() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("odd:1-2"), "before").expect("seed");
+
+        WriteTool::new()
+            .execute(
+                json!({ "file_path": "odd:1-2", "content": "" }),
+                ctx(temp.path()),
+            )
+            .await
+            .expect("an existing file is never blocked");
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("odd:1-2")).expect("still there"),
+            ""
+        );
+    }
+
+    /// Ordinary writes are untouched.
+    #[tokio::test]
+    async fn an_ordinary_write_still_works() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        WriteTool::new()
+            .execute(
+                json!({ "file_path": "deep/nested/new.txt", "content": "hello" }),
+                ctx(temp.path()),
+            )
+            .await
+            .expect("an ordinary write should succeed");
+
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("deep/nested/new.txt")).expect("written"),
+            "hello"
+        );
     }
 }
