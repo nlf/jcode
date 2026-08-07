@@ -5,11 +5,29 @@ struct ResolvedSearchScope {
     glob: Option<String>,
 }
 
+/// How a single-file scope should be expressed to the search engine.
+///
+/// The two modes need opposite things from a file scope, because they consume
+/// the *relative* path differently.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileScopeStyle {
+    /// Root at the file. The walker yields exactly that entry and nothing else
+    /// is descended. The relative path collapses to the empty string, which
+    /// `grep` does not mind because it matches on file contents.
+    Content,
+    /// Root at the parent, with the file name as a glob. `find` ranks files by
+    /// their path text, so an empty relative path carries no evidence and the
+    /// file is dropped before it can be returned. The parent root keeps the
+    /// name, and the glob keeps the walk's results to that one file.
+    Name,
+}
+
 fn resolved_search_scope(
     ctx: &ToolContext,
     path: Option<&str>,
     file: Option<&str>,
     glob: Option<&str>,
+    file_scope: FileScopeStyle,
 ) -> ResolvedSearchScope {
     // `file` scopes grep/find to one exact file when `path` is absent.
     let path = path.or(file);
@@ -22,21 +40,34 @@ fn resolved_search_scope(
 
     let resolved = resolve_path_arg(ctx, path);
     if resolved.is_file() {
-        // Scope to the file itself. This previously set the root to the file's
-        // *parent* and passed the file name as a glob, which reads like
-        // scoping but is not: a glob filters which files are reported, while
-        // the walk still descends the whole parent tree. Pointing grep at
-        // `~/NOTES.md` therefore crawled all of `$HOME`, hit macOS
-        // TCC-protected directories, and failed with ripgrep exit 2 before the
-        // filter could ever apply.
-        //
-        // A file root also keeps the search off the ripgrep path, which cannot
-        // express it: the engine spawns `rg` with `current_dir(root)`, and a
-        // file is not a directory. The walker handles a file root directly and
-        // yields exactly that one entry.
-        return ResolvedSearchScope {
-            root: Some(resolved.display().to_string()),
-            glob: None,
+        return match file_scope {
+            // Scope to the file itself. Rooting at the parent and passing the
+            // file name as a glob reads like scoping but is not: a glob filters
+            // which files are reported, while the walk still descends the whole
+            // parent tree. Pointing grep at `~/NOTES.md` therefore crawled all
+            // of `$HOME`, hit macOS TCC-protected directories, and failed with
+            // ripgrep exit 2 before the filter could ever apply.
+            //
+            // A file root also keeps the search off the ripgrep path, which
+            // cannot express it: the engine spawns `rg` with
+            // `current_dir(root)`, and a file is not a directory. The walker
+            // handles a file root directly and yields exactly that one entry.
+            FileScopeStyle::Content => ResolvedSearchScope {
+                root: Some(resolved.display().to_string()),
+                glob: None,
+            },
+            FileScopeStyle::Name => ResolvedSearchScope {
+                root: Some(
+                    resolved
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .display()
+                        .to_string(),
+                ),
+                glob: resolved
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()),
+            },
         };
     }
 
@@ -56,6 +87,7 @@ pub(super) fn build_grep_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         params.path.as_deref(),
         params.file.as_deref(),
         params.glob.as_deref(),
+        FileScopeStyle::Content,
     );
     Ok(GrepArgs {
         query,
@@ -87,6 +119,7 @@ pub(super) fn build_find_args(params: &AgentGrepInput, ctx: &ToolContext) -> Res
         params.path.as_deref(),
         params.file.as_deref(),
         params.glob.as_deref(),
+        FileScopeStyle::Name,
     );
     Ok(FindArgs {
         query_parts: query.split_whitespace().map(ToOwned::to_owned).collect(),
@@ -151,6 +184,7 @@ pub(super) fn build_smart_args_and_query(
         params.path.as_deref(),
         params.file.as_deref(),
         params.glob.as_deref(),
+        FileScopeStyle::Name,
     );
 
     let args = SmartArgs {

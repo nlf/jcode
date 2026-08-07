@@ -283,6 +283,8 @@ fn build_grep_and_find_args_scope_file_field_to_exact_file() {
 
     let grep = build_grep_args(&params, &ctx).unwrap();
     let find = build_find_args(&params, &ctx).unwrap();
+
+    // grep matches on contents, so it roots at the file: nothing else is walked.
     let expected_file = temp
         .path()
         .join("src/app.rs")
@@ -290,8 +292,13 @@ fn build_grep_and_find_args_scope_file_field_to_exact_file() {
         .into_owned();
     assert_eq!(grep.path.as_deref(), Some(expected_file.as_str()));
     assert_eq!(grep.glob.as_deref(), None);
-    assert_eq!(find.path.as_deref(), Some(expected_file.as_str()));
-    assert_eq!(find.glob.as_deref(), None);
+
+    // find *ranks by path text*, and a file root strips the relative path to
+    // the empty string, which carries no evidence and drops the file before it
+    // can be returned. It therefore roots at the parent and keeps the name.
+    let expected_parent = temp.path().join("src").to_string_lossy().into_owned();
+    assert_eq!(find.path.as_deref(), Some(expected_parent.as_str()));
+    assert_eq!(find.glob.as_deref(), Some("app.rs"));
 }
 
 #[test]
@@ -1150,5 +1157,37 @@ fn the_permission_summary_does_not_tell_a_file_scope_to_narrow_further() {
     assert!(
         dir_summary.contains("narrower directory"),
         "a directory scope can still be narrowed: {dir_summary}"
+    );
+}
+
+/// `find` ranks candidates by their path text. Rooting a single-file scope at
+/// the file collapses that relative path to the empty string, which carries no
+/// evidence, so the file is dropped and `find` returns nothing at all. It must
+/// keep rooting at the parent with the name as a glob — the opposite of what
+/// `grep` needs, and the reason the two modes are scoped differently.
+#[tokio::test]
+async fn find_scoped_to_one_file_still_returns_that_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("target.rs"), "fn auth_status() {}\n").expect("write target");
+    fs::create_dir_all(temp.path().join("sub")).expect("mkdir sub");
+    fs::write(temp.path().join("sub/target.rs"), "fn auth_status() {}\n").expect("write sibling");
+
+    let output = AgentGrepTool::new()
+        .execute(
+            json!({"mode": "find", "query": "target", "path": "target.rs"}),
+            test_ctx(temp.path()),
+        )
+        .await
+        .expect("file-scoped find");
+
+    assert!(
+        output.output.contains("target.rs"),
+        "a find scoped to an existing file must return it, not nothing: {}",
+        output.output
+    );
+    assert!(
+        !output.output.contains("sub/target.rs"),
+        "and must not return the same-named file in a subdirectory: {}",
+        output.output
     );
 }

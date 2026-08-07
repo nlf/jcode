@@ -481,10 +481,20 @@ fn exact_search_file_path(ctx: &ToolContext, path: Option<&str>) -> Option<Strin
 
 /// Whether a result path denotes the single file a scope named.
 ///
-/// Accepts both spellings the searcher can produce for a file root: the empty
-/// string (the root stripped from itself) and the full path.
+/// Accepts every spelling a file scope can produce, because the modes root
+/// differently (see `FileScopeStyle`): the empty string (a file root stripped
+/// from itself), the bare file name (a parent root), and the full path.
 fn is_exact_file_match(result_path: &str, exact_file: &str) -> bool {
-    result_path.is_empty() || result_path == exact_file
+    if result_path.is_empty() || result_path == exact_file {
+        return true;
+    }
+    // A parent-rooted search reports the path relative to that parent, which
+    // for the scoped file is exactly its name. Compare on the whole final
+    // component so a same-named file in a *subdirectory* (`sub/main.rs`
+    // against `main.rs`) is still excluded.
+    Path::new(exact_file)
+        .file_name()
+        .is_some_and(|name| Path::new(result_path) == Path::new(name))
 }
 
 /// How a single-file result should be labelled in the output.
