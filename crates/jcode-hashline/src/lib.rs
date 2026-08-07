@@ -22,7 +22,7 @@ pub use format::{
 };
 pub use input::{normalize_path, parse_header_line, split_sections, RawSection};
 pub use parser::{parse_ops, Anchor, Op, ParsedOps};
-pub use patcher::{prepare, Prepared, RejectReason, SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS};
+pub use patcher::{preflight, prepare, Prepared, PreflightError, RejectReason, SectionInput, SEEN_LINE_REVEAL_CAP, SEEN_LINE_REVEAL_MAX_COLUMNS};
 pub use prefixes::{
     is_read_metadata_line, parse_payload_text, strip_hashline_prefixes, strip_new_line_prefixes,
     strip_one_leading_hashline_prefix,

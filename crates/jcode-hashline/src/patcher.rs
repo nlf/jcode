@@ -279,6 +279,88 @@ fn assert_seen_lines(
     })
 }
 
+/// One section of a multi-file patch, ready to validate.
+#[derive(Debug, Clone)]
+pub struct SectionInput<'a> {
+    /// Canonical path, already resolved by the caller.
+    pub path: &'a str,
+    /// Current on-disk content.
+    pub current_text: &'a str,
+    /// Tag the section header carried, if any.
+    pub expected_tag: Option<&'a str>,
+    pub ops: &'a [Op],
+}
+
+/// Why a multi-section patch was refused before anything was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreflightError {
+    /// A section failed validation. Carries its path so the caller can say
+    /// which one, since the message alone does not identify it.
+    Section { path: String, reason: RejectReason },
+    /// Two sections target one file.
+    ///
+    /// Refused rather than merged: merging moves the later section's ops up,
+    /// which reorders them against how they were authored. The model may have
+    /// intended a sequence, and applying it out of order is worse than asking
+    /// for one header.
+    DuplicatePath { path: String },
+}
+
+impl PreflightError {
+    pub fn message(&self) -> String {
+        match self {
+            Self::Section { path, reason } => reason.message(path),
+            Self::DuplicatePath { path } => format!(
+                "Multiple sections target {path}. Merge their operations under one \
+                 [path#tag] header: applying them separately would reorder the edits."
+            ),
+        }
+    }
+}
+
+/// Validate and apply every section in memory, writing nothing.
+///
+/// This is the preflight guarantee, and it is narrower than "atomic". omp is
+/// explicit that their commits are non-atomic, and true atomicity across
+/// several files needs a transactional filesystem. What this buys is that the
+/// **common** failure - a bad anchor in the third section of a five-file patch -
+/// cannot leave the first two written. It does not protect against a disk error
+/// during the commit loop, and the caller should report which sections landed
+/// if one occurs.
+pub fn preflight(
+    store: &SnapshotStore,
+    sections: &[SectionInput<'_>],
+    enforce_seen_lines: bool,
+) -> Result<Vec<Prepared>, PreflightError> {
+    let mut seen_paths: Vec<&str> = Vec::new();
+    for section in sections {
+        if seen_paths.contains(&section.path) {
+            return Err(PreflightError::DuplicatePath {
+                path: section.path.to_string(),
+            });
+        }
+        seen_paths.push(section.path);
+    }
+
+    let mut prepared = Vec::with_capacity(sections.len());
+    for section in sections {
+        let result = prepare(
+            store,
+            section.path,
+            section.current_text,
+            section.expected_tag,
+            section.ops,
+            enforce_seen_lines,
+        )
+        .map_err(|reason| PreflightError::Section {
+            path: section.path.to_string(),
+            reason,
+        })?;
+        prepared.push(result);
+    }
+    Ok(prepared)
+}
+
 #[cfg(test)]
 #[path = "patcher_tests.rs"]
 mod patcher_tests;

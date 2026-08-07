@@ -302,3 +302,166 @@ fn a_chained_edit_applies_against_the_new_tag() {
     )
     .expect("the second edit anchors against the first edit's tag");
 }
+
+// ─── multi-section preflight ─────────────────────────────────────────────────
+
+fn section<'a>(
+    path: &'a str,
+    text: &'a str,
+    tag: &'a str,
+    ops: &'a [Op],
+) -> SectionInput<'a> {
+    SectionInput {
+        path,
+        current_text: text,
+        expected_tag: Some(tag),
+        ops,
+    }
+}
+
+/// The preflight guarantee: no section is written until every section
+/// validates. This is what stops a five-file patch with a bad anchor in the
+/// third from leaving the first two applied.
+#[test]
+fn one_failing_section_prevents_every_section_from_being_prepared() {
+    let store = SnapshotStore::new();
+    let a = "alpha\n";
+    let b = "beta\n";
+    let tag_a = store.record("a.txt", a, Some(&[1, 2]));
+    let tag_b = store.record("b.txt", b, Some(&[1, 2]));
+
+    let good = ops("PUT 1.=1:\n+ALPHA");
+    // A stale tag on the second section.
+    let bad = ops("PUT 1.=1:\n+BETA");
+
+    let error = preflight(
+        &store,
+        &[
+            section("a.txt", a, &tag_a, &good),
+            section("b.txt", b, "FFFF", &bad),
+        ],
+        true,
+    )
+    .expect_err("the second section must fail");
+
+    match error {
+        PreflightError::Section { ref path, .. } => assert_eq!(path, "b.txt"),
+        other => panic!("expected a section failure, got {other:?}"),
+    }
+
+    // Nothing was written, because preflight returns results rather than
+    // committing. The proof is that the caller got no Prepared values at all.
+    let _ = tag_b;
+}
+
+#[test]
+fn every_section_validating_yields_one_prepared_result_each() {
+    let store = SnapshotStore::new();
+    let a = "alpha\n";
+    let b = "beta\n";
+    let tag_a = store.record("a.txt", a, Some(&[1, 2]));
+    let tag_b = store.record("b.txt", b, Some(&[1, 2]));
+
+    let ops_a = ops("PUT 1.=1:\n+ALPHA");
+    let ops_b = ops("PUT 1.=1:\n+BETA");
+
+    let prepared = preflight(
+        &store,
+        &[
+            section("a.txt", a, &tag_a, &ops_a),
+            section("b.txt", b, &tag_b, &ops_b),
+        ],
+        true,
+    )
+    .expect("both sections validate");
+
+    assert_eq!(prepared.len(), 2);
+    assert_eq!(prepared[0].after, "ALPHA\n");
+    assert_eq!(prepared[1].after, "BETA\n");
+}
+
+/// Two sections targeting one file are refused rather than merged. Merging
+/// would move the second section's ops up, reordering them against how they
+/// were authored; if the model intended a sequence, applying it out of order
+/// is worse than asking for a single header.
+#[test]
+fn two_sections_targeting_one_file_are_refused() {
+    let store = SnapshotStore::new();
+    let text = "one\ntwo\n";
+    let tag = store.record("a.txt", text, Some(&[1, 2, 3]));
+
+    let first = ops("PUT 1.=1:\n+ONE");
+    let second = ops("PUT 2.=2:\n+TWO");
+
+    let error = preflight(
+        &store,
+        &[
+            section("a.txt", text, &tag, &first),
+            section("a.txt", text, &tag, &second),
+        ],
+        true,
+    )
+    .expect_err("one file, two sections");
+
+    match error {
+        PreflightError::DuplicatePath { ref path } => assert_eq!(path, "a.txt"),
+        other => panic!("expected a duplicate path, got {other:?}"),
+    }
+    assert!(
+        error.message().contains("Merge their operations"),
+        "must say what to do: {}",
+        error.message()
+    );
+}
+
+/// The duplicate check must run before any section is prepared, or the first
+/// section's work is wasted and its side effects (seen-line merging) have
+/// already happened.
+#[test]
+fn the_duplicate_check_runs_before_any_section_is_prepared() {
+    let store = SnapshotStore::new();
+    let text = "one\n";
+    let tag = store.record("a.txt", text, Some(&[1, 2]));
+
+    // The first section would fail on its own merits (no-op), but the
+    // duplicate error must win because it is detected first.
+    let noop = ops("PUT 1.=1:\n+one");
+    let other = ops("PUT 1.=1:\n+ONE");
+
+    let error = preflight(
+        &store,
+        &[
+            section("a.txt", text, &tag, &noop),
+            section("a.txt", text, &tag, &other),
+        ],
+        true,
+    )
+    .expect_err("must refuse");
+
+    assert!(
+        matches!(error, PreflightError::DuplicatePath { .. }),
+        "the structural error must be reported before per-section validation: {error:?}"
+    );
+}
+
+/// A failure has to name the file. With several sections the message alone
+/// does not say which one failed, and "edit rejected" against an unnamed file
+/// is not actionable.
+#[test]
+fn a_section_failure_names_the_file_it_came_from() {
+    let store = SnapshotStore::new();
+    let text = "one\n";
+    let tag = store.record("a.txt", text, Some(&[1, 2]));
+    let bad = ops("PUT 1.=1:\n+ONE");
+
+    let error = preflight(&store, &[section("a.txt", text, "FFFF", &bad)], true)
+        .expect_err("unknown tag");
+
+    assert!(error.message().contains("a.txt"), "{}", error.message());
+}
+
+#[test]
+fn an_empty_patch_preflights_to_no_prepared_sections() {
+    let store = SnapshotStore::new();
+    assert!(preflight(&store, &[], true).expect("nothing to do").is_empty());
+}

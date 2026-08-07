@@ -16,7 +16,7 @@
 
 use jcode_hashline::{
     apply_ops, compute_file_hash, format_hashline_header, format_numbered_lines, parse_ops,
-    prepare, split_sections, RejectReason, SnapshotStore,
+    preflight, prepare, split_sections, RejectReason, SectionInput, SnapshotStore,
 };
 
 const SOURCE: &str = "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n";
@@ -185,10 +185,9 @@ fn multiple_hunks_in_one_section_anchor_against_the_original() {
     );
 }
 
-/// A patch spanning two files splits into two sections, each validated against
-/// its own tag.
+/// A patch spanning two files splits, then preflights as a unit.
 #[test]
-fn a_two_file_patch_validates_each_section_independently() {
+fn a_two_file_patch_validates_every_section_before_any_would_be_written() {
     let store = SnapshotStore::new();
     let a = "alpha\n";
     let b = "beta\n";
@@ -201,19 +200,63 @@ fn a_two_file_patch_validates_each_section_independently() {
     let sections = split_sections(&patch, None).expect("must split");
     assert_eq!(sections.len(), 2);
 
-    for (section, (current, expected)) in sections.iter().zip([(a, "ALPHA\n"), (b, "BETA\n")]) {
-        let parsed = parse_ops(&section.body).expect("body parses");
-        let prepared = prepare(
-            &store,
-            &section.path,
-            current,
-            section.file_hash.as_deref(),
-            &parsed.ops,
-            true,
-        )
-        .expect("each section validates on its own tag");
-        assert_eq!(prepared.after, expected);
-    }
+    let parsed: Vec<_> = sections
+        .iter()
+        .map(|section| parse_ops(&section.body).expect("body parses"))
+        .collect();
+    let current = [a, b];
+    let inputs: Vec<SectionInput<'_>> = sections
+        .iter()
+        .zip(&parsed)
+        .zip(current)
+        .map(|((section, parsed), text)| SectionInput {
+            path: &section.path,
+            current_text: text,
+            expected_tag: section.file_hash.as_deref(),
+            ops: &parsed.ops,
+        })
+        .collect();
+
+    let prepared = preflight(&store, &inputs, true).expect("both sections validate");
+    assert_eq!(prepared[0].after, "ALPHA\n");
+    assert_eq!(prepared[1].after, "BETA\n");
+}
+
+/// The guarantee that matters for a multi-file patch: a bad section anywhere
+/// means no section is prepared, so a partial application cannot happen. Before
+/// `preflight` existed a caller had to loop and would have written the first
+/// file before discovering the second was stale.
+#[test]
+fn a_bad_section_anywhere_prevents_the_whole_patch() {
+    let store = SnapshotStore::new();
+    let a = "alpha\n";
+    let b = "beta\n";
+    let tag_a = store.record("a.txt", a, Some(&[1, 2]));
+
+    // b.txt carries a tag nothing minted.
+    let patch = format!(
+        "[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#FFFF]\nPUT 1.=1:\n+BETA"
+    );
+    let sections = split_sections(&patch, None).expect("must split");
+    let parsed: Vec<_> = sections
+        .iter()
+        .map(|section| parse_ops(&section.body).expect("body parses"))
+        .collect();
+    let current = [a, b];
+    let inputs: Vec<SectionInput<'_>> = sections
+        .iter()
+        .zip(&parsed)
+        .zip(current)
+        .map(|((section, parsed), text)| SectionInput {
+            path: &section.path,
+            current_text: text,
+            expected_tag: section.file_hash.as_deref(),
+            ops: &parsed.ops,
+        })
+        .collect();
+
+    let error = preflight(&store, &inputs, true).expect_err("b.txt is unvalidatable");
+    assert!(error.message().contains("b.txt"), "{}", error.message());
 }
 
 /// The tag a `read` renders must be the tag the patcher accepts. A mismatch
