@@ -7,12 +7,14 @@
 //! This crate is deliberately pure and I/O-free so it can be tested in about a
 //! second without compiling the agent, and so it carries no rebase surface.
 
+pub mod apply;
 pub mod format;
 pub mod input;
 pub mod parser;
 pub mod prefixes;
 pub mod snapshots;
 
+pub use apply::{apply_ops, ApplyResult};
 pub use format::{
     compute_file_hash, format_hashline_header, format_numbered_line, format_numbered_lines,
     FILE_HASH_LENGTH,
