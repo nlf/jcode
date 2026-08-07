@@ -104,6 +104,7 @@ impl Tool for ApplyPatchTool {
             return Err(anyhow::anyhow!(message));
         }
 
+        let ctx_ref = &ctx;
         let mut body = summary(&committed);
         for outcome in &committed {
             if let Some(diff) = render_diff(outcome, &contents) {
@@ -118,7 +119,15 @@ impl Tool for ApplyPatchTool {
                     } => format!("{path} -> {destination}"),
                     other => other.path().to_string(),
                 };
-                body.push_str(&format!("\n\n{heading}\n{diff}"));
+                // Stamp the post-patch tag, the same [path#TAG] form read and
+                // edit emit, so a follow-up hashline edit can anchor to it
+                // without a re-read. Recording the snapshot is not enough on its
+                // own: the model can only use a tag it has been shown.
+                let tagged = match tag_for(ctx_ref, outcome) {
+                    Some(tag) => format!("[{heading}#{tag}]"),
+                    None => heading,
+                };
+                body.push_str(&format!("\n\n{tagged}\n{diff}"));
             }
         }
         config_watch.finish(&mut body);
@@ -152,6 +161,7 @@ async fn commit(
                     tokio::fs::create_dir_all(parent).await?;
                 }
                 tokio::fs::write(&resolved, content).await?;
+                record_snapshot(ctx, outcome.path(), content);
                 publish(ctx, &resolved, outcome.path(), "created", intent, FileOp::Write);
             }
             FileOutcome::Deleted { path } => {
@@ -168,6 +178,7 @@ async fn commit(
                     ));
                 }
                 tokio::fs::remove_file(&resolved).await?;
+                invalidate_snapshot(ctx, path);
                 publish(ctx, &resolved, path, "deleted", intent, FileOp::Edit);
             }
             FileOutcome::Updated {
@@ -182,10 +193,15 @@ async fn commit(
                     }
                     tokio::fs::write(&target, content).await?;
                     tokio::fs::remove_file(&resolved).await?;
+                    // The content now lives at the destination, so that is what
+                    // a later edit will anchor to. The source no longer exists.
+                    invalidate_snapshot(ctx, path);
+                    record_snapshot(ctx, destination, content);
                     publish(ctx, &target, path, "moved", intent, FileOp::Edit);
                 }
                 None => {
                     tokio::fs::write(&resolved, content).await?;
+                    record_snapshot(ctx, path, content);
                     publish(ctx, &resolved, path, "modified", intent, FileOp::Edit);
                 }
             },
@@ -240,6 +256,49 @@ fn render_diff(outcome: &FileOutcome, before: &HashMap<String, String>) -> Optio
         super::tool_diff::DEFAULT_MAX_DIFF_LINES,
     );
     (!diff.trim().is_empty()).then_some(diff)
+}
+
+/// The tag a file now carries, for files that still exist.
+///
+/// A deleted file has no content to anchor to, so it gets no tag rather than a
+/// stale one.
+fn tag_for(ctx: &ToolContext, outcome: &FileOutcome) -> Option<String> {
+    let path = match outcome {
+        FileOutcome::Deleted { .. } => return None,
+        FileOutcome::Updated {
+            moved_to: Some(destination),
+            ..
+        } => destination.as_str(),
+        other => other.path(),
+    };
+    let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
+    let key = jcode_hashline::normalize_path(path, cwd);
+    super::hashline_store::for_session(&ctx.session_id)
+        .head(&key)
+        .map(|snapshot| snapshot.hash)
+}
+
+/// Record post-patch content so a hashline edit can follow without a re-read.
+///
+/// `read`, `write`, `edit` and `grep` all do this; apply_patch was the only
+/// writer that did not, so a patch left every later edit needing a fresh read.
+/// Keyed by the normalized path, matching what those tools use and what a
+/// patch header resolves to.
+fn record_snapshot(ctx: &ToolContext, path: &str, content: &str) {
+    let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
+    let key = jcode_hashline::normalize_path(path, cwd);
+    super::hashline_store::for_session(&ctx.session_id).record(&key, content, None);
+}
+
+/// Drop a snapshot for a file that no longer exists at this path.
+///
+/// Leaving it would let a later edit resolve a tag to content that is gone,
+/// and the refusal would talk about drift rather than about the file being
+/// deleted or moved.
+fn invalidate_snapshot(ctx: &ToolContext, path: &str) {
+    let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
+    let key = jcode_hashline::normalize_path(path, cwd);
+    super::hashline_store::for_session(&ctx.session_id).invalidate(&key);
 }
 
 fn publish(

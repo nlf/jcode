@@ -237,3 +237,141 @@ async fn apply_patch_still_deletes_ordinary_files() {
 
     assert!(!target.exists(), "an ordinary file should still be deleted");
 }
+
+/// A hashline edit must be able to follow a patch without a re-read, as it can
+/// after read, write, edit and grep. apply_patch was the only writer that did
+/// not record what it wrote, so every patch forced a redundant read.
+#[tokio::test]
+async fn a_hashline_edit_can_follow_a_patch_without_re_reading() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\n").expect("f");
+
+    run(
+        temp.path(),
+        "*** Begin Patch\n*** Update File: f.txt\n@@\n-two\n+TWO\n*** End Patch",
+    )
+    .await
+    .expect("patch should apply");
+
+    let snapshot = crate::tool::hashline_store::for_session("apply-patch-test")
+        .head("f.txt")
+        .expect("apply_patch should record what it wrote");
+    assert_eq!(snapshot.text, "one\nTWO\n");
+}
+
+/// A created file is recorded too, so a patch that adds a file can be followed
+/// by an edit to it.
+#[tokio::test]
+async fn a_created_file_is_recorded() {
+    let temp = tempfile::tempdir().expect("tempdir");
+
+    run(
+        temp.path(),
+        "*** Begin Patch\n*** Add File: fresh.txt\n+hello\n*** End Patch",
+    )
+    .await
+    .expect("create should apply");
+
+    let snapshot = crate::tool::hashline_store::for_session("apply-patch-test")
+        .head("fresh.txt")
+        .expect("a created file should be recorded");
+    assert_eq!(snapshot.text, "hello\n");
+}
+
+/// A deleted file's snapshot is dropped. Keeping it would let a later edit
+/// resolve a tag to content that is gone, and the refusal would talk about
+/// drift rather than about the file having been deleted.
+#[tokio::test]
+async fn a_deleted_file_loses_its_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("doomed.txt"), "content\n").expect("f");
+
+    // Record it first, as a read would have.
+    crate::tool::hashline_store::for_session("apply-patch-test")
+        .record("doomed.txt", "content\n", None);
+
+    run(
+        temp.path(),
+        "*** Begin Patch\n*** Delete File: doomed.txt\n*** End Patch",
+    )
+    .await
+    .expect("delete should apply");
+
+    assert!(
+        crate::tool::hashline_store::for_session("apply-patch-test")
+            .head("doomed.txt")
+            .is_none(),
+        "a deleted file must not keep a snapshot"
+    );
+}
+
+/// A move records the destination and drops the source: the content lives at
+/// the new path now, and that is what a later edit anchors to.
+#[tokio::test]
+async fn a_move_records_the_destination_and_drops_the_source() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("src.txt"), "body\n").expect("f");
+    crate::tool::hashline_store::for_session("apply-patch-test")
+        .record("src.txt", "body\n", None);
+
+    run(
+        temp.path(),
+        "*** Begin Patch\n*** Update File: src.txt\n*** Move to: dst.txt\n@@\n-body\n+BODY\n*** End Patch",
+    )
+    .await
+    .expect("move should apply");
+
+    let store = crate::tool::hashline_store::for_session("apply-patch-test");
+    assert!(store.head("src.txt").is_none(), "the source is gone");
+    assert_eq!(
+        store.head("dst.txt").expect("destination recorded").text,
+        "BODY\n"
+    );
+}
+
+/// Recording the snapshot is not enough: the model can only use a tag it has
+/// been shown. The output stamps each file with its post-patch [path#TAG], the
+/// same form read and edit emit.
+#[tokio::test]
+async fn the_output_shows_the_post_patch_tag() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "one\ntwo\n").expect("f");
+
+    let output = run(
+        temp.path(),
+        "*** Begin Patch\n*** Update File: f.txt\n@@\n-two\n+TWO\n*** End Patch",
+    )
+    .await
+    .expect("patch should apply");
+
+    let tag = crate::tool::hashline_store::for_session("apply-patch-test")
+        .head("f.txt")
+        .expect("recorded")
+        .hash;
+    assert!(
+        output.output.contains(&format!("[f.txt#{tag}]")),
+        "the output should carry the new tag: {}",
+        output.output
+    );
+}
+
+/// A deleted file has no content to anchor to, so it gets no tag rather than a
+/// stale one pointing at content that is gone.
+#[tokio::test]
+async fn a_deleted_file_gets_no_tag() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("doomed.txt"), "content\n").expect("f");
+
+    let output = run(
+        temp.path(),
+        "*** Begin Patch\n*** Delete File: doomed.txt\n*** End Patch",
+    )
+    .await
+    .expect("delete should apply");
+
+    assert!(
+        !output.output.contains("doomed.txt#"),
+        "a deleted file must not be given a tag: {}",
+        output.output
+    );
+}
