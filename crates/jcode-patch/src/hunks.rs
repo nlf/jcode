@@ -165,7 +165,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(DiffHunk, usize
     let mut start = 0usize;
 
     let header = lines[0].trim_end();
-    if header.starts_with("@@") {
+    if let Some(after_marker) = header.strip_prefix("@@") {
         start = 1;
         if let Some((old, context)) = parse_unified_header(header) {
             if old < 1 {
@@ -179,8 +179,7 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(DiffHunk, usize
                 contexts.push(context);
             }
         } else {
-            let value = header[2..].trim();
-            let value = value.trim_end_matches('@').trim();
+            let value = after_marker.trim().trim_end_matches('@').trim();
             if let Some(hint) = parse_line_hint(value) {
                 if hint < 1 {
                     return Err(ParseError {
@@ -244,7 +243,6 @@ fn parse_one_hunk(lines: &[&str], line_number: usize) -> Result<(DiffHunk, usize
             }
             hunk.is_end_of_file = true;
             consumed = offset + 1;
-            parsed += 1;
             break;
         }
 
