@@ -10,7 +10,6 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-dirs = "5"
 jcode-agent-runtime = { path = "../jcode-agent-runtime" }
 jcode-message-types = { path = "../jcode-message-types" }
 jcode-tool-types = { path = "../jcode-tool-types" }
