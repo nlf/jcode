@@ -71,10 +71,7 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents by regex across the workspace, ranked and with surrounding context. \
-         Use this instead of `grep`/`rg` through bash: it respects ignore files, skips binaries \
-         and vendored trees, and returns readable regions rather than raw lines you then have to \
-         re-read. You MUST NOT search file contents by running grep or ripgrep in bash."
+        "Search file contents by regex. You MUST use this, not grep or rg in bash."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -85,7 +82,7 @@ impl Tool for GrepTool {
                 "intent": super::intent_schema_property(),
                 "pattern": {
                     "type": "string",
-                    "description": "Regular expression to search for."
+                    "description": "Regular expression to search for. Searches ignore-aware, skipping binaries and vendored trees."
                 },
                 "path": {
                     "type": "string",
@@ -181,9 +178,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files by name or path pattern, ranked by relevance. Use this instead of `find`, \
-         `ls -R`, or shell globbing through bash: it skips ignored and vendored directories and \
-         returns workspace-relative paths. You MUST NOT locate files by running find or ls in bash."
+        "Find files by name or path pattern. You MUST use this, not find or ls in bash."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -194,7 +189,7 @@ impl Tool for GlobTool {
                 "intent": super::intent_schema_property(),
                 "pattern": {
                     "type": "string",
-                    "description": "Glob such as **/*.rs, or bare words to match against file names."
+                    "description": "Glob such as **/*.rs, or bare words to rank file names by. Skips ignored and vendored directories."
                 },
                 "path": {
                     "type": "string",

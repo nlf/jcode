@@ -31,6 +31,12 @@ struct ReadInput {
     offset: Option<usize>,
     #[serde(default)]
     limit: Option<usize>,
+    /// PDF page selection, e.g. "3", "2-5", or "1,4,9-11".
+    ///
+    /// Advertised on the OAuth path but previously absent here, so serde
+    /// silently dropped it and a page request returned the whole document.
+    #[serde(default)]
+    pages: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +60,58 @@ impl NormalizedReadRange {
     fn next_start_line(self) -> usize {
         self.next_offset() + 1
     }
+}
+
+/// Parse a `pages` selection such as "3", "2-5", or "1,4,9-11" into 1-based
+/// page numbers.
+///
+/// Returns an error rather than silently reading the whole document: a
+/// selection that is quietly ignored is worse than one that is refused,
+/// because the model cannot tell it did not get what it asked for.
+fn parse_page_selection(spec: &str) -> Result<Vec<usize>> {
+    let mut pages = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        match part.split_once('-') {
+            Some((start, end)) => {
+                let start: usize = start.trim().parse().map_err(|_| {
+                    anyhow::anyhow!("invalid page range '{part}': expected numbers like 2-5")
+                })?;
+                let end: usize = end.trim().parse().map_err(|_| {
+                    anyhow::anyhow!("invalid page range '{part}': expected numbers like 2-5")
+                })?;
+                if start == 0 || end == 0 {
+                    return Err(anyhow::anyhow!("page numbers are 1-based, got '{part}'"));
+                }
+                if end < start {
+                    return Err(anyhow::anyhow!(
+                        "page range '{part}' ends before it starts"
+                    ));
+                }
+                pages.extend(start..=end);
+            }
+            None => {
+                let page: usize = part.trim().parse().map_err(|_| {
+                    anyhow::anyhow!("invalid page '{part}': expected a number like 3 or 2-5")
+                })?;
+                if page == 0 {
+                    return Err(anyhow::anyhow!("page numbers are 1-based, got '0'"));
+                }
+                pages.push(page);
+            }
+        }
+    }
+    if pages.is_empty() {
+        return Err(anyhow::anyhow!(
+            "'pages' was empty; use a selection like 3, 2-5, or 1,4,9-11"
+        ));
+    }
+    pages.sort_unstable();
+    pages.dedup();
+    Ok(pages)
 }
 
 fn normalize_read_range(params: &ReadInput) -> Result<NormalizedReadRange> {
@@ -123,7 +181,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file. Supports text files, image files, and PDFs."
+        "Read a text, image, or PDF file with numbered lines. Not `cat` in bash."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -134,15 +192,29 @@ impl Tool for ReadTool {
                 "intent": super::intent_schema_property(),
                 "file_path": {
                     "type": "string",
-                    "description": "Path to a file."
+                    "description": "Path to a file. Read it here, not with cat/head/sed in bash: numbered lines are required to edit it."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based line to start from. Alternative spelling of start_line."
                 },
                 "start_line": {
                     "type": "integer",
-                    "description": "1-based start line for text files."
+                    "description": "1-based line to start from. Alternative spelling of offset."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "1-based last line to read, inclusive. Use with start_line instead of limit."
                 },
                 "limit": {
                     "type": "integer",
+                    "exclusiveMinimum": 0,
                     "description": "Max text lines to read. Default 5000."
+                },
+                "pages": {
+                    "type": "string",
+                    "description": "For PDFs, which pages to read: \"3\", \"2-5\", or \"1,4,9-11\". Omit for all pages."
                 }
             }
         })
@@ -176,7 +248,12 @@ impl Tool for ReadTool {
 
         // Check for PDF files and extract text
         if is_pdf_file(&path) {
-            return handle_pdf_file(&path, &params.file_path);
+            let selection = params
+                .pages
+                .as_deref()
+                .map(parse_page_selection)
+                .transpose()?;
+            return handle_pdf_file(&path, &params.file_path, selection.as_deref());
         }
 
         // Check for binary files
@@ -475,7 +552,7 @@ fn is_pdf_file(path: &Path) -> bool {
 
 /// Handle reading a PDF file - extract text content
 #[cfg(feature = "pdf")]
-fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
+fn handle_pdf_file(path: &Path, file_path: &str, selection: Option<&[usize]>) -> Result<ToolOutput> {
     // Get file metadata
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
@@ -499,9 +576,30 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
             let pages: Vec<&str> = text.split('\x0c').collect();
             let page_count = pages.len();
 
-            output.push_str(&format!("Pages: {}\n\n", page_count));
+            match selection {
+                Some(selected) => {
+                    let out_of_range: Vec<String> = selected
+                        .iter()
+                        .filter(|p| **p > page_count)
+                        .map(|p| p.to_string())
+                        .collect();
+                    if !out_of_range.is_empty() {
+                        output.push_str(&format!(
+                            "Pages: {page_count} (requested page(s) {} do not exist)\n\n",
+                            out_of_range.join(", ")
+                        ));
+                    } else {
+                        output.push_str(&format!("Pages: {page_count} (showing selection)\n\n"));
+                    }
+                }
+                None => output.push_str(&format!("Pages: {}\n\n", page_count)),
+            }
 
             for (i, page) in pages.iter().enumerate() {
+                // `selection` is 1-based, matching how pages are labelled.
+                if selection.is_some_and(|selected| !selected.contains(&(i + 1))) {
+                    continue;
+                }
                 let page_text = page.trim();
                 if !page_text.is_empty() {
                     output.push_str(&format!("--- Page {} ---\n", i + 1));
@@ -530,7 +628,11 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
 
 /// Handle reading a PDF file when PDF support is not compiled in.
 #[cfg(not(feature = "pdf"))]
-fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
+fn handle_pdf_file(
+    path: &Path,
+    file_path: &str,
+    _selection: Option<&[usize]>,
+) -> Result<ToolOutput> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
 
