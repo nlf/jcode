@@ -134,53 +134,15 @@ impl Tool for WriteTool {
     }
 }
 
-/// Generate a compact diff: "42- old" / "42+ new" (max 20 lines)
+/// Generate a compact diff: "42- old" / "42+ new" (max 20 lines).
+///
+/// Delegates to the shared renderer. `write` was the fifth copy of this
+/// function and the consolidation missed it, leaving the per-line `.trim()`
+/// that flattens indentation - the same defect fixed once in `ui_diff.rs` and
+/// then again in the other four copies.
 fn generate_diff_summary(old: &str, new: &str) -> String {
-    let diff = TextDiff::from_lines(old, new);
-    let mut output = String::new();
-    let mut lines_shown = 0;
     const MAX_LINES: usize = 20;
-
-    let mut old_line = 1usize;
-    let mut new_line = 1usize;
-
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Equal => {
-                old_line += 1;
-                new_line += 1;
-                continue;
-            }
-            ChangeTag::Delete => {
-                let content = change.value().trim();
-                old_line += 1;
-                if content.is_empty() {
-                    continue;
-                }
-                if lines_shown >= MAX_LINES {
-                    output.push_str("...\n");
-                    break;
-                }
-                output.push_str(&format!("{}- {}\n", old_line - 1, content));
-                lines_shown += 1;
-            }
-            ChangeTag::Insert => {
-                let content = change.value().trim();
-                new_line += 1;
-                if content.is_empty() {
-                    continue;
-                }
-                if lines_shown >= MAX_LINES {
-                    output.push_str("...\n");
-                    break;
-                }
-                output.push_str(&format!("{}+ {}\n", new_line - 1, content));
-                lines_shown += 1;
-            }
-        }
-    }
-
-    output.trim_end().to_string()
+    super::tool_diff::render_diff(old, new, 1, MAX_LINES)
 }
 
 fn build_file_touch_preview(diff: &str) -> Option<String> {
@@ -282,6 +244,31 @@ mod tests {
         assert!(
             diff.contains("1+ new"),
             "Should have line number directly before plus"
+        );
+    }
+
+    /// `write` was the fifth `generate_diff` copy, and the consolidation into
+    /// `tool_diff` reached the other four. Its per-line `.trim()` flattened
+    /// indentation exactly like the bug fixed once in `ui_diff.rs`, so a diff
+    /// of nested code arrived at the model with its structure gone.
+    ///
+    /// The shared renderer removes only the indentation *common* to every
+    /// shown line, so a uniformly indented hunk still renders flush - that is
+    /// the width-reclaiming behaviour the dedent exists for. What must survive
+    /// is the *relative* nesting between lines, which the old per-line trim
+    /// destroyed.
+    #[test]
+    fn diff_summary_preserves_relative_indentation() {
+        // The changed lines sit at two different depths, which is what makes
+        // the relative nesting observable at all.
+        let old = "fn f() {\n    if a {\n        old_inner();\n    }\n}\n";
+        let new = "fn f() {\n    if a {\n        new_inner();\n    }\n    tail();\n}\n";
+
+        let diff = generate_diff_summary(old, new);
+
+        assert!(
+            diff.contains("+     new_inner();") && diff.contains("+ tail();"),
+            "the depth difference between the two added lines must survive: {diff:?}"
         );
     }
 
