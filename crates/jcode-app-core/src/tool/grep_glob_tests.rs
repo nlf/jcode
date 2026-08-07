@@ -178,8 +178,20 @@ mod end_to_end {
     use super::*;
     use crate::tool::{ToolContext, ToolExecutionMode};
 
-    fn fixture_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("jcode-grep-e2e-{}", std::process::id()));
+    /// A fixture directory unique to the calling test.
+    ///
+    /// Keyed on the test's own name, not just the process id: these tests
+    /// delete their directory when done, so sharing one across the module
+    /// meant a finishing test pulled the files out from under a running one.
+    /// They passed only because they were always run with `--test-threads=1`,
+    /// and failed 5-of-5 under cargo's default parallelism.
+    fn fixture_dir(test_name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jcode-grep-e2e-{}-{test_name}",
+            std::process::id()
+        ));
+        // Left over from an aborted run, so start from a known state.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // `a.c` vs `abc` distinguishes a regex search from a literal one, which
         // is the single most consequential translation detail here.
@@ -218,7 +230,7 @@ mod end_to_end {
     /// model concludes the code it is looking for does not exist.
     #[tokio::test]
     async fn patterns_are_treated_as_regex_not_literal_text() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("patterns_are_treated_as_regex_not_literal_text");
 
         let alternation = run_grep(&dir, json!({"pattern": "fn (alpha|gamma)"})).await;
         assert!(
@@ -244,7 +256,7 @@ mod end_to_end {
 
     #[tokio::test]
     async fn case_insensitive_flag_actually_matches_other_case() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("case_insensitive_flag_actually_matches_other_case");
         let out = run_grep(&dir, json!({"pattern": "uppercase_marker", "-i": true})).await;
         assert!(
             out.contains("UPPERCASE_MARKER"),
@@ -258,7 +270,7 @@ mod end_to_end {
     /// session while the tests above passed.
     #[tokio::test]
     async fn bare_alternation_with_no_other_parameters_matches() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("bare_alternation_with_no_other_parameters_matches");
         let out = run_grep(&dir, json!({"pattern": "alpha|gamma"})).await;
         assert!(
             out.contains("alpha") && out.contains("gamma"),
@@ -269,7 +281,7 @@ mod end_to_end {
 
     #[tokio::test]
     async fn glob_and_type_filters_actually_narrow_the_search() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("glob_and_type_filters_actually_narrow_the_search");
 
         let rust_only = run_grep(&dir, json!({"pattern": "UPPERCASE", "glob": "**/*.rs"})).await;
         assert!(
@@ -299,7 +311,7 @@ mod end_to_end {
     /// observable consequence rather than the mapping.
     #[tokio::test]
     async fn head_limit_bounds_the_results() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("head_limit_bounds_the_results");
 
         // UPPERCASE_MARKER appears in all three fixture files.
         let unbounded = run_grep(&dir, json!({"pattern": "UPPERCASE"})).await;
@@ -330,7 +342,7 @@ mod end_to_end {
     /// is agentgrep's to decide.
     #[tokio::test]
     async fn multiline_requests_still_return_matches() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("multiline_requests_still_return_matches");
         let out = run_grep(&dir, json!({"pattern": "fn alpha", "multiline": true})).await;
         assert!(
             out.contains("alpha"),
@@ -342,7 +354,7 @@ mod end_to_end {
     /// `files_with_matches` must return paths without match excerpts.
     #[tokio::test]
     async fn output_mode_files_with_matches_returns_paths_not_excerpts() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("output_mode_files_with_matches_returns_paths_not_excerpts");
         let out = run_grep(
             &dir,
             json!({"pattern": "UPPERCASE", "output_mode": "files_with_matches"}),
@@ -358,7 +370,7 @@ mod end_to_end {
 
     #[tokio::test]
     async fn glob_tool_finds_files_by_pattern_and_by_name() {
-        let dir = fixture_dir();
+        let dir = fixture_dir("glob_tool_finds_files_by_pattern_and_by_name");
 
         let by_glob = GlobTool::new()
             .execute(json!({"pattern": "**/*.rs"}), ctx(&dir))

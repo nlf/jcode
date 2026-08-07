@@ -28,6 +28,23 @@ each against its own socket:
 ./target/selfdev/jcode run --no-update --socket /tmp/probe.sock '<prompt>'
 ```
 
+Count tools from **both** forms in the output. A top-level call prints
+`[toolname]`, but a call nested inside `batch` prints only
+`--- [N] toolname ---`, so counting `^\[[a-z_]+\]` alone reports `batch` and
+silently misses every tool it ran. An early version of this measurement had
+that bug: it would have scored a run that used `batch` to shell out as
+zero-bash. The conclusion survived re-measurement, but the method was wrong.
+
+```bash
+top=$(echo "$out" | grep -oE '^\[[a-z_]+\]' | tr -d '[]')
+sub=$(echo "$out" | grep -oE '^ *→ --- \[[0-9]+\] [a-z_]+ ---' \
+      | sed -E 's/.*\] ([a-z_]+) ---/\1/')
+printf '%s\n%s' "$top" "$sub" | grep -cx bash
+```
+
+Sanity-check the counter with a prompt that deliberately shells out through
+`batch` before trusting a zero.
+
 ## What was wrong
 
 **1. There was no `glob` or `grep` tool.** `Registry::base_tools` never
