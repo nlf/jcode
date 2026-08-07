@@ -575,3 +575,58 @@ async fn a_tilde_path_is_expanded_before_the_existence_check() {
         "the tilde must not have been joined onto the working directory: {message}"
     );
 }
+
+/// `~/x` looks relative to `Path::is_relative`, but `resolve_path` expands it to
+/// an absolute path before the working directory is ever consulted. Claiming it
+/// resolved "against the working directory" is therefore false, and misleading
+/// whenever the home directory is not the working directory.
+#[test]
+fn a_tilde_miss_does_not_claim_it_resolved_against_the_working_directory() {
+    let home = dirs::home_dir().expect("home");
+    let resolved = home.join("definitely-absent-xyz.txt");
+
+    let message = file_not_found_message(
+        "~/definitely-absent-xyz.txt",
+        &resolved,
+        Some(std::path::Path::new("/some/other/place")),
+    );
+
+    assert!(
+        !message.contains("working directory"),
+        "a tilde path is expanded, not resolved against the cwd: {message}"
+    );
+}
+
+/// A relative path with no working directory has nothing to report.
+#[test]
+fn a_relative_miss_without_a_working_directory_says_nothing_extra() {
+    let message = file_not_found_message("x/y.txt", std::path::Path::new("x/y.txt"), None);
+    assert_eq!(message, "File not found: x/y.txt");
+}
+
+#[tokio::test]
+async fn edit_reports_the_same_context_as_read() {
+    use crate::tool::edit::EditTool;
+    use crate::tool::Tool as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let tool = EditTool::new();
+    let error = tool
+        .execute(
+            json!({
+                "file_path": "nope/missing.txt",
+                "old_string": "a",
+                "new_string": "b"
+            }),
+            make_ctx(temp.path().to_path_buf()),
+        )
+        .await
+        .expect_err("editing a missing file must fail");
+    let message = error.to_string();
+
+    assert!(message.contains("File not found: nope/missing.txt"), "{message}");
+    assert!(
+        message.contains("working directory"),
+        "edit resolves paths the same way and should explain itself the same way: {message}"
+    );
+}

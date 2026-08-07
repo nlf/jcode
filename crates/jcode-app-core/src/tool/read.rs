@@ -390,12 +390,26 @@ fn is_binary_file(path: &Path) -> bool {
 ///    or duplicating a directory level, and it is a higher-confidence guess than
 ///    a name match, so it is offered first.
 /// 3. **Fuzzy filename matches** in the target directory, as before.
-fn file_not_found_message(requested: &str, resolved: &Path, working_dir: Option<&Path>) -> String {
+///
+/// Shared with `edit` and `multiedit`, which resolve paths the same way and had
+/// the same bare message.
+pub(crate) fn file_not_found_message(
+    requested: &str,
+    resolved: &Path,
+    working_dir: Option<&Path>,
+) -> String {
     let mut message = format!("File not found: {requested}");
 
-    // Only meaningful when the path was relative: an absolute path did not
-    // consult the working directory at all.
-    if Path::new(requested).is_relative()
+    // Only meaningful when the working directory actually took part. Two ways
+    // it did not: an absolute request, and a `~` request, which `resolve_path`
+    // expands to an absolute path before the working directory is ever
+    // consulted. Testing `requested.is_relative()` alone gets the tilde case
+    // wrong and claims a resolution that did not happen.
+    let requested_path = Path::new(requested);
+    let used_working_dir = requested_path.is_relative()
+        && !requested.starts_with('~')
+        && working_dir.is_some_and(|cwd| resolved.starts_with(cwd));
+    if used_working_dir
         && let Some(cwd) = working_dir
     {
         message.push_str(&format!(

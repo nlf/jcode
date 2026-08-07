@@ -77,7 +77,11 @@ impl Tool for EditTool {
         let path = ctx.resolve_path(Path::new(&params.file_path));
 
         if !path.exists() {
-            return Err(anyhow::anyhow!("File not found: {}", params.file_path));
+            return Err(anyhow::anyhow!(super::read::file_not_found_message(
+                &params.file_path,
+                &path,
+                ctx.working_dir.as_deref(),
+            )));
         }
 
         let content = tokio::fs::read_to_string(&path).await?;
