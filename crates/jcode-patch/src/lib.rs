@@ -6,6 +6,7 @@
 //! Pure and I/O-free so it tests in about a second without compiling the agent,
 //! matching `jcode-hashline` and `jcode-search`.
 
+pub mod apply;
 pub mod envelope;
 pub mod fuzzy;
 pub mod hunks;
@@ -25,3 +26,5 @@ pub use shape::{
     detect_line_ending, has_trailing_newline, normalize_to_lf, restore_line_endings, strip_bom,
     LineEnding, TextShape, BOM,
 };
+
+pub use apply::{apply_hunk, apply_hunks, create_content, ApplyError};
