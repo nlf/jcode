@@ -8,6 +8,7 @@
 
 pub mod envelope;
 pub mod fuzzy;
+pub mod hunks;
 
 pub use fuzzy::{
     adjust_indentation, count_leading_whitespace, find_closest_sequence, find_context_line,
@@ -16,3 +17,5 @@ pub use fuzzy::{
 };
 
 pub use envelope::{parse, parse_streaming, Hunk, Operation, ParseError};
+
+pub use hunks::{parse_diff_hunks, DiffHunk};
