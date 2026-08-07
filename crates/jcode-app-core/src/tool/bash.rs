@@ -681,6 +681,27 @@ fn default_true() -> bool {
 #[path = "bash_destructive_gate.rs"]
 mod destructive_gate;
 use destructive_gate::destructive_command_refusal;
+/// Tools the interception rules may suggest.
+///
+/// The four this crate registers unconditionally in `base_tools`. Gating on
+/// availability matters because suggesting a tool that does not exist leaves
+/// the caller refused with nowhere to go, and a session policy CAN disable
+/// these: the check below honours that.
+const INTERCEPTION_TOOLS: &[&str] = &["read", "grep", "glob", "edit"];
+
+/// Refuse a command a registered tool does better.
+fn interception_refusal(command: &str, session_id: &str) -> Option<String> {
+    let available: Vec<&str> = INTERCEPTION_TOOLS
+        .iter()
+        .copied()
+        .filter(|name| super::tool_is_enabled_for_session(session_id, name))
+        .collect();
+    match jcode_bash_intercept::check(command, &available, jcode_bash_intercept::DEFAULT_RULES) {
+        jcode_bash_intercept::Decision::Block { message, .. } => Some(message),
+        jcode_bash_intercept::Decision::Allow => None,
+    }
+}
+
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
@@ -709,6 +730,17 @@ impl Tool for BashTool {
             params.justification.as_deref(),
             ctx.working_dir.clone(),
         ) {
+            return Err(anyhow::anyhow!(refusal));
+        }
+
+        // Redirect commands a dedicated tool does better. The system prompt
+        // already asks for this, but asking is advice a model can ignore, and
+        // does; refusing the call and naming the tool is what makes it a rule.
+        //
+        // Runs after the destructive gate so a dangerous command is refused as
+        // dangerous rather than as redirectable, and before background dispatch
+        // so `cat x &` is caught too.
+        if let Some(refusal) = interception_refusal(&params.command, &ctx.session_id) {
             return Err(anyhow::anyhow!(refusal));
         }
 

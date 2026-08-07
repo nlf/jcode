@@ -180,14 +180,17 @@ fn the_refusal_explains_what_the_tool_gives() {
 
 /// A malformed rule is skipped rather than failing the command: a config
 /// mistake should not make bash unusable.
+///
+/// Uses a command the built-in reader predicate does not catch, since that
+/// predicate runs regardless of the rule list.
 #[test]
 fn a_malformed_rule_is_skipped() {
     const BAD: &[Rule] = &[Rule {
         pattern: "(unclosed",
-        tool: "read",
+        tool: "grep",
         message: "never seen",
     }];
-    assert_eq!(check("cat f.txt", ALL, BAD), Decision::Allow);
+    assert_eq!(check("grep needle f.txt", ALL, BAD), Decision::Allow);
 }
 
 #[test]
@@ -210,4 +213,30 @@ fn every_default_rule_has_a_valid_pattern_and_a_reason() {
             rule.message
         );
     }
+}
+
+/// A reader with no path argument is reading stdin, which no path-based tool
+/// can replace. Blocking it leaves the caller unable to do the thing at all.
+///
+/// omp's pattern is `(cat|head|tail|less|more)\s+` with no path requirement, so
+/// it blocks `head -n1` too. Found because jcode's own stdin-forwarding tests
+/// run exactly that command.
+#[test]
+fn a_reader_consuming_stdin_is_not_intercepted() {
+    for command in ["head -n1", "head -n 5", "tail -n 20", "cat -"] {
+        assert_eq!(
+            decide(command),
+            Decision::Allow,
+            "{command:?} reads stdin, so read cannot replace it"
+        );
+    }
+}
+
+/// Flags before the path must not stop the match, or `head -20 f.txt` slips
+/// through.
+#[test]
+fn flags_before_a_path_do_not_prevent_interception() {
+    assert_eq!(blocked_tool("head -20 f.txt").as_deref(), Some("read"));
+    assert_eq!(blocked_tool("head -n 20 f.txt").as_deref(), Some("read"));
+    assert_eq!(blocked_tool("tail -f server.log").as_deref(), Some("read"));
 }

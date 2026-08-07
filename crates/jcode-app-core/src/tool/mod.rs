@@ -84,6 +84,24 @@ pub(crate) fn set_session_tool_policy(
     );
 }
 
+/// Whether `name` is exposed in this session.
+///
+/// Used by the bash interceptor: a rule must not suggest a tool the session has
+/// disabled, since that leaves the caller refused with nowhere to go. A session
+/// with no recorded policy exposes everything.
+pub(crate) fn tool_is_enabled_for_session(session_id: &str, name: &str) -> bool {
+    let Some(policy) = session_tool_policy(session_id) else {
+        return true;
+    };
+    if policy.disabled_tools.contains(name) {
+        return false;
+    }
+    policy
+        .allowed_tools
+        .as_ref()
+        .is_none_or(|allowed| allowed.contains(name))
+}
+
 pub(crate) fn clear_session_tool_policy(session_id: &str) {
     let mut policies = SESSION_TOOL_POLICIES
         .write()

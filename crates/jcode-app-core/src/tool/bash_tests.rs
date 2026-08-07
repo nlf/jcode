@@ -970,3 +970,83 @@ async fn indirect_dispatch_paths_cannot_bypass_the_gate() {
     );
     assert!(canary.exists(), "the file must survive a backgrounded call");
 }
+
+/// The interceptor must be reachable from the real tool, not just correct in
+/// its own crate. Prompt text asking for `read` is advice a model ignores;
+/// refusing the call is what makes it a rule.
+#[tokio::test]
+async fn bash_redirects_a_file_read_to_the_read_tool() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("f.txt"), "content\n").expect("write");
+
+    let error = BashTool::new()
+        .execute(
+            serde_json::json!({ "command": "cat f.txt" }),
+            gate_ctx(temp.path().to_str().expect("utf8 path")),
+        )
+        .await
+        .expect_err("a file read should be redirected");
+
+    let message = error.to_string();
+    assert!(message.contains("`read` tool"), "{message}");
+    assert!(
+        message.contains("numbered lines"),
+        "the refusal should say what read gives: {message}"
+    );
+}
+
+/// Over-blocking is worse than under-blocking: a shell that refuses ordinary
+/// work is unusable for the job it is actually for.
+#[tokio::test]
+async fn bash_still_runs_ordinary_commands() {
+    let temp = tempfile::tempdir().expect("tempdir");
+
+    let output = BashTool::new()
+        .execute(
+            serde_json::json!({ "command": "echo hello" }),
+            gate_ctx(temp.path().to_str().expect("utf8 path")),
+        )
+        .await
+        .expect("an ordinary command should run");
+
+    assert!(output.output.contains("hello"), "{}", output.output);
+}
+
+/// A reader on stdin cannot be replaced by a path-based tool, so blocking it
+/// would leave no way to do the thing at all.
+#[tokio::test]
+async fn bash_still_runs_a_reader_that_consumes_stdin() {
+    let temp = tempfile::tempdir().expect("tempdir");
+
+    let output = BashTool::new()
+        .execute(
+            serde_json::json!({ "command": "echo one | head -n1" }),
+            gate_ctx(temp.path().to_str().expect("utf8 path")),
+        )
+        .await
+        .expect("a stdin reader should still run");
+
+    assert!(output.output.contains("one"), "{}", output.output);
+}
+
+/// The destructive gate runs first, so a dangerous command is refused as
+/// dangerous rather than as redirectable.
+#[tokio::test]
+async fn the_destructive_gate_takes_precedence_over_interception() {
+    let temp = tempfile::tempdir().expect("temp home");
+    let home = temp.path().to_path_buf();
+    let _home = crate::tool::home_override::HomeOverride::set(&home);
+
+    let error = BashTool::new()
+        .execute(
+            serde_json::json!({ "command": format!("rm -rf {}", home.display()) }),
+            gate_ctx("/tmp"),
+        )
+        .await
+        .expect_err("deleting home must be refused");
+
+    assert!(
+        !error.to_string().contains("`read` tool"),
+        "it should be refused as destructive, not redirected: {error}"
+    );
+}
