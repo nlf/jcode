@@ -271,6 +271,13 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
     }
     let context_path = maybe_write_context_json(params, ctx)?;
     let request = summarize_agentgrep_request(params, ctx, context_path.as_deref());
+    // Resolve through the context so `path: "~"` or a relative path is compared
+    // as the directory actually searched. `resolve_search_root` returns an
+    // explicit `path` verbatim, which would otherwise never match home.
+    let search_root = match params.path.as_deref().or(params.file.as_deref()) {
+        Some(path) => Some(resolve_path_arg(ctx, path)),
+        None => ctx.working_dir.clone(),
+    };
     let started_at = std::time::Instant::now();
     let outcome = execute_linked_agentgrep(params, ctx, context_path.as_deref());
     let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -287,7 +294,20 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
                     params.mode, elapsed_ms, request
                 ));
             }
-            Ok(output)
+            // A whole-home search is occasionally what was meant ("where is the
+            // file that mentions foo"), so this warns rather than refusing. It
+            // is appended to a *successful* result because the cost is the point:
+            // the caller should see that the scope was enormous even when it
+            // worked, and can narrow it next time.
+            if let Some(root) = search_root.as_deref()
+                && is_home_directory(root)
+            {
+                let mut output = output;
+                output.output.push_str(&unscoped_home_search_note(root));
+                Ok(output)
+            } else {
+                Ok(output)
+            }
         }
         Err(err) => {
             let detail = err.to_string();
@@ -296,6 +316,18 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
                 "agentgrep failure mode={} elapsed_ms={} request={} error={}",
                 params.mode, elapsed_ms, request, detail
             ));
+            // ripgrep exits 2 when *any* path errored, even though it still
+            // printed every match it found. The matches are lost inside the
+            // agentgrep crate before they reach us, so they cannot be recovered
+            // here; what can be fixed is the report. Unfiltered, this is
+            // hundreds of near-identical "Operation not permitted" lines that
+            // bury the real problem and read as a broken tool rather than an
+            // over-broad search.
+            if let Some(summary) =
+                summarize_permission_failure(&err.to_string(), search_root.as_deref())
+            {
+                return Err(anyhow::anyhow!(summary));
+            }
             Err(anyhow::anyhow!(
                 "agentgrep {} failed after {}ms: {}",
                 params.mode,
@@ -304,6 +336,54 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
             ))
         }
     }
+}
+
+/// Whether a search root is exactly the user's home directory.
+///
+/// Only an exact match counts. A subdirectory of home is an ordinary, usually
+/// deliberate scope; it is the undivided `$HOME` sweep that is worth remarking
+/// on, and warning about every path under home would be noise.
+fn is_home_directory(root: &Path) -> bool {
+    dirs::home_dir().is_some_and(|home| root == home)
+}
+
+fn unscoped_home_search_note(root: &Path) -> String {
+    format!(
+        "\n\nNote: this searched all of {}, which is slow and includes application \
+         data, caches, and other noise. Pass `path` to scope the search when you \
+         know roughly where to look.",
+        root.display()
+    )
+}
+
+/// Collapse ripgrep's per-directory permission errors into one actionable line.
+///
+/// Returns `None` when the failure was not dominated by permission errors, so
+/// genuine failures keep their original message rather than being reinterpreted.
+fn summarize_permission_failure(error: &str, root: Option<&Path>) -> Option<String> {
+    let denied: Vec<&str> = error
+        .lines()
+        .filter(|line| {
+            line.contains("Operation not permitted") || line.contains("Permission denied")
+        })
+        .collect();
+    // One or two denied directories is normal noise inside a repo and not worth
+    // rewriting the error for; a wall of them is the actual diagnosis.
+    if denied.len() < 3 {
+        return None;
+    }
+
+    let scope = root
+        .map(|root| format!(" of {}", root.display()))
+        .unwrap_or_default();
+    Some(format!(
+        "Search{scope} could not complete: {} directories were unreadable \
+         (on macOS, privacy-protected locations such as Mail, Messages, Safari \
+         and app containers). Matches outside those directories were found but \
+         discarded, because ripgrep reports a partial failure for the whole run. \
+         Re-run with `path` set to a narrower directory to get results.",
+        denied.len()
+    ))
 }
 
 fn execute_linked_agentgrep(

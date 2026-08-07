@@ -979,3 +979,82 @@ fn grep_defaults_to_a_bounded_match_count() {
         DEFAULT_GREP_MAX_REGIONS
     );
 }
+
+// --- unreadable directories and unscoped home searches ----------------------
+//
+// ripgrep exits 2 when any path errored, even though it still printed every
+// match it found. Unfiltered that surfaces as hundreds of near-identical
+// "Operation not permitted" lines, which reads as a broken tool rather than an
+// over-broad search. These pin the summary, and equally that it does not
+// hijack unrelated failures.
+
+fn permission_error_lines(count: usize) -> String {
+    (0..count)
+        .map(|i| format!("rg: /Users/x/Library/Thing{i}: Operation not permitted (os error 1)"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_wall_of_permission_errors_becomes_one_actionable_line() {
+    let error = permission_error_lines(146);
+    let summary = summarize_permission_failure(&error, Some(Path::new("/Users/x")))
+        .expect("a permission-dominated failure should be summarized");
+
+    assert!(
+        summary.contains("146 directories were unreadable"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("/Users/x"),
+        "the scope must be named: {summary}"
+    );
+    assert!(
+        summary.contains("path"),
+        "it must say how to get results next time: {summary}"
+    );
+    assert!(
+        summary.lines().count() <= 2,
+        "the point is to replace a wall of text, not reprint it: {summary}"
+    );
+}
+
+/// A genuine failure must keep its own message. Reinterpreting every error as a
+/// permissions problem would hide real bugs.
+#[test]
+fn an_unrelated_failure_is_left_alone() {
+    assert!(summarize_permission_failure("rg: regex parse error", None).is_none());
+    assert!(summarize_permission_failure("", None).is_none());
+}
+
+/// One or two denied directories is ordinary noise inside a repo; the diagnosis
+/// only applies when they dominate.
+#[test]
+fn a_couple_of_denied_directories_is_not_reinterpreted() {
+    assert!(summarize_permission_failure(&permission_error_lines(2), None).is_none());
+    assert!(summarize_permission_failure(&permission_error_lines(3), None).is_some());
+}
+
+#[test]
+fn only_the_whole_home_directory_triggers_the_scope_warning() {
+    let home = dirs::home_dir().expect("home");
+
+    assert!(is_home_directory(&home), "an exact home root warns");
+    assert!(
+        !is_home_directory(&home.join("projects")),
+        "a subdirectory of home is an ordinary deliberate scope"
+    );
+    assert!(!is_home_directory(Path::new("/tmp")));
+}
+
+/// The warning has to be findable in the note, and has to name the remedy.
+#[test]
+fn the_scope_warning_says_what_to_do_instead() {
+    let note = unscoped_home_search_note(Path::new("/Users/x"));
+    assert!(
+        note.starts_with("\n\n"),
+        "must not run into the results: {note:?}"
+    );
+    assert!(note.contains("/Users/x"), "{note}");
+    assert!(note.contains("path"), "must name the remedy: {note}");
+}
