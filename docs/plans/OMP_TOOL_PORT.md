@@ -861,3 +861,187 @@ implementation exists.
    alongside hashline, so there is precedent for keeping them.
 4. **`multiedit`'s fate.** Hashline sections are natively multi-edit. Keeping
    both may be redundant.
+
+---
+
+# Adversarial review findings, folded in 2026-08-07
+
+A reviewer agent checked this plan against omp's extracted source
+(`/tmp/ompsrc`) and ours. It found the blast-radius trace incomplete and
+several counts wrong. Corrections below **supersede** the sections above where
+they conflict; they are appended rather than edited in place because the
+in-place edits were lost to a concurrent write by another agent in this
+checkout (the failure mode documented in `~/NLFCODE.md`).
+
+## 1. The renderer is a CONSUMER of the snapshot store — critical path
+
+Section 3c said the TUI "will need a path" for rendering hashline results. That
+understates a hard dependency. In omp,
+`modes/controllers/event-controller.ts:1077,1327` and
+`modes/utils/ui-helpers.ts:504` pass `snapshots: getFileSnapshotStore(...)`
+**into the rendering component**, and `edit/hashline/diff.ts:121,176,219` runs
+its own live-match check (`computeFileHash(normalized) === expected`) at render
+time, separate from the patcher's.
+
+The reason is structural: **a hashline patch does not contain the text it
+replaces.** Rendering a diff requires looking the pre-image up by tag. Our
+`jcode-tui-tool-display/src/lib.rs:37` is a pure name match today, receiving
+only tool name, args, and output — no session-scoped store handle and no way to
+get one.
+
+**This is new cross-crate plumbing on the critical path**, not polish. Without
+it a hashline edit renders as an opaque body.
+
+Tests: `hashline_patch_renders_a_diff_when_the_snapshot_store_has_the_pre_image`
+and `hashline_patch_falls_back_to_the_raw_body_when_the_tag_is_unknown` (the
+resume case, where the store is empty by construction).
+
+## 2. Surfaces keyed on tool name or `file_path` — a missing category
+
+Each string-matches a tool **name** or reaches into args for **`file_path`**. A
+swap that changes either breaks them **silently**, with no compile error:
+
+| surface | what it does |
+|---|---|
+| `jcode-desktop2/src/edits.rs:82,169` | scans raw JSON for `"file_path"` to build the edit list |
+| `jcode-tui/src/tui/remote_diff.rs:39-44` | snapshots original content on `edit`/`write`/`multiedit` by `file_path`, diffs after |
+| `jcode-app-core/src/catchup.rs:432` | session-resume summaries, by `file_path` |
+| `jcode-app-core/src/agent/inline_tail.rs:133` | live status line, by `file_path` |
+| `jcode-base/src/safety.rs:571-574` | `classify()` per tool name; a new or renamed tool falls to a default tier |
+| `jcode-productivity-core/src/scan.rs:351` | same pattern |
+
+**A hashline payload has one `file_path` per section, or none** — the path lives
+in the `[path#tag]` header, not a top-level argument. Every row is a live
+breakage, and `safety.rs` is a *security* surface, not cosmetic.
+
+**Fix:** test `every_file_tool_call_still_yields_a_file_path_for_downstream_consumers`,
+plus a Phase 2 decision: hashline `edit` keeps a top-level `file_path` for
+single-section patches, or all six consumers learn to parse sections.
+
+Related: **the interceptor's availability check must consult `allowed_tools`**
+(`tool/mod.rs:361,639`), not just the registry — a subagent can have `read`
+registered but not permitted. And **`pre_tool` hooks see tool args**
+(`jcode-config-types/src/lib.rs:864`), so a user hook written against
+`{file_path, old_string}` breaks on a hashline payload. Release-note material.
+
+## 3. Five `generate_diff` copies, and two distinct bugs
+
+Phase 0 item 2 said four. Verified `grep -rn "fn generate_diff"`:
+
+| file:line | fn | shape |
+|---|---|---|
+| `edit.rs:175` | `generate_diff` | `change.value().trim()` at :180 |
+| `patch.rs:279` | `generate_diff` | `trim_end_matches('\n')` then `content.trim().is_empty()` |
+| `apply_patch.rs:325` | `generate_diff_summary` | as `patch.rs` |
+| `multiedit.rs:179` | `generate_diff_summary` | — |
+| **`write.rs:138`** | `generate_diff_summary` | **missed entirely** |
+
+Two shapes, so a single blind replacement changes `patch`/`apply_patch`
+behaviour. (Being fixed concurrently by another agent as `tool_diff.rs`.)
+
+## 4. Extraction is ~7,900 lines, not 3,790
+
+The count omitted tests and submodules: `agentgrep/context.rs` 1,044,
+`agentgrep_tests.rs` 1,193, `read/tests.rs` 728, `grep_glob_tests.rs` 398,
+`apply_patch_tests.rs` 330, `agentgrep/args.rs` 312. Impl alone is 3,871.
+Couplings are **15**, not 13.
+
+**`agentgrep/context.rs:32` calls `Session::load(&ctx.session_id)`** and walks
+the whole transcript (`collect_tool_exposures`, :107) to compute which files and
+lines the model has already been shown. That is **jcode's own pre-existing
+exposure model** — a rougher, transcript-derived answer to exactly the question
+`seenLines` answers precisely.
+
+Consequences: extracting `agentgrep` means taking a `Session` dependency or
+inverting it behind a trait; and **hashline either replaces this or duplicates
+it.** Decide in Phase 2 — two mechanisms answering "what has the model seen"
+that can disagree is worse than either alone.
+
+## 5. The hashline port table omitted 6 of 21 files
+
+`packages/hashline/src` is **21 files, 274 KB** (not "44 files ~250 KB").
+Missing from Phase 3a:
+
+- **`input.ts` (20.4 KB)** — the top-level patch splitter: `[PATH#HASH]` section
+  splitting, path unquoting. **Not in `parser.ts`, not optional.**
+- **`prefixes.ts` (5.6 KB)** — strips `123:` / `+123:` prefixes and
+  read-truncation notices **before** the tokenizer. Their doc: without it "every
+  content line turns into a malformed op".
+- **`recovery.ts` (12.6 KB)** — its own module, not a corner of `patcher.rs`.
+- `fs.ts` (8 KB), `diff-preview.ts` (4.5 KB), `stream.ts` (3.8 KB, skippable).
+
+Also: `apply.ts` minus repair is ~15 KB, not "small"; and the 64 MiB snapshot
+budget is **UTF-16 code units**, so recompute for Rust `String` bytes.
+
+**Estimate:** non-deferred surface is ~150 KB of TS, not the ~90 KB implied.
+Read 3a as the top of "2-3 weeks".
+
+## 6. `@file` mention expansion does not exist here
+
+3c listed "our `@file` mention expansion" as a producer to fix. It is not one:
+`jcode-compaction-core/src/lib.rs:512` (`extract_file_mentions`) only *names*
+files for a compaction summary, and the TUI's `@` is path autocomplete.
+**Nothing inlines file content.** If we ever build inlining it must mint a tag,
+but that is new feature work with its own estimate.
+
+## 7. The seen-line reveal only self-heals under BOTH caps
+
+Open question 1 recommended ON because "rejections are self-healing".
+`patcher.ts:643-652` merges revealed lines **only when `!truncated`** — over 40
+unseen anchors, **or any line over 512 columns**, nothing merges and a range
+re-read is required. On minified or very wide files ON is a hard wall. Also
+`truncated = unseen.length > revealed.length || columnTruncated`, and
+out-of-range anchors are `continue`d, which shrinks `revealed` and therefore
+also sets truncated. **Port the condition verbatim.**
+
+Test: `seen_line_reveal_over_cap_merges_nothing_and_the_retry_still_fails`.
+
+## 8. Missing acceptance criteria
+
+- **Phase 0 gains the failed-edit metric.** Phase 5's gate and Phase 6 step 4
+  both say "measure before and after"; nothing measures it today, so the gate
+  can never fire. Add the counter (failed `edit` calls per session, by kind) and
+  record a baseline **before** any other phase lands.
+- **Record the test baseline** for Phase 1's "full suite unchanged".
+- **Phase 2 exit is satisfiable by empty `#[ignore]`d tests.** Restate: "N
+  tests, each failing with an assertion — not a compile error or `todo!()` —
+  where N is enumerated in `PORTING_NOTES.md`."
+- **"Port bigger than estimated → stop if the core exceeds a week"** has no
+  definition of core, owner, or checkpoint date.
+- **"602 tests discarded"**: the named signals cover ~22 files; the other ~580
+  are unstated. Default must be **keep and let fail**, with deletion an explicit
+  per-test decision recorded in `PORTING_NOTES.md`.
+
+## 9. Phase 0 item 3 is throwaway, and its test must outlive it
+
+Phase 3b replaces `resolved_search_scope` wholesale. Fine for a live bug, but
+the Phase 0 test must assert **observable behaviour** —
+`grep_scoped_to_one_file_does_not_walk_its_parent_directory`, checking no
+permission errors and one file in the result — **not** the returned
+`(root, glob)` pair, or it dies with the function it was written against.
+
+## 10. If Phase 1 aborts, Phase 3 needs a defined home
+
+The snapshot store was to sit behind the `FileEventSink` trait Phase 1
+introduces. **Fallback:** the store lives in `jcode-tool-core` keyed by
+`session_id`, and `app-core` keeps its direct `bus` dependency.
+`jcode-hashline` stays pure and I/O-free either way.
+
+## Verified correct — checked, not assumed
+
+- `computeFileHash`: `xxHash32(normalized, 0) & 0xffff`, 4 upper hex (`format.ts:117-120`)
+- `SNAPSHOT_MAX_BYTES = 4 MiB` (`file-snapshot-store.ts:22`)
+- LRU 30 paths / 4 versions / 64 MiB (`snapshots.ts:114-117`)
+- `NOOP_HARD_LIMIT = 3`, per-path, payload-hash keyed (`noop-loop-guard.ts:40,76-80`)
+- Dedup on full-text equality, issue #4075 (`snapshots.ts:199-209`)
+- Column-clipped lines count as seen (`file-snapshot-store.ts:138`)
+- `enforceSeenLines` defaults **false** (`settings-schema.ts:3238`)
+- Interceptor: availability check (`bash-interceptor.ts:130`), pipe exemption
+  (:104), `/dev/*` sinks, user-overridable via `bashInterceptor.patterns`
+  (`settings-schema.ts:3501`). "Port their rule set, not their matching
+  technique" is well-founded — their `write` rule is a single 300-char regex
+  with lookbehinds.
+- `bash.ts` does not touch the snapshot store
+- omp has no `outline`/`trace` tool
+- All 21 Tier-2 test paths exist as stated; Tier-1 sizes match to rounding
+- The store is a field on the session type, so subagents get their own
