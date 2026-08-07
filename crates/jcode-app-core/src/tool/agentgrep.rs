@@ -376,12 +376,22 @@ fn summarize_permission_failure(error: &str, root: Option<&Path>) -> Option<Stri
     let scope = root
         .map(|root| format!(" of {}", root.display()))
         .unwrap_or_default();
+    // "Narrow the path" is the remedy for an over-broad scope, and unfollowable
+    // when the caller already named one file: there is nothing narrower to ask
+    // for, and the advice sends them looking for a mistake they did not make.
+    let remedy = if root.is_some_and(|root| root.is_file()) {
+        "This search was already scoped to a single file, so the unreadable \
+         directories are not reachable from it: the walk is being run against \
+         a wider root than the `path` given, which is a bug worth reporting."
+    } else {
+        "Re-run with `path` set to a narrower directory to get results."
+    };
     Some(format!(
         "Search{scope} could not complete: {} directories were unreadable \
          (on macOS, privacy-protected locations such as Mail, Messages, Safari \
          and app containers). Matches outside those directories were found but \
          discarded, because ripgrep reports a partial failure for the whole run. \
-         Re-run with `path` set to a narrower directory to get results.",
+         {remedy}",
         denied.len()
     ))
 }
@@ -391,7 +401,10 @@ fn execute_linked_agentgrep(
     ctx: &ToolContext,
     context_json_path: Option<&Path>,
 ) -> Result<ToolOutput> {
-    let exact_file = exact_search_file_path(ctx, params.path.as_deref());
+    // `file` scopes to one file exactly as `path` does, and the scope builder
+    // already honours `path.or(file)`. Reading only `path` here left a `file`
+    // scope unlabelled once the search root became the file itself.
+    let exact_file = exact_search_file_path(ctx, params.path.as_deref().or(params.file.as_deref()));
     match params.mode.as_str() {
         "grep" => {
             let args = build_grep_args(params, ctx)?;
@@ -447,15 +460,43 @@ fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
     ctx.resolve_path(Path::new(path))
 }
 
+/// The file a single-file scope names, as the searcher will report it.
+///
+/// Returns `None` unless `path` resolves to an existing file, so a directory
+/// scope is unaffected.
+///
+/// The reported path is relative to the search root, and for a file scope the
+/// root *is* the file, so the searcher strips it to the empty string. Callers
+/// compare against that rather than against a file name: matching on the bare
+/// name kept every same-named file in the tree, so `src/main.rs` in a workspace
+/// of crates retained each crate's `main.rs`.
 fn exact_search_file_path(ctx: &ToolContext, path: Option<&str>) -> Option<String> {
     let path = path?;
     let resolved = resolve_path_arg(ctx, path);
     if !resolved.is_file() {
         return None;
     }
-    resolved
+    Some(resolved.display().to_string())
+}
+
+/// Whether a result path denotes the single file a scope named.
+///
+/// Accepts both spellings the searcher can produce for a file root: the empty
+/// string (the root stripped from itself) and the full path.
+fn is_exact_file_match(result_path: &str, exact_file: &str) -> bool {
+    result_path.is_empty() || result_path == exact_file
+}
+
+/// How a single-file result should be labelled in the output.
+///
+/// A file root strips to the empty string, which would render a match with no
+/// file name against it. Restore the name the caller asked about so the result
+/// still says where it came from.
+fn exact_file_display_name(exact_file: &str) -> String {
+    Path::new(exact_file)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| exact_file.to_string())
 }
 
 fn filter_grep_result_to_exact_file(
@@ -466,7 +507,17 @@ fn filter_grep_result_to_exact_file(
         return result;
     };
 
-    result.files.retain(|file| file.path == exact_file);
+    result
+        .files
+        .retain(|file| is_exact_file_match(&file.path, exact_file));
+    // A file root strips to the empty string; label it so the match still
+    // names the file it came from.
+    let display = exact_file_display_name(exact_file);
+    for file in &mut result.files {
+        if file.path.is_empty() {
+            file.path = display.clone();
+        }
+    }
     result.total_files = result.files.len();
     result.total_matches = result.files.iter().map(|file| file.matches.len()).sum();
     result
@@ -480,7 +531,17 @@ fn filter_find_result_to_exact_file(
         return result;
     };
 
-    result.files.retain(|file| file.path == exact_file);
+    result
+        .files
+        .retain(|file| is_exact_file_match(&file.path, exact_file));
+    // A file root strips to the empty string; label it so the match still
+    // names the file it came from.
+    let display = exact_file_display_name(exact_file);
+    for file in &mut result.files {
+        if file.path.is_empty() {
+            file.path = display.clone();
+        }
+    }
     result
 }
 
@@ -492,7 +553,17 @@ fn filter_smart_result_to_exact_file(
         return result;
     };
 
-    result.files.retain(|file| file.path == exact_file);
+    result
+        .files
+        .retain(|file| is_exact_file_match(&file.path, exact_file));
+    // A file root strips to the empty string; label it so the match still
+    // names the file it came from.
+    let display = exact_file_display_name(exact_file);
+    for file in &mut result.files {
+        if file.path.is_empty() {
+            file.path = display.clone();
+        }
+    }
     result.summary.total_files = result.files.len();
     result.summary.total_regions = result.files.iter().map(|file| file.regions.len()).sum();
     result.summary.best_file = result.files.first().map(|file| file.path.clone());

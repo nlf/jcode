@@ -22,17 +22,21 @@ fn resolved_search_scope(
 
     let resolved = resolve_path_arg(ctx, path);
     if resolved.is_file() {
-        let root = resolved
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .display()
-            .to_string();
-        let glob = resolved
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
+        // Scope to the file itself. This previously set the root to the file's
+        // *parent* and passed the file name as a glob, which reads like
+        // scoping but is not: a glob filters which files are reported, while
+        // the walk still descends the whole parent tree. Pointing grep at
+        // `~/NOTES.md` therefore crawled all of `$HOME`, hit macOS
+        // TCC-protected directories, and failed with ripgrep exit 2 before the
+        // filter could ever apply.
+        //
+        // A file root also keeps the search off the ripgrep path, which cannot
+        // express it: the engine spawns `rg` with `current_dir(root)`, and a
+        // file is not a directory. The walker handles a file root directly and
+        // yields exactly that one entry.
         return ResolvedSearchScope {
-            root: Some(root),
-            glob,
+            root: Some(resolved.display().to_string()),
+            glob: None,
         };
     }
 

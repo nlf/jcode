@@ -215,7 +215,7 @@ fn build_grep_args_drops_match_all_glob() {
 }
 
 #[test]
-fn build_grep_args_scopes_file_path_to_parent_and_exact_glob() {
+fn build_grep_args_scopes_a_file_path_to_that_file() {
     let temp = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(temp.path().join("src")).expect("mkdir");
     fs::write(temp.path().join("src/app.rs"), "fn auth_status() {}\n").expect("write file");
@@ -241,11 +241,18 @@ fn build_grep_args_scopes_file_path_to_parent_and_exact_glob() {
     };
 
     let args = build_grep_args(&params, &ctx).unwrap();
+    // The root is the file, not its parent. Scoping by parent-plus-glob only
+    // filtered what was reported: the walk still descended every sibling, which
+    // is what turned a search of one file in $HOME into a crawl of all of it.
     assert_eq!(
         args.path.as_deref(),
-        Some(temp.path().join("src").to_string_lossy().as_ref())
+        Some(temp.path().join("src/app.rs").to_string_lossy().as_ref())
     );
-    assert_eq!(args.glob.as_deref(), Some("app.rs"));
+    assert_eq!(
+        args.glob.as_deref(),
+        None,
+        "a file root needs no glob, and a leftover one would re-filter the file out"
+    );
 }
 
 #[test]
@@ -276,11 +283,15 @@ fn build_grep_and_find_args_scope_file_field_to_exact_file() {
 
     let grep = build_grep_args(&params, &ctx).unwrap();
     let find = build_find_args(&params, &ctx).unwrap();
-    let expected_parent = temp.path().join("src").to_string_lossy().into_owned();
-    assert_eq!(grep.path.as_deref(), Some(expected_parent.as_str()));
-    assert_eq!(grep.glob.as_deref(), Some("app.rs"));
-    assert_eq!(find.path.as_deref(), Some(expected_parent.as_str()));
-    assert_eq!(find.glob.as_deref(), Some("app.rs"));
+    let expected_file = temp
+        .path()
+        .join("src/app.rs")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(grep.path.as_deref(), Some(expected_file.as_str()));
+    assert_eq!(grep.glob.as_deref(), None);
+    assert_eq!(find.path.as_deref(), Some(expected_file.as_str()));
+    assert_eq!(find.glob.as_deref(), None);
 }
 
 #[test]
@@ -1057,4 +1068,87 @@ fn the_scope_warning_says_what_to_do_instead() {
     );
     assert!(note.contains("/Users/x"), "{note}");
     assert!(note.contains("path"), "must name the remedy: {note}");
+}
+
+// --- scoping an explicit single-file path ------------------------------------
+//
+// A `path` naming one file has to search that file and nothing else. The
+// original implementation set the search root to the file's *parent* and passed
+// the file name as a `--glob`, which narrows what ripgrep reports but not what
+// it walks: the whole parent tree is still descended. Pointing `grep` at
+// `~/NLFCODE.md` therefore crawled all of `$HOME`, hit macOS TCC-protected
+// directories, and failed with rg exit 2 before any filtering could apply.
+
+/// The regression. An unreadable sibling directory must be irrelevant to a
+/// search scoped at one file: if it is walked at all, the search fails.
+#[test]
+fn a_single_file_scope_does_not_walk_its_siblings() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::write(root.join("target.md"), "needle here\n").expect("write target");
+    fs::create_dir_all(root.join("sibling")).expect("mkdir sibling");
+    fs::write(root.join("sibling/other.md"), "needle elsewhere\n").expect("write sibling");
+
+    let ctx = test_ctx(root);
+    let mut params = grep_input("needle", None);
+    params.path = Some("target.md".to_string());
+    let args = build_grep_args(&params, &ctx).expect("build args");
+
+    // The search root must be the file itself, never the directory holding it.
+    let search_root = args.path.as_deref().expect("a file scope must set a root");
+    assert!(
+        search_root.ends_with("target.md"),
+        "a file path must scope the search to that file, not to its parent \
+         directory (root was {search_root:?}); a parent root walks every \
+         sibling, which is what crawled $HOME"
+    );
+}
+
+/// The filter that trims results to the requested file must compare full paths.
+/// Matching on the bare file name retains every same-named file in the tree, so
+/// `src/main.rs` in a workspace of crates returns all of them.
+#[test]
+fn the_exact_file_filter_distinguishes_same_named_files() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    fs::create_dir_all(root.join("a")).expect("mkdir a");
+    fs::create_dir_all(root.join("b")).expect("mkdir b");
+    fs::write(root.join("a/main.rs"), "needle\n").expect("write a");
+    fs::write(root.join("b/main.rs"), "needle\n").expect("write b");
+
+    let ctx = test_ctx(root);
+    let wanted = exact_search_file_path(&ctx, Some("a/main.rs")).expect("a file scope");
+
+    assert!(
+        wanted.contains(&format!("a{}main.rs", std::path::MAIN_SEPARATOR)),
+        "the filter must identify the file by its path, not its bare name \
+         (got {wanted:?}); a bare name keeps b/main.rs too"
+    );
+}
+
+/// The permission summary tells the caller to narrow `path`. When `path` was
+/// already one file that advice cannot be followed, so it must not be given.
+#[test]
+fn the_permission_summary_does_not_tell_a_file_scope_to_narrow_further() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let file = temp.path().join("NOTES.md");
+    fs::write(&file, "notes\n").expect("write notes");
+
+    let error = permission_error_lines(12);
+    let summary = summarize_permission_failure(&error, Some(&file))
+        .expect("a permission-dominated failure is still summarized");
+
+    assert!(
+        !summary.contains("narrower directory"),
+        "the path was already a single file; telling the caller to narrow it \
+         is unfollowable advice: {summary}"
+    );
+
+    // A directory scope keeps the advice, which is followable there.
+    let dir_summary = summarize_permission_failure(&error, Some(temp.path()))
+        .expect("a directory scope is summarized too");
+    assert!(
+        dir_summary.contains("narrower directory"),
+        "a directory scope can still be narrowed: {dir_summary}"
+    );
 }
