@@ -359,4 +359,42 @@ mod colors {
             "/colorscheme must not be claimed by /colors"
         );
     }
+
+    /// A hand-edit of `[display.colors]` in config.toml must reach the live
+    /// palette, not just the config struct.
+    ///
+    /// Regression: the palette is a process-global installed by `set_palette`,
+    /// and only `/colors` reinstalled it. The config hot-reload watcher updated
+    /// the parsed config and reported the keys as changed while the rendered
+    /// colors stayed stale, so the same edit applied through one route and
+    /// silently did nothing through the other.
+    #[test]
+    fn config_file_edit_reaches_the_live_palette() {
+        use jcode_tui_style::palette::Role;
+
+        with_clean_config(|| {
+            let mut app = create_test_app();
+
+            // Baseline: no override, so the role is whatever the theme gives.
+            let before = jcode_tui_style::palette().rgb(Role::Error);
+
+            // Edit the file directly, the way a user would, bypassing /colors.
+            let mut config = crate::config::Config::load();
+            config
+                .display
+                .colors
+                .insert("error".to_string(), "#fb4934".to_string());
+            config.save().expect("save config");
+
+            // The run loop's poll. Returns true only when the generation moved.
+            app.refresh_keybindings_if_config_reloaded();
+
+            let after = jcode_tui_style::palette().rgb(Role::Error);
+            assert_eq!(
+                after,
+                (0xfb, 0x49, 0x34),
+                "a config.toml edit must reinstall the palette (was {before:?})"
+            );
+        });
+    }
 }

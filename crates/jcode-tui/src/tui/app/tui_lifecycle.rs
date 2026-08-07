@@ -82,7 +82,8 @@ impl App {
         }
     }
 
-    /// Re-parse keybinding snapshots when the config cache has reloaded.
+    /// Re-parse keybinding snapshots, and reinstall the color palette, when the
+    /// config cache has reloaded.
     ///
     /// The parsed bindings are cached on `App` for cheap per-keystroke lookup,
     /// so without this poll a config.toml keybinding edit would only take
@@ -92,6 +93,13 @@ impl App {
     /// sitting at the 5s deep-idle cadence. The generation check makes the
     /// no-change path a single atomic load. Returns true when bindings were
     /// re-parsed.
+    ///
+    /// The palette rides on the same generation check because it has the same
+    /// shape of problem: `[display.colors]` is read once at startup into a
+    /// process-global palette (`set_palette`), so a hand-edit of config.toml
+    /// updated the config struct while the rendered colors stayed stale. Only
+    /// `/colors` reinstalled it, which made an edit through one route apply and
+    /// the same edit through the other silently do nothing.
     pub(super) fn refresh_keybindings_if_config_reloaded(&mut self) -> bool {
         // config() performs the throttled file-fingerprint staleness check and
         // bumps the reload generation when config.toml changed on disk.
@@ -111,6 +119,12 @@ impl App {
         self.open_resume_key = keybind::load_open_resume_key();
         self.fallback_switch_key = keybind::load_fallback_switch_key();
         self.scroll_keys = keybind::load_scroll_keys();
+        // Rebuild the live palette from the reloaded `[display.colors]`. Cheap
+        // (22 roles), idempotent, and it also drops any per-role override the
+        // user deleted, which re-reading alone would not. No cache invalidation
+        // is needed: `adapt_buffer_for_palette` remaps colors on the rendered
+        // buffer each frame, which is why `/colors` works without it either.
+        crate::tui::theme_detect::init_palette();
         crate::logging::info("KEYBINDINGS: reloaded from config change");
         // Confirm the pickup to the user. Without this, an edit that is
         // already live is indistinguishable from one that silently did
