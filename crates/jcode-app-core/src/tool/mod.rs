@@ -36,6 +36,7 @@ pub(crate) mod session_search_index;
 mod side_panel;
 mod skill;
 mod todo;
+pub(crate) mod tool_diff;
 mod webfetch;
 mod websearch;
 mod write;

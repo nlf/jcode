@@ -3,7 +3,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
 pub struct MultiEditTool;
@@ -172,53 +171,12 @@ impl Tool for MultiEditTool {
     }
 }
 
-/// Generate a compact diff: "42- old" / "42+ new" (max 30 lines)
+/// Compact line-numbered diff, rendered by the shared tool renderer.
+///
+/// This used to trim every line, which removed the file's indentation along
+/// with it; see `tool_diff` for why common-prefix dedent replaced that.
 fn generate_diff_summary(old: &str, new: &str) -> String {
-    let diff = TextDiff::from_lines(old, new);
-    let mut output = String::new();
-    let mut lines_shown = 0;
-    const MAX_LINES: usize = 30;
-
-    let mut old_line = 1usize;
-    let mut new_line = 1usize;
-
-    for change in diff.iter_all_changes() {
-        match change.tag() {
-            ChangeTag::Equal => {
-                old_line += 1;
-                new_line += 1;
-                continue;
-            }
-            ChangeTag::Delete => {
-                let content = change.value().trim();
-                old_line += 1;
-                if content.is_empty() {
-                    continue;
-                }
-                if lines_shown >= MAX_LINES {
-                    output.push_str("...\n");
-                    break;
-                }
-                output.push_str(&format!("{}- {}\n", old_line - 1, content));
-                lines_shown += 1;
-            }
-            ChangeTag::Insert => {
-                let content = change.value().trim();
-                new_line += 1;
-                if content.is_empty() {
-                    continue;
-                }
-                if lines_shown >= MAX_LINES {
-                    output.push_str("...\n");
-                    break;
-                }
-                output.push_str(&format!("{}+ {}\n", new_line - 1, content));
-                lines_shown += 1;
-            }
-        }
-    }
-
-    output
+    super::tool_diff::render_diff(old, new, 1, super::tool_diff::DEFAULT_MAX_DIFF_LINES)
 }
 
 #[cfg(test)]

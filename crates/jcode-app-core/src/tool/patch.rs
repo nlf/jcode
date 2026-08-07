@@ -3,7 +3,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
 pub struct PatchTool;
@@ -275,50 +274,12 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
     Ok((format!("modified ({} hunks)", patch.hunks.len()), diff))
 }
 
-/// Generate a compact diff with line numbers (max 30 lines)
+/// Compact line-numbered diff, rendered by the shared tool renderer.
 fn generate_diff(old: &str, new: &str, start_line: usize) -> String {
-    let diff = TextDiff::from_lines(old, new);
-    let mut output = String::new();
-    let mut line_count = 0;
-    const MAX_LINES: usize = 30;
-
-    let mut old_line = start_line;
-    let mut new_line = start_line;
-
-    for change in diff.iter_all_changes() {
-        if line_count >= MAX_LINES {
-            output.push_str("... (diff truncated)\n");
-            break;
-        }
-
-        let content = change.value().trim_end_matches('\n');
-        let (prefix, line_num) = match change.tag() {
-            ChangeTag::Delete => {
-                let num = old_line;
-                old_line += 1;
-                if content.trim().is_empty() {
-                    continue;
-                }
-                ("-", num)
-            }
-            ChangeTag::Insert => {
-                let num = new_line;
-                new_line += 1;
-                if content.trim().is_empty() {
-                    continue;
-                }
-                ("+", num)
-            }
-            ChangeTag::Equal => {
-                old_line += 1;
-                new_line += 1;
-                continue;
-            }
-        };
-
-        output.push_str(&format!("{}{} {}\n", line_num, prefix, content));
-        line_count += 1;
-    }
-
-    output.trim_end().to_string()
+    super::tool_diff::render_diff(
+        old,
+        new,
+        start_line,
+        super::tool_diff::DEFAULT_MAX_DIFF_LINES,
+    )
 }
