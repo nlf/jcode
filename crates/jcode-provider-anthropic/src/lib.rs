@@ -527,7 +527,23 @@ pub fn format_tools(tools: &[ToolDefinition], is_oauth: bool, cache_ttl_1h: bool
         let mut out: Vec<ApiTool> = curated
             .into_iter()
             .filter(|(backing, _)| has_backing(backing))
-            .map(|(_, tool)| tool)
+            .map(|(backing, mut tool)| {
+                // Prefer the local description when the registry has a richer
+                // one. The curated strings are Claude-Code's terse stubs, and
+                // a one-line stub loses the expected-value comparison against
+                // a known-universal `Bash` every time, so the tool-selection
+                // guidance in the local descriptions has to survive curation
+                // (NLFCODE.md items 2 and 3). Schemas stay curated, since the
+                // OAuth endpoint expects the builtin shapes.
+                if let Some(local) = backing
+                    .iter()
+                    .find_map(|name| tools.iter().find(|t| t.name == *name))
+                    && local.description.len() > tool.description.len()
+                {
+                    tool.description = local.description.clone();
+                }
+                tool
+            })
             .collect();
 
         // Forward every other registered tool, remapping its name to the

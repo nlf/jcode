@@ -16,6 +16,7 @@ mod discover_secrets;
 mod edit;
 mod gmail;
 mod goal;
+mod grep_glob;
 pub mod inflight;
 mod invalid;
 mod ls;
@@ -193,6 +194,13 @@ impl Registry {
                 "agentgrep",
                 agentgrep::AgentGrepTool::new,
             );
+            // `grep` and `glob` are thin adapters onto agentgrep. They are
+            // registered under the names models already know so the curated
+            // Claude-Code builtins have backing and are actually advertised;
+            // without them a model finds its familiar search tools missing and
+            // falls back to bash plus ripgrep.
+            Self::insert_tool_timed(&mut m, &mut timings, "grep", grep_glob::GrepTool::new);
+            Self::insert_tool_timed(&mut m, &mut timings, "glob", grep_glob::GlobTool::new);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
