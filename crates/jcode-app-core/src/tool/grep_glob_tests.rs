@@ -283,6 +283,59 @@ mod end_to_end {
             "without a filter the .txt file must be searched, got: {unfiltered}"
         );
 
+        // The `type` filter is a separate code path from `glob`, and this test
+        // used to claim it in its name without exercising it.
+        let by_type = run_grep(&dir, json!({"pattern": "UPPERCASE", "type": "rs"})).await;
+        assert!(
+            by_type.contains("one.rs") && !by_type.contains("three.txt"),
+            "a type filter must narrow to that file type, got: {by_type}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `head_limit` is translated to both `max_regions` and `max_files`, which
+    /// is a guess about which one agentgrep honours in grep mode. Assert the
+    /// observable consequence rather than the mapping.
+    #[tokio::test]
+    async fn head_limit_bounds_the_results() {
+        let dir = fixture_dir();
+
+        // UPPERCASE_MARKER appears in all three fixture files.
+        let unbounded = run_grep(&dir, json!({"pattern": "UPPERCASE"})).await;
+        let bounded = run_grep(&dir, json!({"pattern": "UPPERCASE", "head_limit": 1})).await;
+
+        let count_files = |out: &str| {
+            ["one.rs", "two.rs", "three.txt"]
+                .iter()
+                .filter(|name| out.contains(*name))
+                .count()
+        };
+        assert!(
+            count_files(&unbounded) > 1,
+            "fixture should match several files, got: {unbounded}"
+        );
+        // `<= unbounded` would pass even if head_limit were ignored entirely,
+        // so require it to actually bind.
+        assert_eq!(
+            count_files(&bounded),
+            1,
+            "head_limit=1 must return exactly one file, got: {bounded}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `multiline` is translated to agentgrep's `full_region`. Assert only that
+    /// the call succeeds and still finds the match, since the exact rendering
+    /// is agentgrep's to decide.
+    #[tokio::test]
+    async fn multiline_requests_still_return_matches() {
+        let dir = fixture_dir();
+        let out = run_grep(&dir, json!({"pattern": "fn alpha", "multiline": true})).await;
+        assert!(
+            out.contains("alpha"),
+            "a multiline request must still match, got: {out}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
