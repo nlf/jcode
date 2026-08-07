@@ -129,7 +129,20 @@ impl ToolContext {
         }
     }
 
+    /// Resolve a tool's path argument against the session working directory.
+    ///
+    /// A leading `~` is expanded first. Without that, `~/notes.md` is not
+    /// absolute, so it would be joined onto the working directory and look for a
+    /// literal directory named `~`, failing with a "File not found" that echoes
+    /// a path the user can plainly see exists.
+    ///
+    /// Only a leading `~` or `~/` is special. A tilde anywhere else is an
+    /// ordinary character in a filename and is left alone, and `$HOME` is not
+    /// expanded: there is no shell here, and expanding environment variables
+    /// would let a path argument silently pick up ambient state.
     pub fn resolve_path(&self, path: &Path) -> PathBuf {
+        let path = expand_home(path);
+        let path = path.as_path();
         if path.is_absolute() {
             path.to_path_buf()
         } else if let Some(ref base) = self.working_dir {
@@ -138,6 +151,30 @@ impl ToolContext {
             path.to_path_buf()
         }
     }
+}
+
+/// Expand a leading `~` / `~/` to the home directory, leaving anything else
+/// untouched. Returns the input unchanged when the home directory cannot be
+/// determined, so the caller degrades to the previous behavior rather than
+/// failing.
+///
+/// `~user` is deliberately *not* supported: resolving another user's home needs
+/// a passwd lookup, and treating it as a literal is safer than guessing at a
+/// sibling of the current home.
+fn expand_home(path: &Path) -> PathBuf {
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    if text != "~" && !text.starts_with("~/") && !text.starts_with("~\\") {
+        return path.to_path_buf();
+    }
+    let Some(home) = dirs::home_dir() else {
+        return path.to_path_buf();
+    };
+    if text == "~" {
+        return home;
+    }
+    home.join(&text[2..])
 }
 
 /// A tool that can be executed by the agent.
@@ -168,6 +205,98 @@ pub trait Tool: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ctx_with_working_dir(dir: &str) -> ToolContext {
+        ToolContext {
+            session_id: "s".to_string(),
+            message_id: "m".to_string(),
+            tool_call_id: "t".to_string(),
+            working_dir: Some(PathBuf::from(dir)),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        }
+    }
+
+    /// The reported bug: `~/x` is not absolute, so it used to be joined onto the
+    /// working directory and resolve to a literal `~` directory that never
+    /// exists. Fails against the pre-fix `resolve_path`.
+    #[test]
+    fn a_leading_tilde_resolves_to_the_home_directory() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let ctx = ctx_with_working_dir("/somewhere/else");
+        let resolved = ctx.resolve_path(Path::new("~/NOTES.md"));
+
+        assert_eq!(resolved, home.join("NOTES.md"));
+        assert!(
+            !resolved.to_string_lossy().contains('~'),
+            "the tilde must be gone, not joined onto the cwd: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_bare_tilde_is_the_home_directory() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let ctx = ctx_with_working_dir("/somewhere/else");
+        assert_eq!(ctx.resolve_path(Path::new("~")), home);
+    }
+
+    /// A tilde that is not a leading path component is an ordinary filename
+    /// character, and expanding it would break real files. Emacs backup files
+    /// (`notes.md~`) are the common case.
+    #[test]
+    fn a_tilde_elsewhere_in_the_path_is_left_alone() {
+        let ctx = ctx_with_working_dir("/work");
+        assert_eq!(
+            ctx.resolve_path(Path::new("notes.md~")),
+            PathBuf::from("/work/notes.md~")
+        );
+        assert_eq!(
+            ctx.resolve_path(Path::new("dir/~odd/file")),
+            PathBuf::from("/work/dir/~odd/file")
+        );
+    }
+
+    /// `~user` needs a passwd lookup to resolve. Treating it literally is safer
+    /// than guessing at a sibling of the current home, which would silently read
+    /// the wrong file.
+    #[test]
+    fn a_tilde_user_path_is_not_expanded() {
+        let ctx = ctx_with_working_dir("/work");
+        assert_eq!(
+            ctx.resolve_path(Path::new("~otheruser/file")),
+            PathBuf::from("/work/~otheruser/file")
+        );
+    }
+
+    #[test]
+    fn absolute_and_relative_paths_are_unchanged() {
+        let ctx = ctx_with_working_dir("/work");
+        assert_eq!(
+            ctx.resolve_path(Path::new("/etc/hosts")),
+            PathBuf::from("/etc/hosts")
+        );
+        assert_eq!(
+            ctx.resolve_path(Path::new("src/lib.rs")),
+            PathBuf::from("/work/src/lib.rs")
+        );
+    }
+
+    /// There is no shell in this path, so `$HOME` is a literal directory name.
+    /// Pinned deliberately: the alternative lets a path argument pick up ambient
+    /// environment, which is a much larger decision than tilde expansion.
+    #[test]
+    fn environment_variables_are_not_expanded() {
+        let ctx = ctx_with_working_dir("/work");
+        assert_eq!(
+            ctx.resolve_path(Path::new("$HOME/file")),
+            PathBuf::from("/work/$HOME/file")
+        );
+    }
 
     #[test]
     fn ensure_intent_adds_property_and_required() {
