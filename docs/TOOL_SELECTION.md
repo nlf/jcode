@@ -146,6 +146,23 @@ The gap between them is a real layer, and that layer is where the bug is.
 `registered_tools_are_never_aliased_to_something_else` and
 `every_alias_target_is_a_registered_tool` now cover that layer.
 
+## Never verify the gate by running a destructive command
+
+Check it with `jcode_command_risk::assess`, or with the tests in
+`crates/jcode-command-risk/src/assess_tests.rs`. Do not run the command and see
+what happens.
+
+Learned the hard way while checking item 5's "the gate still refuses a real
+`rm -rf` against the same paths": running `rm -rf crates` deleted the crates
+directory. The gate rates a recursive delete inside the working directory as
+`Low`, which runs immediately, and that is deliberate, an agent tidying its own
+workspace is the routine case. Everything was tracked so `git checkout` restored
+all 83 crates, but nothing untracked would have survived.
+
+`redirects_do_not_hide_a_real_deletion` already asserted exactly this property
+against `rm -rf ~`, `/etc`, and a device node, without touching the filesystem.
+The test was the correct instrument and it already existed.
+
 ## Known unrelated failures
 
 Three `jcode-base` tests fail on this machine and are unrelated to any of the
