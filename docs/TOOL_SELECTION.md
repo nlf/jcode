@@ -114,3 +114,21 @@ passed, because they only ever exercised the *selection string* ("2-5" parses
 to [2,3,4,5]) and never a real document. The bug was one layer below, in what
 the pages were being selected *from*. A test that stops at the boundary of the
 thing you changed will not tell you the premise underneath it is false.
+
+## Verify tool behaviour in-process, not by asking an agent
+
+`crates/jcode-app-core/src/tool/grep_glob_tests.rs` has an `end_to_end` module
+that runs `GrepTool`/`GlobTool` against fixture files and asserts on the real
+output. Prefer that over `jcode run '<prompt asking the model to call X>'`.
+
+Live probing was actively misleading when checking whether the adapter passes
+`regex: true` through. Several runs reported zero matches for an alternation,
+which looked exactly like a regex bug, but the agents had called `agentgrep`
+(literal by default) while reporting they had called `grep`, and one
+contradicted its own earlier answer within a single response. The in-process
+test settled it in one run: a bare alternation returns 2 matches in 2 files.
+
+Live runs are still the right tool for the question they actually answer,
+which is *which* tool a model reaches for. That is what the bash-count
+measurement above uses them for. They are a poor instrument for what a tool
+then does.
