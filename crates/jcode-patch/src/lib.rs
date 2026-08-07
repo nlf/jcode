@@ -9,6 +9,7 @@
 pub mod envelope;
 pub mod fuzzy;
 pub mod hunks;
+pub mod shape;
 
 pub use fuzzy::{
     adjust_indentation, count_leading_whitespace, find_closest_sequence, find_context_line,
@@ -19,3 +20,8 @@ pub use fuzzy::{
 pub use envelope::{parse, parse_streaming, Hunk, Operation, ParseError};
 
 pub use hunks::{parse_diff_hunks, DiffHunk};
+
+pub use shape::{
+    detect_line_ending, has_trailing_newline, normalize_to_lf, restore_line_endings, strip_bom,
+    LineEnding, TextShape, BOM,
+};
