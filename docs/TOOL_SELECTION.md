@@ -175,9 +175,9 @@ above. Confirmed failing at `0e09472c2`, which predates this work:
 Recorded so the next person does not re-derive that they are not their fault.
 They are real failures and worth fixing, just not here.
 
-One more, found by the alias-integrity test: `task`, `task_runner` and `Agent`
-all resolve to `subagent`, which is never registered as a tool in this build,
-though the name is referenced from the Anthropic provider's curated list and
-the claude-cli runtime. Calling any of them fails with "Unknown tool". Those
-three are excluded from `every_alias_target_is_a_registered_tool` with a
-comment, so the test passes on the rest rather than being weakened to hide it.
+The alias-integrity test also found `task`, `task_runner` and `Agent` all
+resolving to `subagent`, a tool removed in 1e7bd9d16 without removing the
+aliases that pointed at it, so all three failed with "Unknown tool". Fixed in
+1e079217d by pointing them at `swarm`, which replaced it. Both stale-alias bugs
+in this repo were found by the same check, which is a decent argument for
+keeping it.
