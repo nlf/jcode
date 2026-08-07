@@ -1045,3 +1045,89 @@ introduces. **Fallback:** the store lives in `jcode-tool-core` keyed by
 - omp has no `outline`/`trace` tool
 - All 21 Tier-2 test paths exist as stated; Tier-1 sizes match to rounding
 - The store is a field on the session type, so subagents get their own
+
+---
+
+# Phase 1, revised: agentgrep is deleted, not moved
+
+Decided 2026-08-07, and it **supersedes Phase 1 above**, including its abort
+condition. The earlier analysis treated `agentgrep` as code to relocate, which
+made extraction look like ~7,900 lines with 15 couplings, one of them deep
+(`Session::load`). That framing was wrong: **agentgrep is being replaced by the
+ported `grep`/`glob`, so it is deleted, not moved.**
+
+## The corrected numbers
+
+| | lines | note |
+|---|---|---|
+| **Deleted** — `agentgrep.rs`, `agentgrep/args.rs`, `agentgrep/context.rs`, `agentgrep_tests.rs`, `grep_glob.rs`, `grep_glob_tests.rs` | **3,811** | replaced by ported `grep` + `glob` |
+| **Moved** — `read`, `write`, `edit`, `multiedit`, `patch`, `apply_patch`, `ls`, `read/tests.rs`, `apply_patch_tests.rs` | **3,902** | |
+
+**Couplings in the moved set: 11, not 15**, and every one is trivial:
+
+| coupling | count | where | fix |
+|---|---|---|---|
+| `crate::util::truncate_str` | 5 | read ×2, write, edit, apply_patch | move the fn to `jcode-tool-core` |
+| `crate::bus::{Bus, BusEvent, FileOp, FileTouch}` | 4 | **the same import line** in read, write, edit, apply_patch | one `FileEventSink` trait, or move the types to `jcode-tool-types` |
+| `crate::logging` | 2 | both `read.rs`, both non-essential warnings | logging facade, or drop |
+
+No `Session`, no `storage`, no `message`. **The `Session::load` coupling in
+`agentgrep/context.rs:32` dies with the file**, so the "jcode's own exposure
+model — replace or duplicate?" question raised in review finding 4 is answered
+by deletion. It does not need resolving; it needs removing.
+
+## Why the cross-crate work does not argue against relocating
+
+The renderer dependency (finding 1) and the six `file_path` consumers
+(finding 2) are **the same work either way**. `jcode-tui-tool-display` needs a
+snapshot-store handle whether the store lives in `jcode-tool-core` or in
+`app-core`; `remote_diff.rs` and `desktop2` must understand hashline payloads
+regardless of which crate emits them. Those costs attach to **hashline**, not to
+the crate boundary.
+
+The boundary decides exactly one thing — where the store lives — and that has a
+clean answer: **`jcode-tool-core`**, keyed by `session_id`, since it already
+owns `ToolContext` with `session_id` and `resolve_path`.
+
+## What relocating actually buys
+
+`cargo check -p jcode-app-core --tests` is **24s** (measured) for a one-line
+tool change, because `app-core` is **135,293 lines with 72 dependencies**. A
+`jcode-tool-files` crate depending only on `tool-core` and `tool-types` should
+be a couple of seconds. Across a multi-week test-first port, that is the
+difference between a tight loop and a slow one.
+
+Only **3 crates** depend on `app-core` (`app-core` itself, `jcode-base`,
+`jcode-tui`), so the blast radius of moving code out is small.
+
+## Revised Phase 1 (½ day, not 1-2 days)
+
+**Do not big-bang move code we are about to rewrite.** Instead:
+
+1. Create `jcode-tool-files`, depending only on `jcode-tool-core` and
+   `jcode-tool-types`.
+2. Move `truncate_str` into `jcode-tool-core`.
+3. Define `FileEventSink` in `jcode-tool-core`; `app-core` supplies the `Bus`
+   implementation at registration.
+4. **Tools land in the new crate as they are ported.** The old implementation
+   stays registered until the new one passes its tests.
+5. `agentgrep` and `grep_glob` are never moved — they are deleted in Phase 6
+   when ported `grep`/`glob` take over.
+
+**The abort condition mostly evaporates.** There is no longer a big move that
+can turn out to be non-mechanical; there is a new empty crate and three small
+extractions. If step 2 or 3 somehow fights back, the fallback from review
+finding 10 still applies: store in `jcode-tool-core`, `app-core` keeps its
+direct `bus` dependency.
+
+**Exit:** `jcode-tool-files` exists and compiles; `cargo test -p
+jcode-tool-files` runs in seconds; the workspace suite matches the Phase 0
+baseline.
+
+## Consequence for the "outline / trace" decision
+
+Earlier the recommendation was option 3 — drop `trace`, keep `outline` until
+`ast_grep` lands. **Deleting agentgrep wholesale means both go.** If `outline`
+is wanted, it must be re-provided by omp's summarized `read` (which covers most
+of its job) or reimplemented later on tree-sitter. Worth confirming explicitly,
+because it is now a deletion rather than a deferral.
