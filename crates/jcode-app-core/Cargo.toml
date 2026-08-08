@@ -54,6 +54,7 @@ jcode-bash-intercept = { path = "../jcode-bash-intercept" }
 jcode-hashline = { path = "../jcode-hashline" }
 jcode-patch = { path = "../jcode-patch" }
 jcode-read = { path = "../jcode-read" }
+jcode-ast = { path = "../jcode-ast" }
 jcode-search = { path = "../jcode-search" }
 
 # OAuth

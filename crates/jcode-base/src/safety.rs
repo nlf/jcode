@@ -141,6 +141,9 @@ const AUTO_ALLOWED: &[&str] = &[
     "conversation_search",
     "session_search",
     "codesearch",
+    // Structural search. Read-only, exactly like grep. `ast_edit` is
+    // deliberately absent: it writes, so it goes through approval.
+    "ast_grep",
 ];
 
 // ---------------------------------------------------------------------------

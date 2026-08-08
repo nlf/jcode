@@ -19,6 +19,7 @@ mod goal;
 mod grep_glob;
 #[cfg(test)]
 mod home_override;
+pub mod ast_tools;
 pub mod hashline_store;
 
 #[cfg(test)]
@@ -217,6 +218,10 @@ impl Registry {
             // falls back to bash plus ripgrep. They run on `jcode-search`.
             Self::insert_tool_timed(&mut m, &mut timings, "grep", grep_glob::GrepTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "glob", grep_glob::GlobTool::new);
+            // Structural search and rewrite, ported from omp. These sit beside
+            // grep rather than replacing it: grep finds text, these find code.
+            Self::insert_tool_timed(&mut m, &mut timings, "ast_grep", ast_tools::AstGrepTool::new);
+            Self::insert_tool_timed(&mut m, &mut timings, "ast_edit", ast_tools::AstEditTool::new);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
