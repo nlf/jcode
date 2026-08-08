@@ -83,7 +83,6 @@ fn walk_options(hidden: Option<bool>, gitignore: Option<bool>) -> WalkOptions {
     WalkOptions {
         hidden: hidden.unwrap_or(false),
         respect_gitignore: gitignore.unwrap_or(true),
-        ..WalkOptions::default()
     }
 }
 
@@ -194,8 +193,14 @@ impl Tool for AstGrepTool {
     }
 }
 
-/// Rendered in `grep`'s shape, so the two tools read the same way and the
-/// hashline tag is in the place the model already expects it.
+/// Rendered with `jcode-search`'s own line formatter, not a private one.
+///
+/// This matters more than consistency. `format_match_line` emits `*LINE:text`
+/// carrying the WHOLE SOURCE LINE, which is the shape `edit` accepts under a
+/// hashline tag. A private renderer that printed the matched AST node instead
+/// dropped the leading indentation and the trailing semicolon, so a model
+/// editing straight from a search result wrote back a line missing both and
+/// needed a second edit to repair it. Observed in a live run.
 fn render_search(
     result: &jcode_ast::SearchResult,
     store: &std::sync::Arc<jcode_hashline::SnapshotStore>,
@@ -219,15 +224,51 @@ fn render_search(
 
     let mut body = String::new();
     for file in &result.files {
-        let tag = store
-            .head(&file.path)
-            .map(|snapshot| format!(" #{}", snapshot.hash))
+        let snapshot = store.head(&file.path);
+        let tag = snapshot.as_ref().map(|snapshot| snapshot.hash.clone());
+        // Read from the snapshot rather than disk: it is the exact text the tag
+        // names, so the lines shown cannot disagree with the tag above them.
+        let source = snapshot.map(|snapshot| snapshot.text);
+        body.push_str(&format!(
+            "{}{}\n",
+            file.path,
+            tag.as_ref()
+                .map(|tag| format!(" #{tag}"))
+                .unwrap_or_default()
+        ));
+        // The file's own lines, not the match text: a structural match starts
+        // mid-line and ends before the statement's terminator, so echoing the
+        // node loses exactly the characters an edit has to reproduce.
+        let source_lines: Vec<&str> = source
+            .as_deref()
+            .map(|text| text.lines().collect())
             .unwrap_or_default();
-        body.push_str(&format!("{}{}\n", file.path, tag));
+        let mut shown: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for found in &file.matches {
-            for (offset, line) in found.text.lines().enumerate() {
-                body.push_str(&format!("{}: {}\n", found.line + offset, line));
+            let span = found.text.lines().count().max(1);
+            for line in found.line..found.line + span {
+                shown.insert(line);
             }
+        }
+        let mut previous: Option<usize> = None;
+        for line in shown {
+            // A gap marker, so non-adjacent matches are not misread as a
+            // contiguous block of the file.
+            if previous.is_some_and(|last| line > last + 1) {
+                body.push_str("...\n");
+            }
+            let text = source_lines.get(line.saturating_sub(1)).copied();
+            match text {
+                Some(text) => body.push_str(&jcode_search::format_match_line(
+                    line,
+                    text,
+                    true,
+                    tag.is_some(),
+                )),
+                None => continue,
+            }
+            body.push('\n');
+            previous = Some(line);
         }
         if file.total > file.matches.len() {
             body.push_str(&format!(

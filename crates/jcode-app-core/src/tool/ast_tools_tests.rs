@@ -255,3 +255,63 @@ async fn an_ordinary_rewrite_carries_no_reflow_warning() {
 
     assert!(!out.output.contains("reflowed"), "{}", out.output);
 }
+
+/// The tag is only useful if the lines shown beside it are the shape `edit`
+/// accepts. A live run caught this: the renderer echoed the matched AST node,
+/// which starts mid-line and stops before the semicolon, so the model edited
+/// straight from the result and wrote back a line with neither its indentation
+/// nor its terminator, then needed a second edit to repair it.
+#[tokio::test]
+async fn ast_grep_shows_whole_source_lines_so_the_tag_can_be_edited_from() {
+    let temp = tree(&[("a.rs", "fn handler() {\n    log(\"a\");\n}\n")]);
+    let out = AstGrepTool::new()
+        .execute(json!({"pattern": "log($$$A)"}), ctx(&temp))
+        .await
+        .expect("search");
+
+    assert!(
+        out.output.contains("*2:    log(\"a\");"),
+        "expected the whole source line in editable form, got:\n{}",
+        out.output
+    );
+}
+
+/// The same line format `grep` uses, since both feed `edit` the same way and a
+/// model should not have to learn two shapes.
+#[tokio::test]
+async fn ast_grep_and_grep_agree_on_line_format() {
+    let temp = tree(&[("a.rs", "fn handler() {\n    log(\"a\");\n}\n")]);
+    let structural = AstGrepTool::new()
+        .execute(json!({"pattern": "log($$$A)"}), ctx(&temp))
+        .await
+        .expect("ast_grep");
+    let textual = crate::tool::grep_glob::GrepTool::new()
+        .execute(json!({"pattern": "log", "path": "a.rs"}), ctx(&temp))
+        .await
+        .expect("grep");
+
+    let line_of = |body: &str| {
+        body.lines()
+            .find(|line| line.starts_with("*2:"))
+            .map(str::to_string)
+    };
+    assert_eq!(
+        line_of(&structural.output),
+        line_of(&textual.output),
+        "the two search tools disagree on how a matched line is written"
+    );
+}
+
+/// A match spanning several lines shows every line it covers, so the model can
+/// reproduce the whole span in an edit rather than guessing the middle.
+#[tokio::test]
+async fn a_multi_line_match_shows_all_of_its_lines() {
+    let temp = tree(&[("a.rs", "fn a() {\n    log(x,\n        y);\n}\n")]);
+    let out = AstGrepTool::new()
+        .execute(json!({"pattern": "log($$$A)"}), ctx(&temp))
+        .await
+        .expect("search");
+
+    assert!(out.output.contains("*2:    log(x,"), "{}", out.output);
+    assert!(out.output.contains("*3:        y);"), "{}", out.output);
+}
