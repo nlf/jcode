@@ -1,6 +1,11 @@
 # Plan: port omp's file tools to Rust, behind omp's tests
 
-Status: **draft, not started.** Written 2026-08-07.
+Status: **shipped.** Written 2026-08-07, completed 2026-08-08.
+
+> **What follows is the plan as written.** It was largely followed; where the
+> work diverged, the record of what actually shipped, what the plan got wrong,
+> and what only a live agent run caught is at the end, under
+> [Outcome](#outcome-what-actually-shipped).
 
 Companion to the oh-my-pi survey in `~/NLFCODE.md`. That file holds the research
 and the corrections; this file holds the plan.
@@ -50,8 +55,11 @@ that addresses lines under tags nothing minted.
 `app-core/src/tool/`. They are not the problem and moving them is a different
 project.
 
-**Explicitly deferred:** `lsp`, `eval`, `ast_grep`/`ast_edit`, DAP `debug`. Each
-is a capability we lack rather than a tool we do badly. Judge separately.
+**Explicitly deferred:** `lsp`, `eval`, DAP `debug`. Each is a capability we
+lack rather than a tool we do badly. Judge separately.
+
+> `ast_grep`/`ast_edit` were deferred here and then **un-deferred by decision**
+> during the work. They shipped. See the outcome section.
 
 ### Search: the mapping is not one-to-one, and two modes have no counterpart
 
@@ -1972,3 +1980,101 @@ separate tool name rather than replacing `edit`'s schema, every one of these
 consumers keeps working unchanged**, because `edit` keeps its `file_path` and
 `old_string`/`new_string` shape. That is now a second independent argument for
 the sibling-tool option, alongside the OAuth curated schemas.
+
+
+---
+
+# Outcome: what actually shipped
+
+Completed 2026-08-08. Everything in scope shipped. This section is the honest
+record: what was built, what the plan got wrong, and what the tests never
+caught.
+
+## What was built
+
+Six crates, each pure and I/O-free where it could be, each mutation-tested:
+
+| crate | tests | wired into |
+|---|---|---|
+| `jcode-hashline` | 163 | `read`, `edit`, `apply_patch` |
+| `jcode-search` | 91 | `grep`, `glob` |
+| `jcode-patch` | 117 | `apply_patch` |
+| `jcode-read` | 55 | `read`, `write` |
+| `jcode-bash-intercept` | 42 | `bash` |
+| `jcode-ast` | 52 | `ast_grep`, `ast_edit` |
+
+Four tools deleted: `agentgrep` (3,398 lines), `multiedit`, `patch`, and
+agentgrep's config key and slash command.
+
+Deleting a tool established a pattern worth reusing. Strip the **model-facing**
+surfaces: registry, tool profiles, prompts, curated OAuth schemas. **Retain**
+display and replay name matches, with a comment saying why, because stored
+sessions are re-rendered and a deleted name still appears in old transcripts.
+**Repoint** inbound external name mappings (Claude CLI `MultiEdit` and `Patch`
+now map to `edit`) so a live call does not fail as "Unknown tool".
+
+## Where the plan was wrong
+
+**`ast_grep`/`ast_edit` were deferred, and that was reversed.** The plan
+called them a capability we lack rather than a tool we do badly, and judged
+them separately. That judgement came back the other way: they shipped, at a
+measured cost of 31 crates (987 to 1018) for 25 languages. A probe showed
+hand-picking three grammars would cost 8 crates instead of 53, so the language
+set remains a lever if binary size becomes a problem.
+
+**`apply_patch` stayed its own tool.** omp makes it a mode of `edit` and
+selects one mode per session; we have no such mechanism, so folding it in
+would have advertised both modes at once.
+
+**`enforce_seen_lines` defaults off**, matching omp's default rather than the
+stricter reading of their docs.
+
+## What only the live agent runs caught
+
+The load-bearing finding of this whole port. **Roughly eight defects were found
+by running a real agent against the real binary, and none of them by tests.**
+They share a shape: the tool reports success while withholding something the
+caller needed.
+
+- Three renderers silently hid multi-file hashline patches. One snapshotted
+  only the first file.
+- A stale hashline tag was misreported as "not from this session", because
+  `read` keyed the path raw while headers normalize it.
+- `apply_patch` had no hashline integration. Recording the tag was not enough:
+  it also had to **show** it.
+- `read`'s continuation hint offered `offset=5000` on a 200-line file.
+- Multi-file `apply_patch` applied file 3 after file 2 failed, and returned
+  `Ok`. This is omp's `#4074-B`.
+- `patch.rs` could not detect a stale patch **at all**: it spliced by line
+  number and never compared context. Deleted rather than fixed.
+- omp's own `cat|head|tail\s+` interception rule blocks `head -n1` reading
+  **stdin**, where there is no file to route to `read`. Fixed with a predicate
+  after two wrong regexes.
+- `ast_edit` reflowed multi-line calls onto one line with a dangling comma. The
+  agent noticed in the diff and fixed it by hand, which was exactly the work
+  the tool existed to save.
+
+**A test suite cannot find these.** Every one of them passed its unit tests,
+because the unit under test did its job and the failure was in what reached the
+model. The only reliable detector was an agent trying to get work done.
+
+## A flaw in the method itself
+
+The mutation harness grepped `^error` to decide whether a mutation was caught.
+That matches cargo's own `error: test failed`, so a **caught** mutation read as
+a survivor. Corrected to `^error\[|could not compile` and verified with a
+deliberately non-compiling control.
+
+Worth stating plainly: for a stretch, the tool measuring test quality was
+lying, in the direction of looking better than reality.
+
+## Two mutations that survived correctly
+
+Not every survivor is a gap, and treating them as one produces noise:
+
+- A no-op `map_err` that changed no behaviour. Rewritten to actually change
+  behaviour, it was caught.
+- Slicing a single captured node from source versus taking its own text: the
+  same thing. Only `$$$` re-joins nodes and so only `$$$` loses whitespace.
+
+Both are noted in the code so the next reader does not re-derive them.
