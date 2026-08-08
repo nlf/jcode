@@ -237,3 +237,99 @@ fn the_replacement_cap_limits_what_is_written_not_just_the_count() {
     );
     assert!(found.limit_reached);
 }
+
+/// A match spanning several lines must keep its shape. Upstream renders the
+/// replacement from the matched nodes, and a naive join collapses the call onto
+/// one line and leaves the trailing comma dangling: `trace("x",);`. That is
+/// valid Rust but it reformats code the caller did not ask to reformat, and
+/// across a large refactor it buries the real change in noise.
+///
+/// Found by a live agent run, which hit it on the first multi-line call.
+#[test]
+fn line_breaks_inside_a_capture_are_preserved() {
+    let temp = tree(&[("a.rs", "fn other() {\n    log(a,\n        b);\n}\n")]);
+    let found = run(&temp, "log($$$A)", "trace($$$A)");
+
+    assert_eq!(
+        found.files[0].after,
+        "fn other() {\n    trace(a,\n        b);\n}\n",
+        "the line break between the captured arguments was lost"
+    );
+}
+
+/// The limit of the above, recorded honestly rather than left to be discovered.
+///
+/// Whitespace that sits in the pattern's own literal skeleton, between `(` and
+/// the first captured node, is not part of any capture and cannot be recovered
+/// from the source. A call whose newline comes right after the paren therefore
+/// still reflows onto one line.
+///
+/// This is why `ast_edit` reports reflow rather than staying quiet about it:
+/// the caller reading the diff needs to know the reformatting was the tool's
+/// doing and not part of their intended change.
+#[test]
+fn a_newline_in_the_patterns_own_skeleton_still_reflows_and_is_reported() {
+    let temp = tree(&[(
+        "a.rs",
+        "fn other() {\n    log(\n        \"wrapped\",\n    );\n}\n",
+    )]);
+    let found = run(&temp, "log($$$A)", "trace($$$A)");
+
+    assert_eq!(
+        found.files[0].after,
+        "fn other() {\n    trace(\"wrapped\",);\n}\n"
+    );
+    assert_eq!(
+        found.reflowed_matches, 1,
+        "a reflow the caller did not ask for must be reported, not hidden"
+    );
+}
+
+/// A single-line rename must not be reported as a reflow, or the warning
+/// becomes noise on every ordinary refactor and stops being read.
+#[test]
+fn an_ordinary_single_line_rewrite_is_not_reported_as_reflow() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); }\n")]);
+    let found = run(&temp, "log($$$A)", "trace($$$A)");
+
+    assert_eq!(found.reflowed_matches, 0);
+}
+
+/// A `$$$` capture that matched nothing contributes nothing. If it fell through
+/// to the unbound branch instead, `log()` would rewrite to `trace($$$A)` and
+/// write the literal metavariable into the file.
+#[test]
+fn a_multi_capture_that_matched_nothing_leaves_an_empty_argument_list() {
+    let temp = tree(&[("a.rs", "fn a() { log(); }\n")]);
+    let found = run(&temp, "log($$$A)", "trace($$$A)");
+
+    assert_eq!(found.files[0].after, "fn a() { trace(); }\n");
+}
+
+/// A single capture is sliced from the source too, not taken from the node's
+/// re-rendered text, so an argument spanning lines keeps its own formatting.
+#[test]
+fn a_single_capture_keeps_its_internal_formatting() {
+    let temp = tree(&[("a.rs", "fn a() {\n    log(vec![\n        1,\n    ]);\n}\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+
+    assert_eq!(
+        found.files[0].after,
+        "fn a() {\n    trace(vec![\n        1,\n    ]);\n}\n",
+        "the captured argument was re-rendered rather than sliced from source"
+    );
+}
+
+/// A metavariable in the replacement that the pattern never bound is a typo.
+/// Leaving it written out makes the mistake visible in the diff; deleting it
+/// silently would drop code and look deliberate.
+#[test]
+fn an_unbound_metavariable_is_left_visible_rather_than_deleted() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); }\n")]);
+    let found = run(&temp, "log($A)", "trace($A, $TYPO)");
+
+    assert_eq!(
+        found.files[0].after, "fn a() { trace(x, $TYPO); }\n",
+        "the unbound name vanished instead of showing up in the diff"
+    );
+}

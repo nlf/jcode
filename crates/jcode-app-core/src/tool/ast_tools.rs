@@ -404,6 +404,16 @@ fn render_plan(plan: &RewritePlan, store: &std::sync::Arc<jcode_hashline::Snapsh
     if plan.limit_reached {
         body.push_str("\nA limit was reached: more files or matches remain unchanged.\n");
     }
+    // Named explicitly, because the reformatting is the tool's doing and not
+    // part of the change the caller asked for. Silence here would leave them
+    // reading an unexplained whitespace diff.
+    if plan.reflowed_matches > 0 {
+        body.push_str(&format!(
+            "\nNote: {} match(es) were reflowed onto fewer lines. The code is \
+             equivalent, but review the diff if formatting matters.\n",
+            plan.reflowed_matches
+        ));
+    }
     body.trim_end().to_string()
 }
 

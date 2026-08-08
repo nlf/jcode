@@ -56,6 +56,11 @@ pub struct RewritePlan {
     pub unsupported_files: usize,
     /// Files the pattern is not valid for. Expected when inferring per file.
     pub incompatible_files: usize,
+    /// Matches whose line structure the rewrite changed.
+    ///
+    /// Reported because the caller reading a diff needs to know the
+    /// reformatting was the tool's doing rather than part of their change.
+    pub reflowed_matches: usize,
 }
 
 impl RewritePlan {
@@ -153,11 +158,29 @@ pub fn plan(
         }
 
         let doc = AstGrep::new(before.as_str(), language);
-        let mut edits = doc.root().replace_all(&compiled, replacement);
-        // The cap has to actually cut the edit list. `replace_all` rewrites
-        // every match, so counting alone would report a capped number while
-        // writing an uncapped file.
+        let mut edits: Vec<Edit> = doc
+            .root()
+            .find_all(&compiled)
+            .map(|matched| {
+                let range = matched.range();
+                let text = render_replacement(replacement, &matched, &before);
+                Edit { range, text }
+            })
+            .collect();
+        // The cap has to actually cut the edit list. Every match is rewritten,
+        // so counting alone would report a capped number while writing an
+        // uncapped file.
         edits.truncate(options.max_replacements);
+        // Counted before the edits are consumed. Comparing line counts catches
+        // the reflow whatever its cause, rather than guessing from the pattern.
+        let reflowed = edits
+            .iter()
+            .filter(|edit| {
+                before
+                    .get(edit.range.clone())
+                    .is_some_and(|original| lines(original) != lines(&edit.text))
+            })
+            .count();
         let after = apply_edits(&before, edits);
 
         // A rewrite that changes nothing is not a change. Reporting it would
@@ -167,6 +190,7 @@ pub fn plan(
         }
 
         plan.total_replacements += count;
+        plan.reflowed_matches += reflowed;
         plan.files.push(PendingFile {
             path: display,
             absolute: path,
@@ -179,25 +203,115 @@ pub fn plan(
     Ok(plan)
 }
 
-/// Apply upstream's edit list to the original text.
+/// One replacement: a byte range in the original and the text to put there.
+struct Edit {
+    range: std::ops::Range<usize>,
+    text: String,
+}
+
+/// Build the replacement for one match, taking each metavariable's text from
+/// the ORIGINAL SOURCE rather than from upstream's re-rendered nodes.
 ///
-/// Edits arrive as byte ranges with replacement text, in source order. Applied
-/// back to front so earlier offsets stay valid: applying forward would shift
-/// every subsequent range by the length delta of the one before it.
-fn apply_edits(source: &str, edits: Vec<ast_grep_core::source::Edit<String>>) -> String {
-    let mut out = source.to_string();
-    for edit in edits.into_iter().rev() {
-        let start = edit.position;
-        let end = start + edit.deleted_length;
-        if start > out.len() || end > out.len() {
+/// This is the whole reason we do not use `replace_all`. Upstream renders a
+/// `$$$ARGS` capture by joining its nodes with ", ", so a call written across
+/// several lines comes back collapsed onto one with a dangling comma:
+/// `trace("x",);`. That is valid code, but it reformats what the caller did not
+/// ask to reformat, and across a large refactor it buries the real change.
+///
+/// Slicing the source between the first and last captured node instead keeps
+/// the original newlines, indentation and comments exactly as written.
+fn render_replacement<D>(
+    template: &str,
+    matched: &ast_grep_core::NodeMatch<D>,
+    source: &str,
+) -> String
+where
+    D: ast_grep_core::Doc,
+{
+    let env = matched.get_env();
+    let mut out = String::with_capacity(template.len());
+    let bytes = template.as_bytes();
+    let mut index = 0usize;
+
+    while index < bytes.len() {
+        if bytes[index] != b'$' {
+            let start = index;
+            while index < bytes.len() && bytes[index] != b'$' {
+                index += 1;
+            }
+            out.push_str(&template[start..index]);
             continue;
         }
-        // Upstream yields bytes; the source is valid UTF-8 and so is any
-        // replacement derived from it.
-        let Ok(inserted) = std::str::from_utf8(&edit.inserted_text) else {
+
+        // Longest form first: `$$$NAME` is also a valid prefix of `$NAME`
+        // parsing, and checking `$` first would capture the wrong variable.
+        let multi = template[index..].starts_with("$$$");
+        let sigil = if multi { 3 } else { 1 };
+        let name_start = index + sigil;
+        let mut name_end = name_start;
+        while name_end < bytes.len()
+            && (bytes[name_end].is_ascii_alphanumeric() || bytes[name_end] == b'_')
+        {
+            name_end += 1;
+        }
+
+        if name_end == name_start {
+            // A bare `$` that names nothing is literal text.
+            out.push('$');
+            index += 1;
             continue;
+        }
+
+        let name = &template[name_start..name_end];
+        let replaced = if multi {
+            let nodes = env.get_multiple_matches(name);
+            match (nodes.first(), nodes.last()) {
+                (Some(first), Some(last)) => {
+                    source_slice(source, first.range().start, last.range().end)
+                }
+                // A capture that matched nothing contributes nothing, which is
+                // how `log()` with no arguments has to come out.
+                _ => Some(String::new()),
+            }
+        } else {
+            // Sliced for symmetry with the multi case, though for a single node
+            // this is the same as its own text: only `$$$` re-joins nodes and
+            // so only `$$$` loses the whitespace between them.
+            env.get_match(name)
+                .and_then(|node| source_slice(source, node.range().start, node.range().end))
         };
-        out.replace_range(start..end, inserted);
+
+        match replaced {
+            Some(text) => out.push_str(&text),
+            // An unbound name is left as written rather than silently deleted,
+            // so a typo in the replacement is visible instead of destructive.
+            None => out.push_str(&template[index..name_end]),
+        }
+        index = name_end;
+    }
+
+    out
+}
+
+fn lines(text: &str) -> usize {
+    text.lines().count()
+}
+
+fn source_slice(source: &str, start: usize, end: usize) -> Option<String> {
+    source.get(start..end).map(str::to_string)
+}
+
+/// Apply the edit list to the original text.
+///
+/// Applied back to front so earlier offsets stay valid: applying forward would
+/// shift every subsequent range by the length delta of the one before it.
+fn apply_edits(source: &str, edits: Vec<Edit>) -> String {
+    let mut out = source.to_string();
+    for edit in edits.into_iter().rev() {
+        if edit.range.start > out.len() || edit.range.end > out.len() {
+            continue;
+        }
+        out.replace_range(edit.range, &edit.text);
     }
     out
 }

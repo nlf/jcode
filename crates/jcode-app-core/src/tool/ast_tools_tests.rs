@@ -215,3 +215,43 @@ fn only_the_read_only_tool_is_auto_allowed() {
         "a tool that rewrites files across a repo must go through approval"
     );
 }
+
+/// A rewrite that reformats must say so. The live agent run hit this on its
+/// first multi-line call, noticed the dangling comma in the diff and had to
+/// fix it by hand; the tool should have told it up front.
+#[tokio::test]
+async fn ast_edit_reports_when_it_reflows_code() {
+    let temp = tree(&[(
+        "a.rs",
+        "fn other() {\n    log(\n        \"wrapped\",\n    );\n}\n",
+    )]);
+    let out = AstEditTool::new()
+        .execute(
+            json!({"pattern": "log($$$A)", "replacement": "trace($$$A)"}),
+            ctx(&temp),
+        )
+        .await
+        .expect("rewrite");
+
+    assert!(
+        out.output.contains("reflowed"),
+        "reformatting was not disclosed: {}",
+        out.output
+    );
+}
+
+/// And an ordinary rename must not carry the warning, or it becomes noise that
+/// stops being read.
+#[tokio::test]
+async fn an_ordinary_rewrite_carries_no_reflow_warning() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); }\n")]);
+    let out = AstEditTool::new()
+        .execute(
+            json!({"pattern": "log($$$A)", "replacement": "trace($$$A)"}),
+            ctx(&temp),
+        )
+        .await
+        .expect("rewrite");
+
+    assert!(!out.output.contains("reflowed"), "{}", out.output);
+}
