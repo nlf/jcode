@@ -246,3 +246,69 @@ fn a_pattern_invalid_for_the_language_errors_rather_than_panicking() {
         "expected BadPattern, got {error:?}"
     );
 }
+
+// --- adversarial recheck ---
+
+/// The match cap must actually bound the work, or a pattern matching every node
+/// in a large file returns an unbounded result and costs the whole budget.
+#[test]
+fn the_match_cap_bounds_what_is_returned() {
+    let rust = resolve_language("rust").expect("rust");
+    let source = format!("fn a() {{\n{}}}\n", "    one();\n".repeat(500));
+
+    let found = find(&source, "one()", rust, 10).expect("match");
+    assert_eq!(found.matches.len(), 10);
+    assert!(
+        found.truncated,
+        "a capped result that does not say so reads as the whole answer"
+    );
+}
+
+/// Line and column are 1-indexed, which is what every editor and every other
+/// tool in this codebase uses. Off-by-one here sends edits to the wrong line.
+#[test]
+fn positions_are_one_indexed() {
+    let rust = resolve_language("rust").expect("rust");
+    let found = find("fn a() {\n    one();\n}\n", "one()", rust, 10).expect("match");
+
+    assert_eq!(found.matches[0].line, 2);
+    assert_eq!(found.matches[0].column, 5);
+}
+
+/// Multibyte text ON THE SAME LINE, before the match. Each of these characters
+/// is 3 bytes, so a column counted in bytes reports 21 where a column counted
+/// in characters reports 15. Putting the text on an earlier line would not
+/// exercise this at all.
+#[test]
+fn multibyte_text_on_the_same_line_does_not_shift_the_reported_column() {
+    let rust = resolve_language("rust").expect("rust");
+    // `let s = "日本語";` is 12 characters before `one()` starts... counted
+    // precisely below.
+    let source = "fn a() {\n    let 日本語 = 1; one();\n}\n";
+    let found = find(source, "one()", rust, 10).expect("match");
+
+    let line = source.lines().nth(1).expect("line 2");
+    let expected = line.chars().count() - "one();".chars().count() + 1;
+    assert_eq!(found.matches[0].line, 2);
+    assert_eq!(
+        found.matches[0].column, expected,
+        "column looks byte-counted rather than character-counted"
+    );
+}
+
+/// Source that does not parse yields no matches rather than an error or a
+/// panic. Half-written code is normal in a live repo.
+#[test]
+fn source_that_does_not_parse_yields_no_matches() {
+    let rust = resolve_language("rust").expect("rust");
+    let found = find("fn a( { unclosed", "one()", rust, 10).expect("no error");
+
+    assert!(found.matches.is_empty());
+}
+
+/// An empty source is a no-op, not a panic.
+#[test]
+fn empty_source_yields_no_matches() {
+    let rust = resolve_language("rust").expect("rust");
+    assert!(find("", "one()", rust, 10).expect("no error").matches.is_empty());
+}

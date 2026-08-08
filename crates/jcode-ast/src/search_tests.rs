@@ -239,3 +239,71 @@ fn files_the_pattern_cannot_be_used_on_are_counted_not_fatal() {
         "the Python file could not use the pattern, and that is expected"
     );
 }
+
+// --- adversarial recheck ---
+
+/// A symlink loop must not hang the search or blow the stack. A structural
+/// search walks a tree and repos do contain self-referential links.
+#[test]
+fn a_symlink_loop_does_not_hang_the_search() {
+    let temp = tree(&[("a.rs", "fn a() { one(); }\n")]);
+    let link = temp.path().join("loop");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(temp.path(), &link).expect("symlink");
+    #[cfg(not(unix))]
+    return;
+
+    let found = run(&temp, "one()");
+    assert!(found.total_files >= 1, "the real file was still found");
+}
+
+/// A file past the walker's size ceiling is skipped rather than parsed. The
+/// ceiling belongs to jcode-search, so this pins that the ast search inherits
+/// it rather than walking its own way and parsing multi-megabyte files.
+#[test]
+fn a_file_over_the_size_ceiling_is_not_parsed() {
+    let temp = tempfile::TempDir::new().expect("temp");
+    let padding = "// pad\n".repeat(jcode_search::MAX_FILE_BYTES as usize / 7 + 1);
+    std::fs::write(
+        temp.path().join("big.rs"),
+        format!("fn a() {{ one(); }}\n{padding}"),
+    )
+    .expect("write");
+    std::fs::write(temp.path().join("small.rs"), "fn b() { one(); }\n").expect("write");
+    let targets = targets_for(None, temp.path()).expect("targets");
+
+    let found = search("one()", &targets, temp.path(), &SearchOptions::default())
+        .expect("search should skip the big file, not fail");
+
+    assert_eq!(
+        found.files.len(),
+        1,
+        "expected only the small file, got {:?}",
+        found.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(found.files[0].path, "small.rs");
+}
+
+/// Deeply nested source must not blow the parser stack. Generated code and
+/// minified files routinely nest far deeper than hand-written code.
+#[test]
+fn deeply_nested_source_does_not_blow_the_stack() {
+    let depth = 2_000;
+    let body = format!("{}one(){}", "f(".repeat(depth), ")".repeat(depth));
+    let temp = tree(&[("a.rs", &format!("fn a() {{ {body}; }}\n"))]);
+
+    let found = run(&temp, "one()");
+    assert_eq!(found.total_files, 1);
+}
+
+/// A file whose bytes are not UTF-8 is skipped, not a failure. A binary with a
+/// source extension is rare but not impossible, and one bad file must not lose
+/// every other file's results.
+#[test]
+fn a_non_utf8_file_is_skipped_rather_than_failing_the_search() {
+    let temp = tree(&[("good.rs", "fn a() { one(); }\n")]);
+    std::fs::write(temp.path().join("bad.rs"), [0xff, 0xfe, 0x00, 0x01]).expect("write");
+
+    let found = run(&temp, "one()");
+    assert_eq!(found.total_files, 1, "the readable file was still returned");
+}
