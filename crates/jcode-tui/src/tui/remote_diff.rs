@@ -42,6 +42,12 @@ impl RemoteDiffTracker {
         serde_json::from_str(&self.current_tool_input).unwrap_or(Value::Null)
     }
 
+    /// `ast_edit` is deliberately absent from the list below. This tracker
+    /// snapshots each file BEFORE the tool runs, and it finds them by reading
+    /// paths out of the tool's input. `ast_edit` takes a pattern, not paths:
+    /// which files it touches is not known until the search has run, so there
+    /// is nothing to snapshot in advance. It renders its own before/after diff
+    /// per file instead, which is why nothing is lost here.
     pub(crate) fn handle_tool_exec(&mut self, id: &str, name: &str) {
         if show_diffs_enabled()
             && matches!(

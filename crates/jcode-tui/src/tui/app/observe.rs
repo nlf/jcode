@@ -98,6 +98,9 @@ impl App {
                 | "multiedit"
                 | "patch"
                 | "apply_patch"
+                // Rewrites across many files at once, so it mutates the repo
+                // more broadly than any single-file edit.
+                | "ast_edit"
                 | "batch"
                 | "run_shell"
         );

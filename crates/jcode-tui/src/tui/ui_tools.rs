@@ -1003,7 +1003,9 @@ pub(super) fn get_tool_summary_with_budget(
                 format!("'{}'", truncate_middle_display(p, budget))
             })
             .unwrap_or_default(),
-        "grep" => {
+        // Same shape as grep: a pattern, optionally scoped to a path, so the
+        // transcript row reads the same way for structural and text search.
+        "grep" | "ast_grep" | "ast_edit" => {
             let pattern = tool
                 .input
                 .get("pattern")

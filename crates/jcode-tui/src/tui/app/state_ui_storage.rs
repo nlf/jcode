@@ -91,13 +91,31 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                 file_path.unwrap_or(serde_json::Value::Null),
             )])
         }
-        "glob" => obj(vec![(
+        "glob" | "ast_grep" => obj(vec![(
             "pattern",
             input
                 .get("pattern")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         )]),
+        // Both sides are kept: after compaction the row still has to say what
+        // was rewritten into what, which is the only record of the change.
+        "ast_edit" => obj(vec![
+            (
+                "pattern",
+                input
+                    .get("pattern")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            ),
+            (
+                "replacement",
+                input
+                    .get("replacement")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            ),
+        ]),
         // Web/search tools: keep the URL/query so the transcript row still
         // shows what was fetched or searched after storage compaction.
         "webfetch" => obj(vec![(

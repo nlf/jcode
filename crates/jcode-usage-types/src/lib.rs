@@ -88,10 +88,13 @@ pub fn classify_telemetry_tool_category(name: &str) -> TelemetryToolCategory {
         // name and must keep classifying into the same category, or past
         // sessions silently recategorise.
         | "agentgrep"
+        | "ast_grep"
         | "ls"
         | "conversation_search"
         | "session_search" => TelemetryToolCategory::ReadSearch,
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch" => TelemetryToolCategory::Write,
+        "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "ast_edit" => {
+            TelemetryToolCategory::Write
+        }
         "bash" | "bg" | "schedule" => TelemetryToolCategory::Shell,
         "webfetch" | "websearch" | "codesearch" | "open" => TelemetryToolCategory::Web,
         "memory" => TelemetryToolCategory::Memory,
