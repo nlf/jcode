@@ -8,6 +8,7 @@
 //! agentgrep.
 
 pub mod matching;
+pub mod rewrite;
 pub mod search;
 
 pub use matching::{
