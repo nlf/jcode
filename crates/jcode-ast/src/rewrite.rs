@@ -152,13 +152,10 @@ pub fn plan(
             continue;
         }
 
-        let count = found.matches.len().min(options.max_replacements);
-        if found.matches.len() > options.max_replacements {
-            plan.limit_reached = true;
-        }
+
 
         let doc = AstGrep::new(before.as_str(), language);
-        let mut edits: Vec<Edit> = doc
+        let edits: Vec<Edit> = doc
             .root()
             .find_all(&compiled)
             .map(|matched| {
@@ -170,6 +167,11 @@ pub fn plan(
         // The cap has to actually cut the edit list. Every match is rewritten,
         // so counting alone would report a capped number while writing an
         // uncapped file.
+        let mut edits = drop_overlapping(edits);
+
+        if edits.len() > options.max_replacements {
+            plan.limit_reached = true;
+        }
         edits.truncate(options.max_replacements);
         // Counted before the edits are consumed. Comparing line counts catches
         // the reflow whatever its cause, rather than guessing from the pattern.
@@ -181,6 +183,7 @@ pub fn plan(
                     .is_some_and(|original| lines(original) != lines(&edit.text))
             })
             .count();
+        let applied = edits.len();
         let after = apply_edits(&before, edits);
 
         // A rewrite that changes nothing is not a change. Reporting it would
@@ -189,6 +192,10 @@ pub fn plan(
             continue;
         }
 
+        // Counted from the edits actually applied, not from the raw match
+        // count: dropped-because-nested and capped edits must not be reported
+        // as replacements that happened.
+        let count = applied;
         plan.total_replacements += count;
         plan.reflowed_matches += reflowed;
         plan.files.push(PendingFile {
@@ -203,7 +210,33 @@ pub fn plan(
     Ok(plan)
 }
 
+/// Discard edits that overlap one already kept.
+///
+/// A pattern can match both an outer node and one nested inside it, as in
+/// `log(log(x))`. Applying both writes the inner replacement into text the
+/// outer one already replaced, and `log(log(x))` came out as `trace(log(x))))`:
+/// unbalanced parens, a syntax error written to disk.
+///
+/// The outer match wins, since it carries the caller's whole intent. Edits
+/// arrive in source order, so comparing against the last kept edit is enough.
+/// The comparison is strict: an edit STARTING where the previous one ENDS
+/// merely touches it and is kept.
+fn drop_overlapping(edits: Vec<Edit>) -> Vec<Edit> {
+    let mut kept: Vec<Edit> = Vec::with_capacity(edits.len());
+    for edit in edits {
+        if kept
+            .last()
+            .is_some_and(|previous: &Edit| edit.range.start < previous.range.end)
+        {
+            continue;
+        }
+        kept.push(edit);
+    }
+    kept
+}
+
 /// One replacement: a byte range in the original and the text to put there.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Edit {
     range: std::ops::Range<usize>,
     text: String,

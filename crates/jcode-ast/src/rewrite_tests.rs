@@ -333,3 +333,154 @@ fn an_unbound_metavariable_is_left_visible_rather_than_deleted() {
         "the unbound name vanished instead of showing up in the diff"
     );
 }
+
+// --- adversarial recheck: inputs that should not crash or corrupt ---
+
+/// A file with no trailing newline must not gain or lose one.
+#[test]
+fn a_file_without_a_trailing_newline_keeps_not_having_one() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); }")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    assert_eq!(found.files[0].after, "fn a() { trace(x); }");
+}
+
+/// CRLF files must not be silently rewritten to LF. Doing so would show every
+/// line as changed in a diff and could break a repo that pins line endings.
+#[test]
+fn crlf_line_endings_survive_a_rewrite() {
+    let temp = tree(&[("a.rs", "fn a() {\r\n    log(x);\r\n}\r\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    assert_eq!(found.files[0].after, "fn a() {\r\n    trace(x);\r\n}\r\n");
+}
+
+/// Non-ASCII before the match shifts byte offsets away from char offsets. If
+/// any slicing used chars, this corrupts the file or panics mid-codepoint.
+#[test]
+fn multibyte_characters_before_a_match_do_not_shift_the_rewrite() {
+    let temp = tree(&[("a.rs", "fn a() {\n    let s = \"日本語かな\";\n    log(s);\n}\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    assert_eq!(
+        found.files[0].after,
+        "fn a() {\n    let s = \"日本語かな\";\n    trace(s);\n}\n"
+    );
+}
+
+/// A multibyte character INSIDE the captured range, so the slice boundaries
+/// themselves sit next to non-ASCII.
+#[test]
+fn a_capture_containing_multibyte_text_is_sliced_on_character_boundaries() {
+    let temp = tree(&[("a.rs", "fn a() { log(\"héllo wörld\"); }\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    assert_eq!(found.files[0].after, "fn a() { trace(\"héllo wörld\"); }\n");
+}
+
+/// An empty file must be a no-op, not a panic or a spurious change.
+#[test]
+fn an_empty_file_is_a_no_op() {
+    let temp = tree(&[("a.rs", "")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    assert!(found.is_empty());
+}
+
+/// A file that does not parse cleanly still must not crash the rewrite. Real
+/// repos contain half-written code and a refactor should skip it, not die.
+#[test]
+fn a_file_that_does_not_parse_does_not_crash_the_rewrite() {
+    let temp = tree(&[
+        ("broken.rs", "fn a( { log(x); unclosed"),
+        ("good.rs", "fn b() { log(y); }\n"),
+    ]);
+    let found = run(&temp, "log($A)", "trace($A)");
+    // The good file must still be rewritten regardless of the broken one.
+    assert!(
+        found.files.iter().any(|file| file.path == "good.rs"),
+        "a malformed sibling file blocked an unrelated rewrite"
+    );
+}
+
+/// Nested matches corrupt the file if both are applied. A pattern can match an
+/// outer node and one nested inside it, and applying both writes the inner
+/// replacement into text the outer one already replaced.
+///
+/// Before the fix `log(log(x))` came out as `trace(log(x))))` with unbalanced
+/// parens: not a formatting nit, a syntax error written to disk. The outer
+/// match wins, since it carries the caller's whole intent.
+#[test]
+fn nested_matches_do_not_produce_overlapping_edits() {
+    let temp = tree(&[("a.rs", "fn a() { log(log(x)); }\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+
+    assert_eq!(
+        found.files[0].after, "fn a() { trace(log(x)); }\n",
+        "the outer match must win and the inner be left alone"
+    );
+    assert_eq!(
+        found.files[0].count, 1,
+        "the dropped inner match must not be counted as a replacement"
+    );
+}
+
+/// Two matches that merely touch, rather than nest, are both rewritten. The
+/// overlap guard must not be so eager that it drops adjacent work.
+#[test]
+fn adjacent_non_nested_matches_are_both_rewritten() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); log(y); }\n")]);
+    let found = run(&temp, "log($A)", "trace($A)");
+
+    assert_eq!(found.files[0].after, "fn a() { trace(x); trace(y); }\n");
+    assert_eq!(found.files[0].count, 2);
+}
+
+/// A replacement containing a literal `$` that names nothing must survive.
+#[test]
+fn a_literal_dollar_in_the_replacement_is_kept() {
+    let temp = tree(&[("a.rs", "fn a() { log(x); }\n")]);
+    let found = run(&temp, "log($A)", "trace($A, \"$\")");
+    assert_eq!(found.files[0].after, "fn a() { trace(x, \"$\"); }\n");
+}
+
+/// The overlap guard compares `start < previous.end`, so two matches that merely
+/// TOUCH at a byte boundary are both kept. Using `<=` would treat touching as
+/// overlapping and silently drop every second match.
+///
+/// Whether real code can produce byte-adjacent sibling matches is language
+/// dependent, and in Rust it mostly cannot: `f(1)f(2)` does not parse, so only
+/// one match ever arrives. The guard is therefore exercised directly, at the
+/// boundary, rather than through a source file that cannot reach it.
+#[test]
+fn the_overlap_guard_keeps_matches_that_only_touch() {
+    let edits = vec![
+        Edit {
+            range: 0..4,
+            text: "A".to_string(),
+        },
+        // Starts exactly where the previous ends: touching, not overlapping.
+        Edit {
+            range: 4..8,
+            text: "B".to_string(),
+        },
+    ];
+    assert_eq!(
+        drop_overlapping(edits).len(),
+        2,
+        "a match that merely touches the previous one was dropped"
+    );
+}
+
+/// And the case it exists for: a match starting before the previous one ends is
+/// nested or overlapping, and applying both corrupts the file.
+#[test]
+fn the_overlap_guard_drops_a_match_that_starts_inside_the_previous_one() {
+    let edits = vec![
+        Edit {
+            range: 0..10,
+            text: "A".to_string(),
+        },
+        Edit {
+            range: 4..8,
+            text: "B".to_string(),
+        },
+    ];
+    assert_eq!(drop_overlapping(edits).len(), 1);
+}
+
