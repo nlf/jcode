@@ -782,3 +782,89 @@ async fn an_unrelated_uri_does_not_match_a_publish() {
         "a prefix matched"
     );
 }
+
+/// **A server that renormalizes mid-session must not leave a stale entry behind.**
+///
+/// The subtle half of URI equivalence, and a wrong answer rather than a missed one.
+///
+/// Keying the map by the spelling the server used let two spellings of one file coexist
+/// as separate entries. An exact-match lookup then returned whichever the *caller* asked
+/// with, which is the older entry when a server publishes raw first and encoded later.
+///
+/// Measured before the fix: publish `/renorm.rs` at v1, then `/%72enorm.rs` at v7, and
+/// `observation_for("/renorm.rs")` returned generation 2 with **version 1**. A freshness
+/// waiter sees the generation move, re-reads, exact-hits the stale entry and settles on
+/// pre-edit content. That is precisely what the freshness module exists to prevent, and
+/// it was introduced by the commit that fixed the missed-publish case.
+///
+/// Found by an adversarial reviewer on the fourth pass, in code the third pass approved.
+#[tokio::test]
+async fn a_renormalized_republish_replaces_the_earlier_spelling() {
+    let client = start(&[], json!({})).await;
+    let raw = "file:///tmp/renorm.rs";
+    let encoded = "file:///tmp/%72enorm.rs";
+
+    client
+        .notify("test/republish", json!({"uri": raw, "version": 1}))
+        .await
+        .expect("first publish");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.diagnostics_for(raw).await.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no first publish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let first = client.observation_for(raw).await;
+    assert_eq!(first.version, Some(1));
+
+    // The same file, spelled differently, at a newer version.
+    client
+        .notify("test/republish", json!({"uri": encoded, "version": 7}))
+        .await
+        .expect("second publish");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.observation_for(raw).await.generation == first.generation {
+        assert!(std::time::Instant::now() < deadline, "no second publish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let second = client.observation_for(raw).await;
+    assert_eq!(
+        second.version,
+        Some(7),
+        "asking with the original spelling returned the stale entry; two spellings of \
+         one file are coexisting in the map"
+    );
+    // And asking with the server's new spelling agrees.
+    assert_eq!(client.observation_for(encoded).await.version, Some(7));
+}
+
+/// The server's own spelling survives, since later requests have to echo it.
+///
+/// This is why the map is not simply keyed by the normalized form with the spelling
+/// discarded: a server that publishes `%72enorm.rs` may only recognise that spelling.
+#[tokio::test]
+async fn the_servers_spelling_is_retained_alongside_the_normalized_key() {
+    let client = start(&[], json!({})).await;
+    let encoded = "file:///tmp/%72etained.rs";
+
+    client
+        .notify("test/republish", json!({"uri": encoded, "version": 3}))
+        .await
+        .expect("publish");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.diagnostics_for(encoded).await.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no publish");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Found by the decoded spelling, but reporting the encoded one.
+    let published = client
+        .diagnostics_for("file:///tmp/retained.rs")
+        .await
+        .expect("must be found under the equivalent spelling");
+    assert_eq!(
+        published.uri, encoded,
+        "the server's spelling was lost, so a later request would use one it may not \
+         recognise"
+    );
+}

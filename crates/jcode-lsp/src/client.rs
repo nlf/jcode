@@ -124,6 +124,13 @@ pub struct PublishedDiagnostics {
     /// freshness cannot be established by matching and has to be settled by
     /// quiescence instead.
     pub version: Option<i64>,
+    /// The URI exactly as the server spelled it.
+    ///
+    /// The map is keyed by the *normalized* URI so that two spellings of one file
+    /// cannot coexist as separate entries, but a later request has to echo back the
+    /// spelling the server actually used. So the spelling is kept here rather than in
+    /// the key, which is how omp splits it too.
+    pub uri: String,
 }
 
 /// Everything needed to start one server.
@@ -483,9 +490,16 @@ impl Client {
     /// actually used, which is what has to be echoed back in later requests.
     pub async fn diagnostics_for(&self, uri: &str) -> Option<PublishedDiagnostics> {
         let map = self.diagnostics.lock().await;
-        if let Some(published) = map.get(uri) {
+        // Keys are normalized on insert, so normalizing the query is the whole lookup
+        // for every case the normalizer handles, and there is exactly one entry per
+        // file rather than one per spelling.
+        if let Some(published) = map.get(&crate::freshness::normalize_uri(uri)) {
             return Some(published.clone());
         }
+        // Retained for anything `equivalent_uris` calls equal that `normalize_uri` does
+        // not map to the same string. Today there is nothing in that gap -- equivalence
+        // *is* normalized comparison -- so this is belt-and-braces rather than
+        // load-bearing, and cheap because it only runs on a miss.
         map.iter()
             .find(|(published_uri, _)| equivalent_uris(uri, published_uri))
             .map(|(_, published)| published.clone())
@@ -639,8 +653,32 @@ async fn handle_notification(
         // Absent and `null` both mean "no version", which is different from a
         // version of 0 and must not be conflated with it.
         version: params.get("version").and_then(Value::as_i64),
+        uri: uri.to_string(),
     };
-    diagnostics.lock().await.insert(uri.to_string(), published);
+    // **Keyed by the normalized URI, not the spelling the server used.**
+    //
+    // Keying by the spelling let two equivalent spellings coexist as separate entries,
+    // and then an exact-match lookup preferred whichever the caller happened to ask
+    // with -- which is the *older* one when a server renormalizes mid-session.
+    //
+    // Measured before the fix: publish `/renorm.rs` at v1, then `/%72enorm.rs` at v7,
+    // and `observation_for("/renorm.rs")` returned generation 2 with version 1. A
+    // freshness waiter sees the generation move, re-reads, exact-hits the stale entry,
+    // and settles on pre-edit content. That is a wrong answer, which is worse than the
+    // missed publish the equivalence scan was added to fix.
+    //
+    // omp cannot reach this state: `EquivalentUriMap` normalizes the key on set, so the
+    // second publish overwrites the first and there is only ever one entry. Following
+    // them. The server's own spelling is kept in the value, since that is what has to
+    // be echoed back in later requests -- which was the real reason not to normalize,
+    // and it is satisfied by storing it rather than by keying on it.
+    //
+    // Found by an adversarial reviewer on the fourth pass, in code the third pass had
+    // just approved.
+    diagnostics
+        .lock()
+        .await
+        .insert(crate::freshness::normalize_uri(uri), published);
     // After the insert, so an observer that sees a new generation is guaranteed to
     // see the publish that caused it. Bumping first would let a waiter read the new
     // counter with the old diagnostics and restart its settle window against content

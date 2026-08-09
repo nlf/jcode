@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 177 lib tests plus 52
+**Tests written exceed cases ported**, deliberately. 179 lib tests plus 55
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -83,6 +83,33 @@ Sources, all under `/tmp/omp/packages/coding-agent`:
 
 An 8th file, `test/task/subagent-lsp.test.ts` (293 lines, 6 cases), is excluded
 wholesale: it tests subagent LSP inheritance against omp's session model.
+
+## Not reviewed, and worth knowing about
+
+Four adversarial review passes covered the crate; this is what they explicitly did
+**not** reach, recorded from the reviewer's own list so it does not evaporate with the
+session. None is a confirmed defect. Each is a place where "it has tests" and "it is
+right" have not been checked against each other.
+
+- `fail_all` routes a transport death through `RequestFailure::Server` rather than
+  `Closed`, so a caller cannot tell a dead connection from a server error.
+- `answer_channel` drops a failed answer to a *server* request silently. omp kills the
+  wedged client; we leave it wedged with nothing logged.
+- the router and answer tasks leak if `start()` fails after spawning them.
+- `path_to_uri` does no percent-encoding, so a workspace root containing a space or `#`
+  produces a URI a server may reject.
+- a `TimedOut` freshness result discards the cached publish where omp returns it. A
+  judgement call rather than a bug, but an unexamined one.
+- `idle_timeout` is parsed and consumed by nothing, pending Q1.
+- `warmupTimeoutMs` and `capabilities` in `defaults.json` are silently dropped by serde
+  (they affect `marksman` and `rust-analyzer`). Unknown fields are tolerated by design,
+  which is also how these went unnoticed.
+- omp's `stripDiagnosticNoise` (`utils.ts:194`) is unported. It will matter when
+  diagnostic formatting lands, because the ledger dedups *formatted* output.
+- Windows beyond reading the `cfg!` branches; symlinked binaries; case-insensitive
+  filesystems in detection.
+- two tool calls sharing one `Client`: nothing tests `request()` interleaved with
+  `open_document()` beyond the ten-sender transport test.
 
 ## Known gaps, named
 

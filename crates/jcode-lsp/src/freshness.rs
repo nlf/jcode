@@ -250,7 +250,11 @@ pub fn equivalent_uris(ours: &str, theirs: &str) -> bool {
     normalize_uri(ours) == normalize_uri(theirs)
 }
 
-fn normalize_uri(uri: &str) -> String {
+/// The canonical form of a URI, for use as a map key.
+///
+/// `pub(crate)` so the client can key its diagnostics map by it. See
+/// [`equivalent_uris`] for what normalization happens and why.
+pub(crate) fn normalize_uri(uri: &str) -> String {
     let decoded = percent_decode(uri);
     // Windows drive letters differ in case between clients and servers, and
     // `file:///C:/x` and `file:///c:/x` are the same file. Only the drive letter
