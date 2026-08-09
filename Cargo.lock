@@ -3431,6 +3431,7 @@ dependencies = [
  "global-hotkey",
  "jcode-agent-runtime",
  "jcode-ambient-types",
+ "jcode-ast",
  "jcode-base",
  "jcode-bash-intercept",
  "jcode-build-meta",
