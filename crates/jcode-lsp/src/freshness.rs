@@ -215,14 +215,34 @@ impl FreshnessWait {
 /// Whether two URIs name the same file.
 ///
 /// A server may echo a differently spelled URI for the file we sent: percent-encoded
-/// where we sent raw, a different drive-letter case on Windows, or a normalized
-/// path. String equality then misses the publish and the wait times out against a
-/// server that answered perfectly well.
+/// where we sent raw, a different drive-letter case on Windows, or a path spelled
+/// with redundant segments. String equality then misses the publish and the wait
+/// times out against a server that answered perfectly well.
 ///
-/// Compared after decoding percent-escapes and, on Windows, case-folding the drive
-/// letter. Deliberately **not** a full URI normalization: resolving symlinks or
-/// `..` here would be slower and would let two genuinely different files compare
-/// equal, which is worse than a missed publish.
+/// # What normalization happens, and a correction
+///
+/// Decodes percent-escapes, folds a Windows drive letter, and normalizes the path
+/// **lexically**: collapsing `//`, dropping `.`, and resolving `..` against the
+/// preceding segment.
+///
+/// The lexical pass was missing, and the doc comment here previously justified its
+/// absence by saying that resolving `..` "would be slower and would let two genuinely
+/// different files compare equal". That conflated two different operations. omp calls
+/// `path.normalize`, which is pure string arithmetic: no `stat`, no symlink
+/// resolution, so neither objection applies. What I described avoiding was
+/// canonicalization, which omp does not do either.
+///
+/// Measured: `file:///a/b.rs` against `file:///a/./b.rs`, `file:///a//b.rs`, and
+/// `file:///a/c/../b.rs` — omp's key function called all three equal, this function
+/// called all three different. A missed publish means the freshness wait times out and
+/// the caller reports no diagnostics for a file the server had already analysed.
+///
+/// Symlinks are still deliberately not resolved. `a/../b` and `b` are the same file by
+/// the *spelling* of the path, which is all a lexical pass claims; whether `a` is a
+/// symlink would change the answer, but that needs the filesystem and omp does not
+/// consult it either. Following omp here is also the safer direction: a wrong `..`
+/// resolution through a symlink would compare two different files equal, and this way
+/// we can only ever be as wrong as they are.
 pub fn equivalent_uris(ours: &str, theirs: &str) -> bool {
     if ours == theirs {
         return true;
@@ -239,9 +259,60 @@ fn normalize_uri(uri: &str) -> String {
     if let Some(rest) = decoded.strip_prefix("file:///")
         && let Some((drive, tail)) = split_drive(rest)
     {
-        return format!("file:///{}{}", drive.to_ascii_lowercase(), tail);
+        return format!(
+            "file:///{}{}",
+            drive.to_ascii_lowercase(),
+            lexically_normalize(tail)
+        );
     }
-    decoded
+    match decoded.strip_prefix("file://") {
+        Some(path) => format!("file://{}", lexically_normalize(path)),
+        None => decoded,
+    }
+}
+
+/// Collapse `//`, drop `.`, and resolve `..` without touching the filesystem.
+///
+/// Matches Node's `path.normalize`, which is what omp keys its URI map by. A leading
+/// `..` is kept rather than discarded: it cannot be resolved without knowing what it
+/// is relative to, and dropping it would make `../a` and `a` the same file.
+fn lexically_normalize(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            // Empty from `//` or a leading/trailing slash; `.` adds nothing.
+            "" | "." => {}
+            ".." => {
+                // Pop only a real segment. At the root, `..` has nowhere to go and is
+                // dropped, as `path.normalize` does; in a relative path it is kept,
+                // because there is nothing yet to cancel against.
+                match segments.last() {
+                    Some(&last) if last != ".." => {
+                        segments.pop();
+                    }
+                    _ if absolute => {}
+                    _ => segments.push(".."),
+                }
+            }
+            other => segments.push(other),
+        }
+    }
+    let joined = segments.join("/");
+    // Joining the surviving segments already drops trailing and repeated slashes,
+    // since both produce empty segments that are skipped above. An explicit
+    // "pop a trailing slash" step was here and was **dead code**: a mutation deleting
+    // it changed no output for any input, including "/a/", "//" and "/a//". Removed
+    // rather than kept as reassurance.
+    //
+    // This diverges from `path.normalize`, which preserves a trailing slash ("/a/"
+    // stays "/a/"). Deliberate: `file:///a/` and `file:///a` name the same directory,
+    // and this function's only question is whether two URIs mean the same thing.
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 /// Split a leading `C:` off a path, if there is one.

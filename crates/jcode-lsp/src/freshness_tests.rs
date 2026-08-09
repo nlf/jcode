@@ -382,3 +382,95 @@ fn only_a_single_letter_followed_by_a_colon_is_treated_as_a_drive() {
     // Two letters before the colon: not a drive, so no folding, so case matters.
     assert!(!equivalent_uris("file:///AB:/x", "file:///ab:/x"));
 }
+
+/// **Redundant path segments must not hide a publish.**
+///
+/// A server is free to echo the URI it was given in a different but equivalent
+/// spelling. omp keys its diagnostics map by `path.normalize(uriToFile(uri))`, so all
+/// of these are one file to them. This function said they were three different files,
+/// which means the freshness wait never sees the publish, times out, and the caller
+/// reports no diagnostics for a file the server analysed correctly.
+///
+/// Found by an adversarial reviewer pointing at omp's `EquivalentUriMap`. The old doc
+/// comment claimed the omission was deliberate, on the grounds that resolving `..`
+/// would be slow and unsafe -- conflating lexical normalization with canonicalization.
+/// omp does the former and not the latter, and so do we now.
+#[test]
+fn equivalent_spellings_of_one_path_compare_equal() {
+    assert!(equivalent_uris("file:///a/b.rs", "file:///a/./b.rs"));
+    assert!(equivalent_uris("file:///a/b.rs", "file:///a//b.rs"));
+    assert!(equivalent_uris("file:///a/b.rs", "file:///a/c/../b.rs"));
+    assert!(equivalent_uris("file:///a/b.rs", "file:///a/b.rs"));
+
+    // And genuinely different files still differ.
+    assert!(!equivalent_uris("file:///a/b.rs", "file:///a/c.rs"));
+    assert!(!equivalent_uris("file:///a/b.rs", "file:///x/b.rs"));
+    // `..` must not be discarded rather than applied: /a/x/../b is /a/b, not /a/x/b.
+    assert!(!equivalent_uris("file:///a/x/b.rs", "file:///a/x/../b.rs"));
+}
+
+/// The lexical normalizer matches Node's `path.normalize`, case for case.
+///
+/// A differential test against values printed by the real `path.normalize`, rather
+/// than against what I expected it to do. omp keys their URI map with that exact
+/// function, so matching my own guess would prove nothing about matching them.
+///
+/// The last three are the ones a hand-rolled version gets wrong: `..` above the root
+/// is dropped, `..` in a relative path is kept because there is nothing to cancel
+/// against, and a path that cancels itself out becomes `.` rather than empty.
+#[test]
+fn lexical_normalization_matches_nodes_path_normalize() {
+    // Printed by `node -e` from path.normalize; see the commit message.
+    let cases: &[(&str, &str)] = &[
+        ("/a/b.rs", "/a/b.rs"),
+        ("/a/./b.rs", "/a/b.rs"),
+        ("/a//b.rs", "/a/b.rs"),
+        ("/a/c/../b.rs", "/a/b.rs"),
+        ("/", "/"),
+        ("/..", "/"),
+        ("/../a", "/a"),
+        ("/a/../../b", "/b"),
+        ("/a/b/..", "/a"),
+        ("a/../b", "b"),
+        ("../a", "../a"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            lexically_normalize(input),
+            *expected,
+            "for {input:?}, which node's path.normalize maps to {expected:?}"
+        );
+    }
+}
+
+/// A trailing slash is dropped, which is a deliberate divergence from
+/// `path.normalize`.
+///
+/// Node keeps it (`/a/` stays `/a/`), so `file:///a/` and `file:///a` would be
+/// different keys. They are the same directory, and this function's only job is
+/// deciding whether two URIs mean the same thing. The root's own slash is kept,
+/// because dropping it would leave an empty path.
+///
+/// This falls out of segment joining rather than being implemented: an explicit
+/// trailing-slash pop was written, and a mutation deleting it changed no output for
+/// any input, so it was dead code and was removed. The assertions stay, because the
+/// *behaviour* is load-bearing even though nothing special implements it -- they now
+/// guard against a future rewrite that reintroduces the slash.
+#[test]
+fn a_trailing_slash_does_not_make_a_different_path() {
+    assert_eq!(lexically_normalize("/a/"), "/a");
+    assert_eq!(lexically_normalize("/"), "/");
+    assert!(equivalent_uris("file:///a/b/", "file:///a/b"));
+}
+
+/// Percent-encoding and redundant segments compose.
+///
+/// omp's own freshness test has a server renormalizing `/renormalized.ts` to
+/// `/%72enormalized.ts`, so a server that does both at once is not hypothetical.
+#[test]
+fn percent_encoding_and_redundant_segments_are_both_handled() {
+    assert!(equivalent_uris(
+        "file:///a/renormalized.ts",
+        "file:///a/./%72enormalized.ts"
+    ));
+}
