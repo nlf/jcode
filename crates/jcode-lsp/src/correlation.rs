@@ -38,6 +38,24 @@ use tokio::sync::{Mutex, oneshot};
 
 use crate::jsonrpc::{RequestId, ResponseError};
 
+/// What arrived on a pending request's channel.
+///
+/// Two shapes, because a server's "no" and a dead connection are different facts and the
+/// caller acts differently on each. Previously both travelled as a `ResponseError`, and
+/// `fail_all` fabricated one with `code: 0` for a connection death -- so a caller saw
+/// [`RequestFailure::Server`], whose own documentation promises the server is healthy.
+#[derive(Debug)]
+pub enum Answer {
+    /// The server answered, with a result or with an error of its own.
+    Answered(Result<serde_json::Value, ResponseError>),
+    /// The connection died before an answer arrived, with the transport's reason.
+    ///
+    /// Carried rather than reconstructed at the receiving end, because the transport
+    /// knows things the client does not: "the language server closed its stdout" is more
+    /// use than "the connection ended".
+    Closed(String),
+}
+
 /// Why a request did not produce a result.
 #[derive(Debug)]
 pub enum RequestFailure {
@@ -97,7 +115,7 @@ struct Pending {
     /// Kept so a failure can name the method. A bare id tells the caller nothing
     /// and tells a log reader less.
     method: String,
-    respond: oneshot::Sender<Result<serde_json::Value, ResponseError>>,
+    respond: oneshot::Sender<Answer>,
 }
 
 /// The set of requests we are waiting on.
@@ -135,7 +153,7 @@ impl Pendings {
         &self,
         id: RequestId,
         method: &str,
-    ) -> oneshot::Receiver<Result<serde_json::Value, ResponseError>> {
+    ) -> oneshot::Receiver<Answer> {
         let (respond, receive) = oneshot::channel();
         self.inner.lock().await.insert(
             id,
@@ -155,7 +173,7 @@ impl Pendings {
     pub async fn complete(&self, id: &RequestId, result: Result<serde_json::Value, ResponseError>) {
         if let Some(pending) = self.inner.lock().await.remove(id) {
             // A closed receiver means the caller gave up first. Nothing to do.
-            let _ = pending.respond.send(result);
+            let _ = pending.respond.send(Answer::Answered(result));
         }
     }
 
@@ -168,22 +186,41 @@ impl Pendings {
             .map(|pending| pending.method)
     }
 
-    /// Fail every outstanding request with the same reason.
+    /// Fail every outstanding request, because the connection died.
     ///
-    /// Called when the connection dies. **Not optional**: without it every
-    /// in-flight caller waits out its own timeout, so a server that died
-    /// instantly still costs one timeout per request and reports the wrong cause.
+    /// **Not optional**: without it every in-flight caller waits out its own timeout, so
+    /// a server that died instantly still costs one timeout per request and reports the
+    /// wrong cause.
+    ///
+    /// # Why this drops the senders rather than sending an error
+    ///
+    /// It used to fabricate a `ResponseError` with `code: 0`, which reached the caller as
+    /// `RequestFailure::Server` -- the variant whose own documentation says it means "a
+    /// successful exchange with a negative answer" and "the server is healthy". For a
+    /// dead connection that is precisely backwards, and `RequestFailure::Closed` already
+    /// exists for it. A caller matching on `Server` to decide "do not reconnect, the
+    /// server just does not implement this" would have drawn the opposite conclusion from
+    /// the truth.
+    ///
+    /// The channel therefore carries an [`Answer`] rather than a bare `Result`, so a
+    /// connection death is a distinguishable case with the transport's own reason attached
+    /// and the caller gets `Closed { method, detail }`.
+    ///
+    /// Dropping the sender would also have produced `Closed`, since the client's
+    /// `Ok(Err(_))` arm maps a cancelled channel to it, and that fix would have deleted
+    /// code instead of adding a type. It was rejected: it discards the reason. "The
+    /// language server closed its stdout" is worth more than "the connection ended before
+    /// an answer arrived", and a server that died at startup is the case where the
+    /// explanation matters most.
+    ///
+    /// Reported by an adversarial reviewer as unreached-and-suspicious; confirmed by
+    /// probing, which returned
+    /// `Server(ResponseError { code: 0, message: "test/echo (fake: the language server
+    /// closed its stdout)" })` for a server that had exited.
     pub async fn fail_all(&self, detail: &str) {
         let drained: Vec<(RequestId, Pending)> = self.inner.lock().await.drain().collect();
         for (_, pending) in drained {
-            let _ = pending.respond.send(Err(ResponseError {
-                // 0 rather than a real JSON-RPC code: no server said this, we
-                // did, and claiming a protocol code would be a lie a caller
-                // could match on.
-                code: 0,
-                message: format!("{} ({detail})", pending.method),
-                data: None,
-            }));
+            let _ = pending.respond.send(Answer::Closed(detail.to_string()));
         }
     }
 

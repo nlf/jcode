@@ -868,3 +868,45 @@ async fn the_servers_spelling_is_retained_alongside_the_normalized_key() {
          recognise"
     );
 }
+
+/// **A dead connection reports `Closed`, not `Server`.**
+///
+/// `RequestFailure::Server` documents itself as "a successful exchange with a negative
+/// answer" and notes that the server is healthy and should not be reconnected to. A
+/// connection death is the opposite fact, and `Closed` exists for it.
+///
+/// `fail_all` used to fabricate a `ResponseError { code: 0 }` for every in-flight request
+/// when the connection died, so every caller saw `Server`. Measured before the fix:
+///
+/// ```text
+/// Server(ResponseError { code: 0, message: "test/echo (fake: the language server closed
+/// its stdout)" })
+/// ```
+///
+/// A caller matching on `Server` to decide "stop asking, this server lacks the method"
+/// would have drawn exactly the wrong conclusion from a server that had died.
+///
+/// This was on the reviewer's "not reached" list rather than among their findings -- named
+/// as suspicious but unverified. It was real.
+#[tokio::test]
+async fn a_dead_connection_reports_closed_rather_than_a_server_error() {
+    let client = start(&[("FAKE_LSP_EXIT_ON", "test/echo")], json!({})).await;
+
+    let failure = client
+        .request("test/echo", json!({}), Duration::from_secs(5))
+        .await
+        .expect_err("the server exits mid-request");
+
+    match &failure {
+        RequestFailure::Closed { method, detail } => {
+            assert_eq!(method, "test/echo", "the method must be named");
+            // The transport's own reason, which is more use than "the connection ended":
+            // a server that died at startup is the case where the explanation matters.
+            assert!(
+                detail.contains("stdout") || detail.contains("closed"),
+                "the transport's reason was lost: {detail}"
+            );
+        }
+        other => panic!("a dead connection must not be reported as a server error; got {other:?}"),
+    }
+}

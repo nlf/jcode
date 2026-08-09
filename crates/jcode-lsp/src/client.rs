@@ -39,7 +39,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::freshness::{Observation, equivalent_uris};
 
-use crate::correlation::{Pendings, RequestFailure, ServerRequest};
+use crate::correlation::{Answer, Pendings, RequestFailure, ServerRequest};
 use crate::jsonrpc::{self, Incoming, METHOD_NOT_FOUND, RequestId, ResponseError};
 use crate::transport::{FromServer, Transport};
 
@@ -364,8 +364,15 @@ impl Client {
         }
 
         match tokio::time::timeout(timeout, receive).await {
-            Ok(Ok(Ok(result))) => Ok(result),
-            Ok(Ok(Err(error))) => Err(RequestFailure::Server(error)),
+            Ok(Ok(Answer::Answered(Ok(result)))) => Ok(result),
+            Ok(Ok(Answer::Answered(Err(error)))) => Err(RequestFailure::Server(error)),
+            // The connection died. Reported as `Closed` with the transport's own reason,
+            // not as `Server`: the latter's contract is that the server answered and is
+            // healthy, which is the opposite of what happened.
+            Ok(Ok(Answer::Closed(detail))) => Err(RequestFailure::Closed {
+                method: method.to_string(),
+                detail,
+            }),
             // The sender was dropped without a value, which `fail_all` does not
             // do. Treat as a closed connection rather than reporting success.
             Ok(Err(_)) => Err(RequestFailure::Closed {

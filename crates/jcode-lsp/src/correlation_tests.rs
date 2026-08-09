@@ -5,6 +5,18 @@
 //! wrong answer.
 
 use super::*;
+
+/// The server's answer, or a panic naming what arrived instead.
+///
+/// A helper because the channel now yields `Answer`, and unwrapping "delivered", then
+/// "answered rather than closed", then "ok rather than error" at every call site buries
+/// what each test is actually about.
+fn answered(answer: Answer) -> Result<serde_json::Value, ResponseError> {
+    match answer {
+        Answer::Answered(result) => result,
+        Answer::Closed(detail) => panic!("expected an answer, got a closed connection: {detail}"),
+    }
+}
 use crate::jsonrpc::{self, Incoming};
 use serde_json::json;
 
@@ -19,7 +31,7 @@ async fn a_registered_request_receives_its_answer() {
         .await;
 
     let result = receive.await.expect("the channel should deliver");
-    assert_eq!(result.expect("a success")["contents"], "docs");
+    assert_eq!(answered(result).expect("a success")["contents"], "docs");
     assert_eq!(
         pendings.outstanding().await,
         0,
@@ -44,10 +56,8 @@ async fn an_error_answer_reaches_the_caller_as_an_error() {
         )
         .await;
 
-    let error = receive
-        .await
-        .expect("delivered")
-        .expect_err("must be an error");
+    let error = receive.await.expect("delivered");
+    let error = answered(error).expect_err("must be an error");
     assert!(RequestFailure::Server(error).is_method_not_found());
 }
 
@@ -123,18 +133,24 @@ async fn a_dead_connection_fails_every_outstanding_request_at_once() {
         .await;
 
     assert_eq!(pendings.outstanding().await, 0, "the map must be emptied");
-    for (method, receive) in receivers {
-        let error = receive
-            .await
-            .expect("delivered")
-            .expect_err("must be a failure");
-        // The message names both the method and the cause: either alone leaves the
-        // reader guessing.
-        assert!(error.message.contains(method), "{}", error.message);
-        assert!(error.message.contains("stdout"), "{}", error.message);
-        // Not a real JSON-RPC code: no server said this, we did. Claiming one
-        // would be a lie a caller could match on.
-        assert_eq!(error.code, 0);
+    for (_method, receive) in receivers {
+        // **`Closed`, not `Answered`.** This used to fabricate a `ResponseError` with
+        // `code: 0`, which the client turned into `RequestFailure::Server` -- the variant
+        // whose documentation promises the server answered and is healthy. For a dead
+        // connection that is backwards, and a caller matching on it to decide "do not
+        // reconnect, this server just lacks the method" would conclude the opposite of
+        // the truth.
+        //
+        // The old version of this test asserted `code == 0` and called it correct in a
+        // comment. The assertion was faithful to the implementation and the implementation
+        // was wrong, which is the failure mode of a test written from the code.
+        match receive.await.expect("delivered") {
+            Answer::Closed(detail) => assert!(
+                detail.contains("stdout"),
+                "the transport's reason must survive: {detail}"
+            ),
+            other => panic!("a dead connection must report Closed, got {other:?}"),
+        }
     }
 }
 
@@ -202,7 +218,7 @@ async fn a_server_request_sharing_our_id_does_not_resolve_our_request() {
     pendings
         .complete(&ours, Ok(json!([{"name": "main"}])))
         .await;
-    let result = receive.await.expect("delivered").expect("a success");
+    let result = answered(receive.await.expect("delivered")).expect("a success");
     assert_eq!(result[0]["name"], "main");
 }
 
@@ -223,7 +239,7 @@ async fn a_response_without_a_method_is_routed_to_the_pending_map() {
     }
 
     assert_eq!(
-        receive.await.expect("delivered").expect("success")["ok"],
+        answered(receive.await.expect("delivered")).expect("success")["ok"],
         true
     );
 }
@@ -260,6 +276,6 @@ async fn concurrent_registrations_all_survive() {
 
     for (id, receive) in registered {
         pendings.complete(&id, Ok(json!(null))).await;
-        receive.await.expect("delivered").expect("success");
+        answered(receive.await.expect("delivered")).expect("success");
     }
 }
