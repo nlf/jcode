@@ -246,6 +246,37 @@ impl Server {
             // Answering our own caller has to wait for the client's reply, so the
             // pending request is parked and completed by `handle` when the
             // response arrives.
+            // Ask a question and *then* stop draining stdin, so the client's request
+            // lands but its answer cannot. Nothing else in this fixture produces that
+            // ordering: STOP_READING_ON stops before the next write, which makes the
+            // request itself fail and never reaches the answer path.
+            "test/askThenDeafen" => {
+                let inner_id = {
+                    let mut observed = self.lock();
+                    observed.next_server_id += 1;
+                    format!("srv-{}", observed.next_server_id)
+                };
+                self.lock().awaiting.insert(
+                    inner_id.clone(),
+                    (id.clone(), "workspace/configuration".to_string()),
+                );
+                // Ask for *many* sections. The client answers with one entry per item,
+                // so the reply is far larger than a pipe buffer -- which is what makes the
+                // write actually block once we stop reading. A small answer fits in the
+                // buffer and succeeds even against a deaf server, which is why an earlier
+                // version of this knob proved nothing.
+                let items: Vec<Value> = (0..20_000)
+                    .map(|index| json!({"section": format!("padding.section.number.{index}")}))
+                    .collect();
+                self.send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": inner_id,
+                    "method": "workspace/configuration",
+                    "params": {"items": items}
+                }));
+                // Now go deaf, so the answer to the question above cannot be written.
+                self.stop_reading.store(true, Ordering::SeqCst);
+            }
             "test/serverRequest" => {
                 let inner_method = params
                     .get("method")

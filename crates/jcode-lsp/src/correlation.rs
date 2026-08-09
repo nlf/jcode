@@ -149,11 +149,7 @@ impl Pendings {
     }
 
     /// Record a request as outstanding, returning the channel to await.
-    pub async fn register(
-        &self,
-        id: RequestId,
-        method: &str,
-    ) -> oneshot::Receiver<Answer> {
+    pub async fn register(&self, id: RequestId, method: &str) -> oneshot::Receiver<Answer> {
         let (respond, receive) = oneshot::channel();
         self.inner.lock().await.insert(
             id,

@@ -303,15 +303,42 @@ impl Client {
     fn answer_channel(&self) -> mpsc::UnboundedSender<Value> {
         let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
         let stdin = self.transport.writer();
+        let pendings = Arc::clone(&self.pendings);
+        let name = self.name.clone();
         tokio::spawn(async move {
             while let Some(message) = rx.recv().await {
                 let Ok(body) = serde_json::to_vec(&message) else {
                     continue;
                 };
-                // A failed answer is logged by the caller's absence of progress,
-                // not here: this task has nowhere to report. Dropping is right
-                // because the alternative is blocking the router.
-                let _ = stdin.send(&body, WRITE_DEADLINE).await;
+                if let Err(error) = stdin.send(&body, WRITE_DEADLINE).await {
+                    // **An unanswered server request is a wedge, not a dropped
+                    // message.** A language server that asks the client something
+                    // blocks until answered -- that is the whole reason the router
+                    // answers promptly -- so failing to deliver the answer leaves the
+                    // server waiting forever and every later request timing out
+                    // against it, one deadline at a time, with nothing saying why.
+                    //
+                    // The old code discarded the error with a comment claiming the
+                    // caller's "absence of progress" would reveal it. That is exactly
+                    // the symptom-free failure the rest of this crate is written to
+                    // avoid: the absence of progress is the damage, not the report.
+                    //
+                    // Treated like a desynchronising write on the request path, which
+                    // already does this: fail the waiters now rather than letting each
+                    // discover it separately. omp kills the wedged client outright; we
+                    // cannot tear down the transport from here without a handle to it,
+                    // and failing the outstanding requests is the part that matters,
+                    // because it is what turns a silent hang into a reported error.
+                    //
+                    // Reported by an adversarial reviewer as unreached.
+                    pendings
+                        .fail_all(&format!(
+                            "{name}: could not answer the server's request ({error}); \
+                             the server is waiting and the connection must be restarted"
+                        ))
+                        .await;
+                    return;
+                }
             }
         });
         tx

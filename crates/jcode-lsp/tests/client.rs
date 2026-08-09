@@ -910,3 +910,51 @@ async fn a_dead_connection_reports_closed_rather_than_a_server_error() {
         other => panic!("a dead connection must not be reported as a server error; got {other:?}"),
     }
 }
+
+/// **A failed answer to a server request fails the waiters instead of hanging them.**
+///
+/// A language server that asks the client something blocks until answered, which is why
+/// the router answers promptly. So an answer that cannot be written leaves the server
+/// waiting forever, and every later request times out against it one deadline at a time
+/// with nothing explaining why.
+///
+/// The old code discarded that write error with a comment saying the caller's "absence of
+/// progress" would reveal it. The absence of progress *is* the damage. Now the outstanding
+/// requests are failed, the way a desynchronising write on the request path already does.
+///
+/// # This needed a new fixture knob, and the first attempt was worthless
+///
+/// My first version tripped `STOP_READING_ON` and filled the pipe before asking. It passed
+/// against the unfixed code, because the *request* write failed first and the answer path
+/// was never reached -- 5.27s either way. Caught by mutating my own fix, which is the only
+/// reason it is not in the tree as reassurance.
+///
+/// `test/askThenDeafen` fixes the ordering: the server asks its question and only then
+/// stops reading, so the request lands and the answer cannot.
+///
+/// Reported by an adversarial reviewer as unreached.
+#[tokio::test]
+async fn a_failed_answer_to_the_server_fails_outstanding_requests() {
+    let client = start(&[], json!({})).await;
+
+    // The server asks for 20,000 config sections and then stops reading, so the client's
+    // reply is far bigger than a pipe buffer and cannot be written. A small answer would
+    // fit in the buffer and succeed even against a deaf server, which is how an earlier
+    // version of this test passed against the unfixed code.
+    let started = std::time::Instant::now();
+    let failure = client
+        .request("test/askThenDeafen", json!({}), Duration::from_secs(20))
+        .await
+        .expect_err("a wedged connection cannot answer");
+
+    assert!(
+        started.elapsed() < Duration::from_secs(19),
+        "the caller waited out its whole timeout instead of being told the connection is \
+         unusable; took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        !matches!(failure, RequestFailure::Server(_)),
+        "a wedged connection is not a server error: {failure:?}"
+    );
+}

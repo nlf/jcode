@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 179 lib tests plus 56
+**Tests written exceed cases ported**, deliberately. 179 lib tests plus 57
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -94,8 +94,8 @@ right" have not been checked against each other.
 - ~~`fail_all` routes a transport death through `RequestFailure::Server`~~ — checked, it
   was real, fixed. Kept here rather than deleted so the list records that reviewing the
   *unreviewed* list found a defect on the first item tried.
-- `answer_channel` drops a failed answer to a *server* request silently. omp kills the
-  wedged client; we leave it wedged with nothing logged.
+- ~~`answer_channel` drops a failed answer to a *server* request silently~~ — checked, it
+  was real, fixed. Two for two on this list.
 - the router and answer tasks leak if `start()` fails after spawning them.
 - `path_to_uri` does no percent-encoding, so a workspace root containing a space or `#`
   produces a URI a server may reject.
