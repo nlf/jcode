@@ -95,15 +95,15 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_IDLE_ANIMATION",
     "JCODE_IMAP_HOST",
     "JCODE_INFO_WIDGET_TOGGLE_KEY",
-    "JCODE_JADE_RELAY_API_BASE",
-    "JCODE_JADE_RELAY_ENABLED",
-    "JCODE_JADE_RELAY_LAUNCH_ENABLED",
-    "JCODE_JADE_RELAY_LAUNCH_WORKING_DIR",
-    "JCODE_JADE_RELAY_REPLY_ENABLED",
-    "JCODE_JADE_RELAY_SESSION_ID",
-    "JCODE_JADE_RELAY_TOKEN",
-    "JCODE_JADE_RELAY_TOKEN_ID",
-    "JCODE_JADE_RELAY_USER_ID",
+    "JCODE_CLOUD_RELAY_API_BASE",
+    "JCODE_CLOUD_RELAY_ENABLED",
+    "JCODE_CLOUD_RELAY_LAUNCH_ENABLED",
+    "JCODE_CLOUD_RELAY_LAUNCH_WORKING_DIR",
+    "JCODE_CLOUD_RELAY_REPLY_ENABLED",
+    "JCODE_CLOUD_RELAY_SESSION_ID",
+    "JCODE_CLOUD_RELAY_TOKEN",
+    "JCODE_CLOUD_RELAY_TOKEN_ID",
+    "JCODE_CLOUD_RELAY_USER_ID",
     "JCODE_KV_CACHE_MISS_NOTICES",
     "JCODE_LATEX_RENDERING",
     "JCODE_MARKDOWN_SPACING",
@@ -643,9 +643,14 @@ impl ToolConfig {
                     "write",
                     "edit",
                     "apply_patch",
-                    "agentgrep",
+                    // `agentgrep` was this fork's only search tool and no
+                    // longer exists; naming it here left the restricted
+                    // profiles with no way to search at all.
+                    "grep",
+                    "glob",
                     "ls",
                     "batch",
+                    "mcp",
                 ]
                 .into_iter()
                 .map(|name| name.to_string())
@@ -659,7 +664,8 @@ impl ToolConfig {
                     "write",
                     "edit",
                     "apply_patch",
-                    "agentgrep",
+                    "grep",
+                    "glob",
                     "ls",
                 ]
                 .into_iter()

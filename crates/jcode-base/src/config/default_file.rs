@@ -325,9 +325,9 @@ bing_market = "en-US"
 [tools]
 # Controls which built-in tools are sent to the model.
 # Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
-# acp keeps core coding tools plus batch for generic ACP clients.
+# acp keeps core coding tools plus batch and configured MCP servers for ACP clients.
 # minimal keeps core coding tools only: bash, read, write, edit,
-# apply_patch, patch, agentgrep, glob, grep, and ls.
+# apply_patch, grep, glob, and ls.
 profile = "full"
 # Explicit allow-list. When non-empty, only these tools are exposed.
 # enabled = ["bash", "read", "write", "apply_patch", "agentgrep", "ls"]
@@ -666,14 +666,14 @@ desktop_notifications = true
 # discord_bot_user_id = ""   # Bot's user ID (for filtering own messages)
 # discord_reply_enabled = false  # Messages in channel become agent directives
 
-# Jade cloud relay (outbound-only long polling, disabled by default).
+# Cloud relay (outbound-only long polling, disabled by default).
 # Prefer environment variables for secrets:
-# JCODE_JADE_RELAY_API_BASE, JCODE_JADE_RELAY_TOKEN, JCODE_JADE_RELAY_TOKEN_ID,
-# JCODE_JADE_RELAY_USER_ID, JCODE_JADE_RELAY_SESSION_ID.
-# jade_relay_enabled = false
-# jade_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
-# jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
-# jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
+# JCODE_CLOUD_RELAY_API_BASE, JCODE_CLOUD_RELAY_TOKEN, JCODE_CLOUD_RELAY_TOKEN_ID,
+# JCODE_CLOUD_RELAY_USER_ID, JCODE_CLOUD_RELAY_SESSION_ID.
+# cloud_relay_enabled = false
+# cloud_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
+# cloud_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
+# cloud_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
 
 # [sponsors] # Legacy config section name retained for compatibility.
 # Integration discovery (enabled by default; set enabled = false to opt out).

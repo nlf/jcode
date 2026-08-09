@@ -49,63 +49,70 @@ fortnight). The v0.71.1 sync covered 4 days of drift and cost three small
 conflicts. **Sync weekly.** Monthly means resolving against ~1200 commits of
 drift, against code nobody remembers.
 
-## Upstream's tags are not a linear chain
-
-This is the trap, and it is specific to how upstream works. **Do not assume
-`vN+1` contains `vN`, and do not walk tags in order.**
-
-At the time of writing:
-
-- `upstream/master` sat at `v0.71.1`.
-- `v0.72.0` and `v0.73.0` both branched off `v0.71.1` **independently**, on two
-  different agent branches, with 12 unique commits each and **no patch-id
-  overlap**. Neither contains the other.
+## Merge published releases, not tags
+**The unit of sync is a GitHub release.** Ask
+`gh release list --repo 1jehuang/jcode`, not `git tag`.
+Upstream's tags do not answer the question you need answered. They are not a
+linear chain, they are not all released, and reachability from `upstream/master`
+does not tell you which is which. Measured at the time of writing:
+| tag | published release? | on `upstream/master`? |
+|---|---|---|
+| `v0.73.0` | yes (Latest) | **no** |
+| `v0.72.0` | yes | **no** |
+| `v0.71.1` | yes | yes |
+| `v0.71.0` | **no** | no |
+| `v0.70.0`, `v0.70.1` | **no** | yes |
+Every combination occurs. Published releases sitting off master, unpublished
+tags sitting on it. So neither "is it tagged" nor "is it on master" identifies
+what upstream actually shipped, and **an earlier version of this document got
+that wrong**: it inferred from git reachability that `v0.72.0` was an abandoned
+line and skipped it. It was a published release, and skipping it dropped 12
+real commits including ACP protocol fixes and two TUI bugs.
+What the git topology *is* good for, once a release is chosen, is working out
+what it contains:
+- `v0.72.0` and `v0.73.0` both branch off `v0.71.1` **independently**, 12
+  unique commits each, **no patch-id overlap**. Neither contains the other, so
+  both must be merged.
 - A commit titled `chore(release): prepare v0.72.0` exists **twice**, with
-  different hashes and different trees: `cc589f14c` (the tag) and `cd3112a55`
-  (inside `v0.73.0`'s history).
-
-So `v0.73.0` is not "v0.72.0 plus more". Merging tags sequentially would either
-resurrect an abandoned line or silently drop real work. Always check the actual
-topology before deciding what to merge.
-
-Also note **tags lead `upstream/master`**. Watching only `upstream/master`
-leaves you many commits behind without any signal. Fetch tags and inspect them.
+  different hashes *and different trees*: `cc589f14c` (the release) and
+  `cd3112a55` (inside `v0.73.0`'s history).
+So `vN+1` does not imply `vN`, release order is not ancestry order, and merging
+a newer release does not mean an older one is covered. Check each release's
+content against ours rather than assuming the newest subsumes the rest.
+Also note **releases lead `upstream/master`**. Watching only `upstream/master`
+leaves you several releases behind with no signal at all.
 
 ## The process
 
-### 1. Fetch and survey
-
+### 1. List releases, then survey
 ```bash
 git fetch upstream --tags
-git log --oneline -1 upstream/master
-git tag --sort=-creatordate | head -5
+gh release list --repo 1jehuang/jcode --limit 10
 ```
-
-For each candidate tag, establish where it actually sits:
-
+The release list is the authority on what to merge. `git tag` and
+`upstream/master` are both misleading here; see the section above.
+For each release we do not yet have, establish where it actually sits:
 ```bash
 # Is it already in our history?
 git rev-list --count HEAD..<tag>
-
-# Is it a descendant of the last tag we merged?
-git merge-base --is-ancestor <previous-tag> <tag> && echo linear || echo DIVERGENT
-
-# What actually contains it? An orphaned tag names no branch, or only a
-# stale release branch.
-git branch -r --contains <tag>
+# Is it a descendant of the last release we merged?
+git merge-base --is-ancestor <previous> <tag> && echo linear || echo DIVERGENT
 ```
-
-If two tags are divergent, check whether one's work exists in the other before
-concluding you must merge both:
-
+When two releases are divergent, do not assume the newer subsumes the older.
+Check by content, not by hash, since upstream rebases between releases and
+rebasing preserves patch-ids while changing commit hashes:
 ```bash
-# Empty output on both sides means genuinely independent work.
+# Commits in <older> that are missing from <newer>.
 git log --oneline <newer>..<older>
+# Stronger: is that content anywhere in our history already?
+git log --format=%H HEAD..<tag> | while read c; do
+  pid=$(git show "$c" | git patch-id --stable | awk '{print $1}')
+  echo "$(git log --oneline -1 "$c") :: $pid"
+done
 ```
-
-For a stronger check that survives rebasing, compare patch-ids rather than
-hashes: identical content rebased onto a new base keeps its patch-id but
-changes its commit hash.
+If a release's commits are missing from both the newer release and our history,
+that release has to be merged on its own. That is exactly the case `v0.72.0`
+turned out to be.
 
 ### 2. Start from a clean tree on a sync branch
 
@@ -235,9 +242,10 @@ risk the `NLFCODE.md` notes already flagged once.
 
 ## Checklist
 
-- [ ] `git fetch upstream --tags`
-- [ ] Topology checked: is the tag a descendant, or divergent?
-- [ ] Orphaned or superseded tags identified and skipped
+- [ ] `git fetch upstream --tags` and `gh release list`
+- [ ] Every unmerged **published release** identified, not just the newest
+- [ ] Divergent releases checked by content, not assumed subsumed
+- [ ] Unreleased tags ignored
 - [ ] `rerere` enabled
 - [ ] Working tree clean, sync branch created
 - [ ] `merge-tree` preview reviewed

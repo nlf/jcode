@@ -80,6 +80,40 @@ async fn test_discover_tools_not_registered_when_sponsors_disabled() {
     }
 }
 
+/// Every tool a restricted profile allows must actually be registered.
+///
+/// Regression: both `acp` and `minimal` listed `agentgrep` long after this
+/// fork deleted it and replaced it with `grep`/`glob`. The names are strings
+/// matched against the registry, so a stale one is silently dropped rather
+/// than reported, and it left those profiles with no search tool at all. The
+/// config crate cannot catch this because it does not know the registry, so
+/// the check has to live here.
+#[tokio::test]
+async fn restricted_tool_profiles_only_name_registered_tools() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let registered = registry.tool_names().await;
+
+    for profile in ["acp", "minimal", "lite", "small"] {
+        let cfg = crate::config::ToolConfig {
+            profile: profile.to_string(),
+            ..Default::default()
+        };
+        let allowed = cfg
+            .allowed_tools()
+            .unwrap_or_else(|| panic!("{profile} profile should be an allow-list"));
+
+        // `mcp` is registered only when a server is configured, so it is
+        // legitimately absent here and is not evidence of a stale name.
+        for name in allowed.iter().filter(|name| name.as_str() != "mcp") {
+            assert!(
+                registered.iter().any(|actual| actual == name),
+                "the `{profile}` profile allows `{name}`, which no longer exists in the registry"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn subagent_tool_is_not_registered() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
