@@ -14,18 +14,20 @@
 //! # Status
 //!
 //! Under construction, bottom up. `framing`, `jsonrpc`, `transport`,
-//! `correlation`, `client` and `freshness` are done and tested.
+//! `correlation`, `client`, `freshness` and `ledger` are done and tested.
 
 pub mod client;
 pub mod correlation;
 pub mod framing;
 pub mod freshness;
 pub mod jsonrpc;
+pub mod ledger;
 pub mod transport;
 
 pub use client::{Capabilities, Client, PublishedDiagnostics, ServerSpec, DEFAULT_REQUEST_TIMEOUT};
 pub use correlation::{Pendings, RequestFailure, ServerRequest, SharedPendings};
 pub use framing::{encode, Framed, FramingError, MessageFramer, MAX_BODY_BYTES};
 pub use freshness::{equivalent_uris, Decision, Freshness, FreshnessRequest, FreshnessWait, Observation};
+pub use ledger::{Ledger, Reduced};
 pub use jsonrpc::{DecodeError, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
 pub use transport::{FromServer, Transport, WriteError, Writer};
