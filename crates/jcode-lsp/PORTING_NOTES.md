@@ -15,13 +15,13 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | D position resolution | 5 | 5 | done, in `position` |
 | G sanitization | 3 | 3 | done, in `display` — **did not need the render layer** |
 | H dedup ledger | 9 | 9 | done, in `ledger` |
-| F config and detection | 5 | 0 | **not started** — needs config loading |
+| F config and detection | 5 | 3 | `config`; F1/F2 deliberately unported (no cache to invalidate), F4/F5 belong with startup |
 | write: `request` | 2 | 0 | needs the tool adapter |
-| **v1 total** | **51** | **44** | |
+| **v1 total** | **51** | **47** | |
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 114 lib tests plus 50
+**Tests written exceed cases ported**, deliberately. 153 lib tests plus 50
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -236,10 +236,35 @@ prevents is an edit landing in the wrong file.
 | — | detects tlaplus files for LSP startup and language ids | 1746 | **drop** — startup discovery, plus a server not in our `defaults.json` |
 | — | detects extensionless .emacs files for UI and LSP language ids | 1773 | **drop** — startup discovery |
 
-**Windows is a real gap, not a non-issue.** jcode supports Windows
-(`scripts/install.ps1`, `docs/WINDOWS.md`), so dropping four Windows detection
-cases means our binary resolution is unverified there. Recorded as a known gap
-rather than a decision that Windows does not matter.
+**Windows was recorded as a gap here, and then half of it was closed.** jcode
+supports Windows (`scripts/install.ps1`, `docs/WINDOWS.md`), so leaving binary
+resolution unverified there was not acceptable as a permanent state.
+
+Splitting the four dropped cases by what actually blocks them:
+
+- the *filesystem layout* (`.venv/Scripts`, a `node_modules/.bin` full of `.cmd`
+  shims) cannot be built on macOS, and those remain untested;
+- appending `.exe`/`.cmd`/`.bat` to a candidate path is a string operation, and it
+  is now tested. `config::local_candidates` returns the suffix list on every
+  platform, with the extensionless path first, and
+  `windows_executable_suffixes_are_enumerated_in_priority_order` asserts the whole
+  list under `cfg!(windows)` and its absence otherwise.
+
+So the ordering logic is verified everywhere and only the filesystem shape is
+unverified. The original entry treated "we cannot test the layout" as "we cannot
+test any of it", which was the easier reading rather than the true one.
+
+**F1 and F2 are unported on purpose**, and the reason is recorded as a test
+(`config_tests::a_reload_gap_is_recorded`) rather than only here. Both cases are
+about invalidating a per-cwd config cache; `config::detect` has no cache and walks
+the filesystem every call, so there is nothing to invalidate and a passing test
+would only be asserting that an impossible bug is absent. The named test asserts the
+premise instead — detection observes a project that appeared after the previous call
+— so adding a cache turns these two cases live with a failure that points here.
+
+**F4 and F5 are not in `config`** either. They are about rust-analyzer's workspace
+readiness *after* a server is running, and this module deliberately spawns nothing.
+They belong with startup, which does not exist yet.
 
 ## Group G — rendering and sanitization (3 port, 1 drop)
 

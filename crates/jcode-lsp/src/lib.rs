@@ -18,6 +18,7 @@
 //! tested.
 
 pub mod client;
+pub mod config;
 pub mod correlation;
 pub mod display;
 pub mod framing;
@@ -28,6 +29,7 @@ pub mod position;
 pub mod transport;
 
 pub use client::{Capabilities, Client, DEFAULT_REQUEST_TIMEOUT, PublishedDiagnostics, ServerSpec};
+pub use config::{Available, Config, ServerConfig, Unavailable};
 pub use correlation::{Pendings, RequestFailure, ServerRequest, SharedPendings};
 pub use display::{block, expand_tabs, inline, truncate};
 pub use framing::{Framed, FramingError, MAX_BODY_BYTES, MessageFramer, encode};
