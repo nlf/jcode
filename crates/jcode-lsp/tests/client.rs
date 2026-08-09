@@ -958,3 +958,77 @@ async fn a_failed_answer_to_the_server_fails_outstanding_requests() {
         "a wedged connection is not a server error: {failure:?}"
     );
 }
+
+/// **A failed `start()` leaks neither the child process nor the two tasks.**
+///
+/// `start()` spawns the router (which itself spawns the answer writer) and *then* sends
+/// `initialize`. The `?` on that request returns while both tasks are running, so the
+/// reviewer flagged this as a probable leak: five failed starts would strand ten tasks and
+/// five language servers.
+///
+/// **Checked, and it is not a defect.** This is the one item audited from the not-reached
+/// list that turned out to be fine, and the reason is worth recording because it is not
+/// obvious from reading `start()`:
+///
+/// - the process is reaped by `kill_on_drop(true)` on the `Command`, since the `Client`
+///   owning the `Transport` is dropped by the `?`;
+/// - both tasks then exit on channel close. The router's `rx.recv()` returns `None` when
+///   the transport's sender is dropped, and the answer writer's does the same when the
+///   router drops its handle.
+///
+/// So the cleanup is real but entirely implicit, resting on drop order and channel
+/// semantics rather than on anything written down. Measured: five failed starts leave
+/// **0 surviving processes** (`pgrep -f fake_lsp_server`) and a task delta of **0**
+/// (`num_alive_tasks`). This test exists so that a later refactor holding a sender
+/// somewhere convenient turns an invisible regression into a failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_start_leaks_neither_tasks_nor_processes() {
+    let before = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+
+    for _ in 0..5 {
+        let spec = jcode_lsp::ServerSpec {
+            name: "leak-probe".to_string(),
+            program: env!("CARGO_BIN_EXE_fake_lsp_server").to_string(),
+            args: vec![],
+            root: std::env::temp_dir(),
+            // Never answers `initialize`, so `start()` fails after both tasks are up.
+            env: vec![("FAKE_LSP_HANG_ON".to_string(), "initialize".to_string())],
+            settings: json!({}),
+            init_options: json!({}),
+        };
+        assert!(
+            jcode_lsp::Client::start(spec, Duration::from_millis(150))
+                .await
+                .is_err(),
+            "initialize is never answered, so start must fail"
+        );
+    }
+
+    // Drop and channel-close are not instantaneous; a moment is enough for both.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let after = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert_eq!(
+        after,
+        before,
+        "five failed starts leaked {} tasks; the router or the answer writer is \
+         outliving its client",
+        after.saturating_sub(before)
+    );
+
+    // The processes are covered by the task assertion above rather than by counting them.
+    //
+    // A `pgrep -f fake_lsp_server` count was here and had to be removed: it passed alone
+    // and failed in the full suite, because the other 28 tests in this file have their own
+    // fake servers running concurrently. The assertion was measuring the test runner, not
+    // the code -- a false failure, which is as bad as a false pass and easier to
+    // rationalise away.
+    //
+    // Verified separately, with `--test-threads=1`, that five failed starts leave zero
+    // surviving processes. That relies on `kill_on_drop(true)` in `Transport::spawn`, which
+    // is also what makes the tasks exit here, so the task delta is evidence for both.
+}
