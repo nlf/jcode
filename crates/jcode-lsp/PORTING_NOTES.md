@@ -21,12 +21,28 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 114 lib tests plus 47
+**Tests written exceed cases ported**, deliberately. 114 lib tests plus 50
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
 the map holds afterwards). Several of those extra tests caught real defects; they
 are noted inline where they did.
+
+### "Done" above means ported and tested, not necessarily reached in anger
+
+Worth stating plainly, because the table overstated it until now. Every module is
+driven by its own tests; that is not the same as being on a live code path.
+
+`freshness` and `ledger` were both ported, tested, and exported while being called
+by nothing. For `ledger` that is just sequencing — its caller is the diagnostics
+half of the tool adapter, which is blocked on Q2. For `freshness` it was worse than
+sequencing: the client had no generation counter, so the module's central input did
+not exist and no caller *could* have used it. Fixed in `95edc50e7`, which added the
+counter and `observation_for`.
+
+The general lesson, and the reason this section exists: a module with passing tests
+and no caller looks finished from every angle except the one that matters. The next
+one to check when the adapter lands is `ledger`.
 
 **What remains for v1 is the two groups needing surfaces that do not exist yet**
 (config loading for F, result rendering for G) and the tool adapter, which is
