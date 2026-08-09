@@ -5,6 +5,35 @@ exit criterion (a): enumerate before counting.** Both review passes objected to 
 count asserted from a skim — first at 40, below the sum of its own groups, then
 at an exact 56 with no case titles behind it. What follows is the titles.
 
+## Progress
+
+| group | target | ported | state |
+|---|---|---|---|
+| A framing and lifecycle | 14 | 14 | done, in `framing`/`transport`/`client` |
+| B server→client requests | 7 | 7 | done, in `client` |
+| C diagnostics freshness | 6 | 6 | done, in `freshness` |
+| D position resolution | 5 | 5 | done, in `position` |
+| G sanitization | 3 | 0 | **not started** — needs the render layer |
+| H dedup ledger | 9 | 9 | done, in `ledger` |
+| F config and detection | 5 | 0 | **not started** — needs config loading |
+| write: `request` | 2 | 0 | needs the tool adapter |
+| **v1 total** | **51** | **41** | |
+| E `WorkspaceEdit` | 11 | 0 | v2 |
+| write: `rename_file` | 4 | 0 | v2 |
+
+**Tests written exceed cases ported**, deliberately. 114 lib tests plus 47
+integration tests cover the 41 ported cases, because a behaviour omp asserts once
+often needs two or three tests here: their fixtures assert an outcome where the
+Rust version can also pin the *reason* (the error variant, what was consumed, what
+the map holds afterwards). Several of those extra tests caught real defects; they
+are noted inline where they did.
+
+**What remains for v1 is the two groups needing surfaces that do not exist yet**
+(config loading for F, result rendering for G) and the tool adapter, which is
+blocked on the one-tool-or-two decision.
+
+---
+
 Every case in omp's seven in-scope LSP test files is listed with a disposition:
 
 - **port** — a behaviour we want, portable to our interface.
