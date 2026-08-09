@@ -989,10 +989,40 @@ impl Default for WidgetsState {
 }
 
 /// Global widget state (for polling across frames)
+#[cfg(not(test))]
 static WIDGETS_STATE: Mutex<Option<WidgetsState>> = Mutex::new(None);
 
+#[cfg(not(test))]
+fn widgets_state() -> &'static Mutex<Option<WidgetsState>> {
+    &WIDGETS_STATE
+}
+
+/// Under test, this state is per-thread rather than per-process.
+///
+/// Widget docking is deliberately hysteretic: a widget may only anchor next to
+/// transcript rows whose margins have stopped changing, which `apply_settlement`
+/// tracks as history across frames. That history is what makes the state global
+/// in production, where there is exactly one terminal and one frame loop.
+///
+/// Tests draw many independent frames, and libtest runs them in parallel on
+/// separate threads. Sharing one settlement history between them means one
+/// test's frames reset another's anchors mid-run, so widgets silently fail to
+/// dock and assertions about drawn boxes fail depending only on which tests
+/// happened to run alongside. Keying the state to the thread preserves the
+/// cross-frame behaviour each test is actually exercising while isolating tests
+/// from each other. The mutex is leaked per thread, which is bounded by the
+/// test thread count and released when the process exits.
+#[cfg(test)]
+fn widgets_state() -> &'static Mutex<Option<WidgetsState>> {
+    thread_local! {
+        static THREAD_WIDGETS_STATE: &'static Mutex<Option<WidgetsState>> =
+            Box::leak(Box::new(Mutex::new(None)));
+    }
+    THREAD_WIDGETS_STATE.with(|state| *state)
+}
+
 fn get_or_init_state() -> std::sync::MutexGuard<'static, Option<WidgetsState>> {
-    let mut guard = WIDGETS_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = widgets_state().lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
         *guard = Some(WidgetsState::default());
     }
