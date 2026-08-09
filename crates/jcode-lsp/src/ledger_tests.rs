@@ -335,3 +335,55 @@ fn a_colon_in_the_path_is_not_mistaken_for_the_line_number() {
     // Two colons in the path.
     assert_eq!(identity("a:1/b:2/c.ts:9:3 [warning] hm"), "[warning] hm");
 }
+
+/// **Any whitespace separates the location, and all of it is consumed.**
+///
+/// omp's pattern ends `\s+`. Mine required exactly one literal space, and both halves
+/// of that were wrong. Found by an adversarial reviewer.
+///
+/// A tab did not strip at all, so a tab-separated diagnostic kept its whole location
+/// prefix and could never dedup -- and Go tooling emits tab-separated diagnostics, so
+/// that was a language's worth of the ledger silently not working. A double space left
+/// one behind, giving the identity `" [error] x"`, which never matches the
+/// single-spaced form of the same diagnostic.
+///
+/// Values below are differential: printed from omp's actual regex in node, not from
+/// what I expected it to do.
+#[test]
+fn any_whitespace_separates_the_location_from_the_message() {
+    // (input, what omp's /^.*?:\d+:\d+\s+/ produces)
+    let cases: &[(&str, &str)] = &[
+        ("src/a.ts:12:5 [error] x", "[error] x"),
+        ("src/a.ts:12:5\t[error] x", "[error] x"),
+        ("src/a.ts:12:5  [error] x", "[error] x"),
+        ("src/a.ts:12:5\n[error] x", "[error] x"),
+        // No whitespace at all: not a location prefix, kept whole.
+        ("src/a.ts:12:5[error] x", "src/a.ts:12:5[error] x"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            identity(input),
+            *expected,
+            "for {input:?}, which omp's regex maps to {expected:?}"
+        );
+    }
+}
+
+/// The same diagnostic spelled with different whitespace dedups.
+///
+/// The consequence of the unit above, and the reason it matters: a server that varies
+/// its spacing between publishes would otherwise report the same problem twice.
+#[test]
+fn whitespace_spelling_does_not_defeat_deduplication() {
+    let mut ledger = Ledger::new();
+
+    let first = ledger.reduce("src/a.ts", &["src/a.ts:12:5 [error] boom".to_string()]);
+    assert_eq!(first.messages.len(), 1);
+
+    // Tab-separated, and at a different location: same problem.
+    let second = ledger.reduce("src/a.ts", &["src/a.ts:99:1\t[error] boom".to_string()]);
+    assert!(
+        second.messages.is_empty(),
+        "a tab-separated repeat was reported again: {second:?}"
+    );
+}

@@ -221,11 +221,24 @@ pub fn encode(body: &[u8]) -> Vec<u8> {
 /// Measured before the fix: `messages=0 resyncs=3`. Found by an adversarial reviewer
 /// probing exactly this, not by any test I wrote.
 ///
-/// omp searches the whole block with `/Content-Length: (\d+)/i` and so recovers.
-/// This scans for the same thing, with one addition: the match must not be preceded
-/// by a header-name character, so `X-Content-Length: 5` is not mistaken for the real
-/// header. omp would accept that; a stricter reading costs nothing and no test of
-/// theirs depends on the looser one.
+/// omp searches the whole block with `/Content-Length: (\d+)/i`. Now so do we, plus
+/// one addition: the match must not be preceded by a header-name character, so
+/// `X-Content-Length: 5` is not mistaken for the real header. omp would accept that
+/// decoy; a stricter reading costs nothing and no test of theirs depends on the looser
+/// one.
+///
+/// # A remaining hole, shared with omp
+///
+/// A server whose banner itself contains `content-length: 5` at the start of a line,
+/// *before* the real header, wins the scan and misframes the stream. Measured: a 5-byte
+/// body is extracted and everything after it is garbage. The boundary check does not
+/// help, because the decoy is at a line start with nothing before it.
+///
+/// Left as it is, deliberately. omp has the identical weakness, so fixing it would be a
+/// divergence, and the fix is not obviously right: requiring the header to be the
+/// *last* candidate in the block would break the bare-LF case this function exists to
+/// handle. Recorded because an unrecorded known hole is indistinguishable from an
+/// oversight, and this one was pointed out by a reviewer rather than found by a test.
 fn parse_content_length(headers: &[u8]) -> Option<usize> {
     // Headers are ASCII by spec. `from_utf8_lossy` rather than a hard error so
     // a stray byte in an otherwise-parseable header block does not lose a

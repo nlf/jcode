@@ -100,9 +100,25 @@ fn location_after(message: &str, colon: usize) -> Option<&str> {
     if column.is_empty() {
         return None;
     }
-    // A space separates the location from the message. Requiring it means
-    // `a:1:2` alone is not treated as a prefix with an empty message.
-    rest.strip_prefix(' ')
+    // Whitespace separates the location from the message, and **all** of it is
+    // consumed. omp's pattern ends `\s+`, which is one-or-more of any whitespace.
+    //
+    // This required exactly one literal space, and both halves of that were wrong:
+    //
+    // - a tab did not strip at all, so `src/a.ts:12:5\t[error] x` kept its whole
+    //   prefix and could never dedup. Go tooling emits tab-separated diagnostics, so
+    //   this was a language's worth of the ledger silently not working.
+    // - a double space left one behind, so `...:12:5  [error] x` had the identity
+    //   `" [error] x"` -- which never matches the single-spaced form of the same
+    //   diagnostic from the same server on a different line.
+    //
+    // Requiring at least one whitespace character is still load-bearing: it stops
+    // `a:1:2` alone from being read as a prefix with an empty message.
+    let trimmed = rest.trim_start();
+    if trimmed.len() == rest.len() {
+        return None;
+    }
+    Some(trimmed)
 }
 
 fn take_digits(input: &str) -> Option<(&str, &str)> {

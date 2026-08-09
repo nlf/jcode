@@ -480,3 +480,28 @@ fn the_length_header_is_case_and_whitespace_insensitive() {
         }
     }
 }
+
+/// The known hole: a banner containing a decoy header at a line start.
+///
+/// Documented on [`super::parse_content_length`] as accepted risk shared with omp. This
+/// test **pins the current behaviour** rather than asserting it is right, so that
+/// anyone who fixes it sees this fail and finds the reasoning instead of discovering a
+/// surprise.
+#[test]
+fn a_decoy_header_in_a_banner_wins_the_scan_as_omp_does() {
+    let mut framer = MessageFramer::new();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"content-length: 5\nContent-Length: 17\r\n\r\n");
+    wire.extend_from_slice(br#"{"jsonrpc":"2.0"}"#);
+    framer.push(&wire);
+
+    match framer.next_message().expect("no error") {
+        Framed::Message(message) => assert_eq!(
+            message.len(),
+            5,
+            "if this is now 17, the hole was fixed: update the doc comment on \
+             parse_content_length, which records it as accepted"
+        ),
+        other => panic!("expected the decoy to win, got {other:?}"),
+    }
+}

@@ -171,6 +171,12 @@ pub enum Unavailable {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigFile {
     pub servers: BTreeMap<String, ServerOverlay>,
+    /// Names of entries that could not be parsed and were skipped.
+    ///
+    /// Returned rather than logged: this crate holds no logger, and swallowing them
+    /// would make a typo in a config file invisible. The caller is expected to say
+    /// something about each one.
+    pub skipped: Vec<String>,
     pub idle_timeout: Option<std::time::Duration>,
 }
 
@@ -189,12 +195,24 @@ pub struct Config {
 /// Accepts both shapes omp does: a `{"servers": {...}}` wrapper, or a bare map of
 /// server names at the top level. Their own docs show the wrapper and their tests
 /// use the bare form, so both are real.
+///
+/// # One bad entry does not lose the file
+///
+/// Entries are parsed individually and an unparseable one is skipped, which is what
+/// omp does: `coerceServerConfigs` normalizes per entry and logs a warning for each
+/// one it drops.
+///
+/// This used to deserialize the whole map at once, so `{"good": {...}, "bad": 42}`
+/// returned an error and **every** server in the file was lost. A config file is
+/// hand-written, so a typo in one entry is the likely case rather than the exotic one,
+/// and losing the other twenty entries to it is the wrong failure. Found by an
+/// adversarial reviewer.
 pub fn parse(contents: &str) -> Result<ConfigFile, serde_json::Error> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Wrapper {
         #[serde(default)]
-        servers: Option<BTreeMap<String, ServerOverlay>>,
+        servers: Option<BTreeMap<String, serde_json::Value>>,
         #[serde(default)]
         idle_timeout_ms: Option<u64>,
     }
@@ -205,9 +223,11 @@ pub fn parse(contents: &str) -> Result<ConfigFile, serde_json::Error> {
     // ambiguous, and the wrapper reading wins -- same as omp, which checks
     // `isRecord(value.servers)` before falling back.
     let wrapper: Wrapper = serde_json::from_value(value.clone())?;
-    if let Some(servers) = wrapper.servers {
+    if let Some(raw) = wrapper.servers {
+        let (servers, skipped) = coerce_servers(raw);
         return Ok(ConfigFile {
             servers,
+            skipped,
             idle_timeout: wrapper
                 .idle_timeout_ms
                 .map(std::time::Duration::from_millis),
@@ -221,10 +241,30 @@ pub fn parse(contents: &str) -> Result<ConfigFile, serde_json::Error> {
         .as_object_mut()
         .and_then(|map| map.remove("idleTimeoutMs"))
         .and_then(|value| value.as_u64());
+    let raw: BTreeMap<String, serde_json::Value> = serde_json::from_value(bare)?;
+    let (servers, skipped) = coerce_servers(raw);
     Ok(ConfigFile {
-        servers: serde_json::from_value(bare)?,
+        servers,
+        skipped,
         idle_timeout: idle.map(std::time::Duration::from_millis),
     })
+}
+
+/// Parse each entry on its own, collecting the names that failed.
+fn coerce_servers(
+    raw: BTreeMap<String, serde_json::Value>,
+) -> (BTreeMap<String, ServerOverlay>, Vec<String>) {
+    let mut servers = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for (name, value) in raw {
+        match serde_json::from_value::<ServerOverlay>(value) {
+            Ok(overlay) => {
+                servers.insert(name, overlay);
+            }
+            Err(_) => skipped.push(name),
+        }
+    }
+    (servers, skipped)
 }
 
 /// The built-in defaults.
@@ -251,20 +291,37 @@ pub fn merge(base: &mut Config, overlay: ConfigFile) {
     for (name, over) in overlay.servers {
         match base.servers.get_mut(&name) {
             Some(existing) => {
-                // Every field is an Option, so "absent" and "empty" are distinct: an
-                // explicit `"args": []` means no arguments and is honoured, while an
-                // omitted `args` leaves the default's. Collapsing those two would
-                // make it impossible to remove a default argument.
-                if let Some(command) = over.command {
-                    existing.command = command;
-                }
+                // `args` is the only field where empty is meaningful, and the
+                // distinction is not stylistic. `gopls` defaults to `["serve"]`, so
+                // `"args": []` is the only way to say "invoke it bare" -- honouring it
+                // is required.
                 if let Some(args) = over.args {
                     existing.args = args;
                 }
-                if let Some(file_types) = over.file_types {
+                // For command, fileTypes and rootMarkers, empty is not a value: it
+                // makes the server unusable rather than differently configured. A
+                // server with no command cannot be spawned, and one with no file types
+                // or root markers can never be selected -- so an empty override would
+                // silently delete a working default while leaving it in `status`
+                // looking configured.
+                //
+                // omp reaches the same behaviour by a different route: they merge
+                // first, re-run `normalizeServerConfig` on the result, and keep the
+                // previous entry if it fails. Verified against a transcription of
+                // their `mergeServers` for all four fields -- empty command, fileTypes
+                // and rootMarkers each keep the default; empty args applies.
+                //
+                // Mine honoured empty for all four, and the comment here previously
+                // celebrated that as correct. It was right about `args` and wrong
+                // about the other three, which is worse than being wrong about all of
+                // them: the reasoning looked considered.
+                if let Some(command) = over.command.filter(|value| !value.is_empty()) {
+                    existing.command = command;
+                }
+                if let Some(file_types) = over.file_types.filter(|value| !value.is_empty()) {
                     existing.file_types = file_types;
                 }
-                if let Some(root_markers) = over.root_markers {
+                if let Some(root_markers) = over.root_markers.filter(|value| !value.is_empty()) {
                     existing.root_markers = root_markers;
                 }
                 if over.init_options.is_some() {
@@ -496,11 +553,60 @@ fn is_executable(_path: &Path) -> bool {
     true
 }
 
+/// Substitute runtime tokens in a server's arguments.
+///
+/// Currently one token, `$PID`, which `omnisharp` needs: its `--hostPID` argument
+/// tells it which process to exit with, and it is in `defaults.json` as the literal
+/// string `"$PID"`. omp substitutes it in `applyRuntimeDefaults`; nothing here did, so
+/// omnisharp would have been spawned with a literal `$PID` and refused to start.
+///
+/// Found by an adversarial reviewer reading `defaults.json` against omp's loader, not
+/// by any test: nothing in the suite spawns omnisharp, and nothing would have until a
+/// C# user reported it.
+///
+/// Applied at detection time rather than at parse time, so the token survives in the
+/// stored config and `status` can show what was configured rather than one process's
+/// resolved value.
+fn substitute_runtime_tokens(args: &[String]) -> Vec<String> {
+    let pid = std::process::id().to_string();
+    args.iter()
+        .map(|arg| {
+            if arg == PID_TOKEN {
+                pid.clone()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect()
+}
+
+/// The token `omnisharp`'s `--hostPID` argument is written as in `defaults.json`.
+///
+/// Matched whole rather than substring-replaced, following omp
+/// (`arg === PID_TOKEN ? String(process.pid) : arg`). A substring replace would also
+/// rewrite a path that happened to contain `$PID`.
+const PID_TOKEN: &str = "$PID";
+
 /// Decide, for every configured server, whether it applies to this project.
 ///
 /// Returns both halves. The unavailable ones are not filtered out because the reason
 /// is the useful part: `status` needs to tell "not a Rust project" from
 /// "rust-analyzer is not installed".
+///
+/// # Two servers here are not language servers
+///
+/// `biome` and `swiftlint` are marked `isLinter` in `defaults.json`, but in omp they
+/// are more than that: `applyRuntimeDefaults` attaches a `createClient` adapter to
+/// each, because neither speaks LSP the way the others do. `swiftlint`'s configured
+/// command is `swiftlint lint --quiet --reporter json`, which prints JSON and exits --
+/// it is not a server at all, and spawning it as one will produce a process that dies
+/// immediately.
+///
+/// We have no adapter layer, so both are reported as available and would fail on
+/// spawn. Recorded here and in `PORTING_NOTES.md` rather than removed from the
+/// defaults, because the entries are correct data and it is the adapter that is
+/// missing. A caller that spawns these before adapters exist gets a confusing failure,
+/// so this is a known gap with a name rather than a surprise.
 pub fn detect(
     config: &Config,
     root: &Path,
@@ -529,9 +635,11 @@ pub fn detect(
             );
             continue;
         };
+        let mut config = server.clone();
+        config.args = substitute_runtime_tokens(&config.args);
         available.push(Available {
             name: name.clone(),
-            config: server.clone(),
+            config,
             resolved,
         });
     }

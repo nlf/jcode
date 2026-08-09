@@ -758,3 +758,164 @@ fn a_new_server_without_required_fields_is_rejected() {
         config.servers.keys().collect::<Vec<_>>()
     );
 }
+
+/// **An empty override does not delete a default it cannot replace.**
+///
+/// Verified against a transcription of omp's `mergeServers` + `normalizeServerConfig`,
+/// run in node: an empty `command`, `fileTypes` or `rootMarkers` each makes the merged
+/// entry fail normalization, so omp keeps the previous config. Empty `args` normalizes
+/// fine and applies.
+///
+/// My first version honoured empty for all four and the comment said so approvingly.
+/// It was right about `args` and wrong about the rest, which is the worse kind of wrong:
+/// the reasoning looked deliberate. An empty `fileTypes` would have left rust-analyzer
+/// configured, enabled, and matching no file -- silently never used. Found by an
+/// adversarial reviewer.
+#[test]
+fn an_empty_override_cannot_invalidate_a_working_default() {
+    let before = defaults().servers["rust-analyzer"].clone();
+
+    for overlay in [
+        r#"{"rust-analyzer": {"fileTypes": []}}"#,
+        r#"{"rust-analyzer": {"rootMarkers": []}}"#,
+        r#"{"rust-analyzer": {"command": ""}}"#,
+    ] {
+        let mut config = defaults();
+        merge(&mut config, parse(overlay).expect("overlay"));
+        let after = &config.servers["rust-analyzer"];
+        assert_eq!(
+            after.file_types, before.file_types,
+            "{overlay} emptied the file types"
+        );
+        assert_eq!(
+            after.root_markers, before.root_markers,
+            "{overlay} emptied the root markers"
+        );
+        assert_eq!(
+            after.command, before.command,
+            "{overlay} blanked the command"
+        );
+    }
+}
+
+/// **One malformed entry does not lose the rest of the file.**
+///
+/// omp normalizes per entry and warns about the ones it drops. Parsing the whole map at
+/// once meant `{"good": {...}, "bad": 42}` returned an error and *every* server in the
+/// file was discarded. Config files are hand-written, so a typo in one entry is the
+/// likely case, and taking twenty good entries down with it is the wrong failure.
+#[test]
+fn a_malformed_entry_is_skipped_and_the_rest_survive() {
+    let file = parse(
+        r#"{
+            "good": {"command": "sh", "fileTypes": [".zz"], "rootMarkers": ["zz.toml"]},
+            "bad": 42,
+            "alsogood": {"disabled": true}
+        }"#,
+    )
+    .expect("a file with one bad entry must still parse");
+
+    assert!(file.servers.contains_key("good"), "a good entry was lost");
+    assert!(
+        file.servers.contains_key("alsogood"),
+        "a good entry was lost"
+    );
+    assert!(!file.servers.contains_key("bad"));
+    assert_eq!(
+        file.skipped,
+        vec!["bad".to_string()],
+        "the skipped name must be reported, or a typo is invisible"
+    );
+}
+
+/// Truly invalid JSON is still an error, not silently empty.
+///
+/// Per-entry tolerance must not become "any input parses". A file that is not JSON at
+/// all is a different problem from one entry being wrong, and reporting it as "no
+/// servers configured" would hide it.
+#[test]
+fn malformed_json_is_still_an_error() {
+    assert!(parse("{not json").is_err());
+    assert!(parse("").is_err());
+    // A JSON array is valid JSON but not a config shape.
+    assert!(parse("[1, 2, 3]").is_err());
+}
+
+/// **`$PID` in omnisharp's args is substituted.**
+///
+/// `omnisharp` takes `--hostPID <pid>` to know which process to exit with, and
+/// `defaults.json` carries the literal `"$PID"`. omp substitutes it in
+/// `applyRuntimeDefaults`; nothing here did, so omnisharp would have been spawned with
+/// a literal `$PID` and refused to start.
+///
+/// Nothing in the suite spawns omnisharp, so no test would ever have caught this. Found
+/// by an adversarial reviewer reading the data against omp's loader.
+#[test]
+fn the_pid_token_is_substituted_for_the_real_pid() {
+    let dir = project(&[("app.sln", ""), ("app.csproj", "")], &[]);
+    let bin = project(&[], &["omnisharp"]);
+    let (available, _) = detect(
+        &defaults(),
+        dir.path(),
+        Some(bin.path().to_str().expect("utf-8")),
+    );
+
+    let omnisharp = available
+        .iter()
+        .find(|server| server.name == "omnisharp")
+        .expect("omnisharp must be available");
+
+    assert!(
+        !omnisharp.config.args.iter().any(|arg| arg == "$PID"),
+        "a literal $PID reached the spawn arguments: {:?}",
+        omnisharp.config.args
+    );
+    assert!(
+        omnisharp
+            .config
+            .args
+            .contains(&std::process::id().to_string()),
+        "the real pid is missing from {:?}",
+        omnisharp.config.args
+    );
+    // The rest of the arguments are untouched.
+    assert!(omnisharp.config.args.contains(&"--hostPID".to_string()));
+    assert!(
+        omnisharp
+            .config
+            .args
+            .contains(&"--languageserver".to_string())
+    );
+}
+
+/// The stored config keeps the token, so `status` shows what was configured.
+///
+/// Substitution happens at detection, not at parse. Otherwise one process's pid gets
+/// baked into a config that outlives it, and a reader of `status` sees a number with no
+/// explanation instead of the token they wrote.
+#[test]
+fn the_stored_config_keeps_the_token_unsubstituted() {
+    assert!(
+        defaults().servers["omnisharp"]
+            .args
+            .contains(&"$PID".to_string()),
+        "the token must survive in the configured form"
+    );
+}
+
+/// Only the exact token is substituted, not any argument containing it.
+///
+/// omp compares whole (`arg === PID_TOKEN`). A substring replace would rewrite a path
+/// that happened to contain `$PID`, which is the kind of thing that works until someone
+/// has a directory with an unusual name.
+#[test]
+fn a_path_containing_the_token_is_not_rewritten() {
+    let substituted = substitute_runtime_tokens(&[
+        "$PID".to_string(),
+        "/tmp/$PID/socket".to_string(),
+        "--flag=$PID".to_string(),
+    ]);
+    assert_eq!(substituted[0], std::process::id().to_string());
+    assert_eq!(substituted[1], "/tmp/$PID/socket", "a path was rewritten");
+    assert_eq!(substituted[2], "--flag=$PID", "a flag value was rewritten");
+}
