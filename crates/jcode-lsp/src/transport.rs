@@ -32,6 +32,7 @@
 //! draining stdout. Hence a background task, and hence the channel out of it.
 
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -75,7 +76,11 @@ pub enum WriteError {
     ///
     /// **The important one.** Without a deadline this is an unrecoverable hang
     /// inside a kernel write, and the caller cannot tell it from a slow server.
-    Blocked { after: Duration },
+    ///
+    /// `partial` says whether bytes of this frame reached the pipe before the
+    /// deadline. When true the stream is **desynchronised** and the transport must
+    /// be torn down: see [`write_framed`].
+    Blocked { after: Duration, partial: bool },
     /// The pipe is gone, which usually means the process is too.
     Closed { source: std::io::Error },
 }
@@ -83,7 +88,19 @@ pub enum WriteError {
 impl std::fmt::Display for WriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Blocked { after } => write!(
+            Self::Blocked {
+                after,
+                partial: true,
+            } => write!(
+                f,
+                "the language server stopped reading its stdin (write blocked for \
+                 {after:?}) and a partial frame reached the pipe, so this connection \
+                 is desynchronised and must be restarted"
+            ),
+            Self::Blocked {
+                after,
+                partial: false,
+            } => write!(
                 f,
                 "the language server stopped reading its stdin (write blocked for {after:?})"
             ),
@@ -94,6 +111,16 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
+impl WriteError {
+    /// Whether this failure left the byte stream unusable.
+    ///
+    /// A caller that sees `true` must not send anything else on this transport: the
+    /// server is mid-frame and every later message would be misparsed.
+    pub fn desynchronised(&self) -> bool {
+        matches!(self, Self::Blocked { partial: true, .. })
+    }
+}
+
 /// A send-only handle to a transport's stdin.
 ///
 /// Exists so the router task can answer the server without holding a reference
@@ -102,12 +129,14 @@ impl std::error::Error for WriteError {}
 #[derive(Clone)]
 pub struct Writer {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
+    /// Shared with the transport, so a partial write on either path stops both.
+    poisoned: Arc<AtomicBool>,
 }
 
 impl Writer {
     /// Send one framed message, bounded by `deadline`.
     pub async fn send(&self, body: &[u8], deadline: Duration) -> Result<(), WriteError> {
-        write_framed(&self.stdin, body, deadline).await
+        write_framed(&self.stdin, &self.poisoned, body, deadline).await
     }
 }
 
@@ -116,36 +145,92 @@ impl Writer {
 /// One implementation rather than two, because the deadline handling is the part
 /// that must not diverge: a second copy that forgot it would reintroduce the
 /// wedged-stdin hang on whichever path used it.
+///
+/// # Why this writes in chunks rather than calling `write_all` once
+///
+/// **Found by probing, after the first version was written and tested.**
+/// `AsyncWriteExt::write_all` is cancel-*unsafe* in the way that matters here: when
+/// the future is dropped at a timeout, the bytes it already handed to the kernel
+/// stay on the pipe. Measured directly — a 1 MiB `write_all` cancelled after 300ms
+/// against a non-reading child left **65,537 bytes** in the pipe.
+///
+/// That is not a lost message, it is a *corrupted stream*. The server has half a
+/// frame; the next frame we send is appended to it; `Content-Length` then measures
+/// the wrong bytes and **every subsequent message is misframed**. The failure
+/// surfaces far from its cause, as a server that appears to go mad.
+///
+/// So the write is done in bounded chunks and the count of bytes that reached the
+/// pipe is tracked. On a timeout the caller is told whether anything landed, and if
+/// it did the transport is marked unusable rather than being left to corrupt
+/// silently. omp gets the same protection differently: their `LspDrainAbortError`
+/// path tears the client down on an aborted drain, with a comment saying an abort
+/// that raced an in-flight drain is the only case that leaves the sink pending.
 async fn write_framed(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    poisoned: &Arc<AtomicBool>,
     body: &[u8],
     deadline: Duration,
 ) -> Result<(), WriteError> {
+    // Refuse before writing: appending to a half-written frame is exactly the
+    // corruption this guard exists to prevent.
+    if poisoned.load(Ordering::SeqCst) {
+        return Err(WriteError::Blocked {
+            after: Duration::ZERO,
+            partial: true,
+        });
+    }
+
     let framed = encode(body);
     let stdin = Arc::clone(stdin);
+    // Shared with the write future so the count survives its cancellation. The
+    // future is dropped on timeout, so anything it owned is lost with it.
+    let written = Arc::new(AtomicUsize::new(0));
 
-    let write = async move {
-        let mut guard = stdin.lock().await;
-        let Some(pipe) = guard.as_mut() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "stdin already closed",
-            ));
-        };
-        pipe.write_all(&framed).await?;
-        // Flush explicitly: a buffered frame the server never sees is
-        // indistinguishable from a server that never answers.
-        pipe.flush().await
+    let write = {
+        let written = Arc::clone(&written);
+        let framed = framed.clone();
+        async move {
+            let mut guard = stdin.lock().await;
+            let Some(pipe) = guard.as_mut() else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "stdin already closed",
+                ));
+            };
+            // Chunked so progress is observable. 8 KiB is well under a typical
+            // 64 KiB pipe buffer, so a healthy write still completes in one or two
+            // syscalls and the bookkeeping costs nothing.
+            for chunk in framed.chunks(8 * 1024) {
+                pipe.write_all(chunk).await?;
+                written.fetch_add(chunk.len(), Ordering::SeqCst);
+            }
+            // Flush explicitly: a buffered frame the server never sees is
+            // indistinguishable from a server that never answers.
+            pipe.flush().await
+        }
     };
 
     match tokio::time::timeout(deadline, write).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(source)) => Err(WriteError::Closed { source }),
-        // Note the lock is still held by the abandoned write. That is
-        // deliberate: the caller's correct response to a blocked write is to
-        // tear the transport down, and letting a later write queue behind a
-        // wedge would just hang that one too.
-        Err(_) => Err(WriteError::Blocked { after: deadline }),
+        Err(_) => {
+            // Note the lock is still held by the abandoned write. Deliberate: the
+            // correct response to a blocked write is to tear the transport down,
+            // and letting a later write queue behind a wedge would hang that one
+            // too.
+            //
+            // A chunk boundary is not a frame boundary, so *any* progress means the
+            // server has a partial frame.
+            let landed = written.load(Ordering::SeqCst);
+            let partial = landed > 0;
+            if partial {
+                poisoned.store(true, Ordering::SeqCst);
+            }
+            Err(WriteError::Blocked {
+                after: deadline,
+                partial,
+            })
+        }
     }
 }
 
@@ -157,6 +242,9 @@ pub struct Transport {
     stdin: Arc<Mutex<Option<ChildStdin>>>,
     /// The captured stderr tail, shared with the collector task.
     stderr: Arc<Mutex<String>>,
+    /// Set when a partial frame reached the pipe, which makes the byte stream
+    /// unusable. Shared with every `Writer`, since either path can poison it.
+    poisoned: Arc<AtomicBool>,
 }
 
 impl Transport {
@@ -205,6 +293,7 @@ impl Transport {
                 child,
                 stdin: Arc::new(Mutex::new(Some(stdin))),
                 stderr: captured,
+                poisoned: Arc::new(AtomicBool::new(false)),
             },
             rx,
         ))
@@ -217,7 +306,15 @@ impl Transport {
     /// with no way out. Racing the write against a timer is the only thing that
     /// turns that into a reportable failure rather than a hung turn.
     pub async fn send(&self, body: &[u8], deadline: Duration) -> Result<(), WriteError> {
-        write_framed(&self.stdin, body, deadline).await
+        write_framed(&self.stdin, &self.poisoned, body, deadline).await
+    }
+
+    /// Whether a partial frame left the byte stream unusable.
+    ///
+    /// A caller seeing `true` must restart the server: nothing can be sent that the
+    /// server would parse correctly.
+    pub fn desynchronised(&self) -> bool {
+        self.poisoned.load(Ordering::SeqCst)
     }
 
     /// A cloneable send-only handle.
@@ -227,6 +324,7 @@ impl Transport {
     pub fn writer(&self) -> Writer {
         Writer {
             stdin: Arc::clone(&self.stdin),
+            poisoned: Arc::clone(&self.poisoned),
         }
     }
 

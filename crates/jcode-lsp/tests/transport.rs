@@ -222,6 +222,77 @@ async fn a_server_that_stops_reading_stdin_fails_the_write_rather_than_hanging()
     }
 }
 
+/// **A cancelled write that already put bytes on the pipe must poison the
+/// transport.**
+///
+/// Found by probing after the test above was already green, which is the point: the
+/// old test asserted only that the write *failed*, and that was true while the
+/// stream was being silently corrupted.
+///
+/// `AsyncWriteExt::write_all` is cancel-unsafe in the way that matters. Dropped at a
+/// timeout, the bytes it already handed the kernel stay on the pipe — measured at
+/// **65,537 bytes** for a cancelled 1 MiB write against a non-reading child. The
+/// server then holds half a frame, the next frame is appended to it, and
+/// `Content-Length` measures the wrong bytes, so *every* later message is misframed.
+/// A corrupted stream, not a lost message, and it surfaces far from its cause.
+#[tokio::test]
+async fn a_partial_write_poisons_the_transport_rather_than_corrupting_the_stream() {
+    let (transport, mut rx) = spawn(&[("FAKE_LSP_STOP_READING_ON", "test/echo")]);
+    send_request(&transport, 1, "initialize", json!({})).await;
+    await_message(&mut rx, |message| message["id"] == 1).await;
+    assert!(
+        !transport.desynchronised(),
+        "a healthy transport must not start poisoned"
+    );
+
+    // Trip the knob, then fill the pipe until a write is cut off mid-frame.
+    send_request(&transport, 2, "test/echo", json!({})).await;
+    let filler = json!({
+        "jsonrpc": "2.0",
+        "method": "test/noise",
+        "params": {"pad": "x".repeat(512 * 1024)}
+    });
+    let body = serde_json::to_vec(&filler).expect("serialize");
+
+    let mut blocked = None;
+    for _ in 0..8 {
+        match transport.send(&body, Duration::from_millis(300)).await {
+            Ok(()) => continue,
+            Err(error) => {
+                blocked = Some(error);
+                break;
+            }
+        }
+    }
+
+    let error = blocked.expect("a wedged server must eventually block a write");
+    assert!(
+        error.desynchronised(),
+        "a write cut off mid-frame leaves the stream unusable and must say so, got {error}"
+    );
+    // The message has to name the consequence, or a caller logs it and retries into
+    // a corrupted stream.
+    assert!(
+        error.to_string().contains("desynchronised"),
+        "the error must name the consequence, got {error}"
+    );
+    assert!(
+        transport.desynchronised(),
+        "the transport itself must be marked unusable"
+    );
+
+    // And it must refuse further writes rather than appending to the half-frame.
+    // Refusing costs a restart; appending corrupts every later message.
+    let refused = transport
+        .send(b"{}", Duration::from_secs(1))
+        .await
+        .expect_err("a poisoned transport must refuse to write");
+    assert!(
+        refused.desynchronised(),
+        "the refusal must carry the same reason, got {refused}"
+    );
+}
+
 /// Closing stdin must end a healthy server. The teardown path when a client goes
 /// away without a polite shutdown; a server that ignores EOF becomes an orphan.
 #[tokio::test]

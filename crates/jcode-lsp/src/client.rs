@@ -308,10 +308,28 @@ impl Client {
             // Remove the pending entry: nobody will ever answer a request that
             // was not sent, and leaving it would leak until the connection dies.
             self.pendings.forget(&id).await;
-            return Err(RequestFailure::Write {
+            let desynchronised = error.desynchronised();
+            let failure = RequestFailure::Write {
                 method: method.to_string(),
                 detail: error.to_string(),
-            });
+            };
+            if desynchronised {
+                // A partial frame reached the server, so the byte stream is
+                // unusable: every later message would be misparsed. Fail everything
+                // outstanding now, rather than letting each caller wait out its own
+                // timeout against a connection that can never answer.
+                //
+                // The transport itself refuses further writes, so this is about
+                // telling the waiters promptly rather than about preventing more
+                // corruption.
+                self.pendings
+                    .fail_all(&format!(
+                        "{}: the connection is desynchronised and must be restarted",
+                        self.name
+                    ))
+                    .await;
+            }
+            return Err(failure);
         }
 
         match tokio::time::timeout(timeout, receive).await {
