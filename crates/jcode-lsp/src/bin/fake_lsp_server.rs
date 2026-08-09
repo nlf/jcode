@@ -66,6 +66,13 @@ struct Observed {
     notifications: Vec<String>,
     /// Documents currently open, with their last-seen text.
     documents: HashMap<String, (i64, String)>,
+    /// Ids we have used for our own requests to the client.
+    next_server_id: u64,
+    /// Requests parked awaiting the client's answer, keyed by the id we sent.
+    ///
+    /// Maps our outbound id to the `test/serverRequest` caller waiting for it,
+    /// plus the method, so the forwarded answer can be labelled.
+    awaiting: HashMap<String, (Value, String)>,
 }
 
 struct Server {
@@ -230,23 +237,38 @@ impl Server {
                 );
             }
             "test/echo" => self.respond(id, params.clone()),
-            // Ask the client something, so the server→client direction is
-            // drivable from a test. The client's answer is discarded here; what
-            // matters is that it answers at all, since a server blocked on an
-            // unanswered request stops serving.
+            // Ask the client something and **report what it answered**. Returning
+            // the answer rather than just "sent" is what lets a test assert on the
+            // client's reply — omp's configuration test pins the exact array
+            // `[null, true, null]`, and without the answer coming back there is
+            // nothing to compare against.
+            //
+            // Answering our own caller has to wait for the client's reply, so the
+            // pending request is parked and completed by `handle` when the
+            // response arrives.
             "test/serverRequest" => {
                 let inner_method = params
                     .get("method")
                     .and_then(Value::as_str)
-                    .unwrap_or("workspace/configuration");
+                    .unwrap_or("workspace/configuration")
+                    .to_string();
                 let inner_params = params.get("params").cloned().unwrap_or(json!(null));
+                let inner_id = {
+                    let mut observed = self.lock();
+                    observed.next_server_id += 1;
+                    format!("srv-{}", observed.next_server_id)
+                };
+                // Park our caller's id against the id we are about to use, so the
+                // client's answer can be forwarded to it.
+                self.lock()
+                    .awaiting
+                    .insert(inner_id.clone(), (id.clone(), inner_method.clone()));
                 self.send(&json!({
                     "jsonrpc": "2.0",
-                    "id": format!("fake-{}", std::process::id()),
+                    "id": inner_id,
                     "method": inner_method,
                     "params": inner_params
                 }));
-                self.respond(id, json!({"sent": inner_method}));
             }
             "shutdown" => self.respond(id, Value::Null),
             // Everything else is genuinely unsupported, and must say so with the
@@ -334,9 +356,26 @@ impl Server {
             (Some(method), Some(id)) => self.handle_request(id, method, &params),
             // A notification: a method and no id.
             (Some(method), None) => self.handle_notification(method, &params),
-            // A response to something we asked. Nothing to do, but it must not
-            // be mistaken for a request with a missing method.
-            (None, _) => {}
+            // A response to something we asked. Forward it to whichever
+            // `test/serverRequest` caller is parked on it, so a test can assert on
+            // the client's actual answer rather than merely that it replied.
+            (None, Some(id)) => {
+                let key = id.as_str().map(str::to_string).unwrap_or_else(|| id.to_string());
+                let parked = self.lock().awaiting.remove(&key);
+                if let Some((caller, method)) = parked {
+                    self.respond(
+                        &caller,
+                        json!({
+                            "method": method,
+                            // Both halves, so a test can distinguish "answered
+                            // null" from "answered with an error".
+                            "result": message.get("result").cloned().unwrap_or(Value::Null),
+                            "error": message.get("error").cloned().unwrap_or(Value::Null),
+                        }),
+                    );
+                }
+            }
+            (None, None) => {}
         }
     }
 

@@ -94,6 +94,61 @@ impl std::fmt::Display for WriteError {
 
 impl std::error::Error for WriteError {}
 
+/// A send-only handle to a transport's stdin.
+///
+/// Exists so the router task can answer the server without holding a reference
+/// into the `Client` that owns it. Cloning is cheap and every clone serialises
+/// through the same mutex, so two writers cannot interleave a frame.
+#[derive(Clone)]
+pub struct Writer {
+    stdin: Arc<Mutex<Option<ChildStdin>>>,
+}
+
+impl Writer {
+    /// Send one framed message, bounded by `deadline`.
+    pub async fn send(&self, body: &[u8], deadline: Duration) -> Result<(), WriteError> {
+        write_framed(&self.stdin, body, deadline).await
+    }
+}
+
+/// The shared write path, used by both [`Transport::send`] and [`Writer::send`].
+///
+/// One implementation rather than two, because the deadline handling is the part
+/// that must not diverge: a second copy that forgot it would reintroduce the
+/// wedged-stdin hang on whichever path used it.
+async fn write_framed(
+    stdin: &Arc<Mutex<Option<ChildStdin>>>,
+    body: &[u8],
+    deadline: Duration,
+) -> Result<(), WriteError> {
+    let framed = encode(body);
+    let stdin = Arc::clone(stdin);
+
+    let write = async move {
+        let mut guard = stdin.lock().await;
+        let Some(pipe) = guard.as_mut() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "stdin already closed",
+            ));
+        };
+        pipe.write_all(&framed).await?;
+        // Flush explicitly: a buffered frame the server never sees is
+        // indistinguishable from a server that never answers.
+        pipe.flush().await
+    };
+
+    match tokio::time::timeout(deadline, write).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(source)) => Err(WriteError::Closed { source }),
+        // Note the lock is still held by the abandoned write. That is
+        // deliberate: the caller's correct response to a blocked write is to
+        // tear the transport down, and letting a later write queue behind a
+        // wedge would just hang that one too.
+        Err(_) => Err(WriteError::Blocked { after: deadline }),
+    }
+}
+
 /// A running language server process.
 pub struct Transport {
     child: Child,
@@ -162,31 +217,16 @@ impl Transport {
     /// with no way out. Racing the write against a timer is the only thing that
     /// turns that into a reportable failure rather than a hung turn.
     pub async fn send(&self, body: &[u8], deadline: Duration) -> Result<(), WriteError> {
-        let framed = encode(body);
-        let stdin = Arc::clone(&self.stdin);
+        write_framed(&self.stdin, body, deadline).await
+    }
 
-        let write = async move {
-            let mut guard = stdin.lock().await;
-            let Some(pipe) = guard.as_mut() else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "stdin already closed",
-                ));
-            };
-            pipe.write_all(&framed).await?;
-            // Flush explicitly: a buffered frame the server never sees is
-            // indistinguishable from a server that never answers.
-            pipe.flush().await
-        };
-
-        match tokio::time::timeout(deadline, write).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(source)) => Err(WriteError::Closed { source }),
-            // Note the lock is still held by the abandoned write. That is
-            // deliberate: the caller's correct response to a blocked write is to
-            // tear the transport down, and letting a later write queue behind a
-            // wedge would just hang that one too.
-            Err(_) => Err(WriteError::Blocked { after: deadline }),
+    /// A cloneable send-only handle.
+    ///
+    /// For the router task, which must answer the server's questions without
+    /// borrowing the `Client` that owns this transport.
+    pub fn writer(&self) -> Writer {
+        Writer {
+            stdin: Arc::clone(&self.stdin),
         }
     }
 

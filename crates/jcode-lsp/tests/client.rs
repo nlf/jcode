@@ -1,0 +1,559 @@
+//! Client tests: the handshake, requests, and answering the server.
+//!
+//! Groups A and B, end to end against the real fake server. The recurring theme
+//! is that the failures are hangs rather than wrong answers, so most of these
+//! would time out rather than assert-fail if the behaviour regressed — which is
+//! why each has a bounded deadline and a message saying what was expected.
+
+use std::time::Duration;
+
+use jcode_lsp::client::{Client, ServerSpec};
+use jcode_lsp::correlation::RequestFailure;
+use serde_json::{json, Value};
+
+const PATIENT: Duration = Duration::from_secs(10);
+
+async fn start(env: &[(&str, &str)], settings: Value) -> Client {
+    let env: Vec<(String, String)> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    Client::start(
+        ServerSpec {
+            name: "fake".to_string(),
+            program: env!("CARGO_BIN_EXE_fake_lsp_server").to_string(),
+            args: Vec::new(),
+            root: std::path::PathBuf::from("."),
+            env,
+            settings,
+            init_options: json!({}),
+        },
+        PATIENT,
+    )
+    .await
+    .expect("the handshake should complete")
+}
+
+/// The `test/state` view of what the server observed.
+async fn state(client: &Client) -> Value {
+    client
+        .request("test/state", json!(null), PATIENT)
+        .await
+        .expect("test/state should answer")
+}
+
+#[tokio::test]
+async fn the_handshake_completes_and_stores_capabilities() {
+    let client = start(&[], json!({})).await;
+
+    let capabilities = client.capabilities().await;
+    assert_eq!(
+        capabilities["definitionProvider"], true,
+        "capabilities must be stored from initialize, got {capabilities}"
+    );
+    assert!(client.pid().is_some(), "a spawned server has a pid");
+}
+
+/// **The handshake order is fixed and load-bearing.** Configuration before
+/// `initialized` is a violation some servers reject; a semantic request before
+/// configuration runs unconfigured, which omp records as their #5276.
+#[tokio::test]
+async fn configuration_is_pushed_after_initialized_not_before() {
+    let client = start(&[], json!({"rust-analyzer": {"checkOnSave": false}})).await;
+
+    let observed = state(&client).await;
+    let notifications: Vec<&str> = observed["notifications"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+
+    let initialized = notifications
+        .iter()
+        .position(|method| *method == "initialized")
+        .expect("initialized must be sent");
+    let configured = notifications
+        .iter()
+        .position(|method| *method == "workspace/didChangeConfiguration")
+        .expect("configuration must be pushed");
+    assert!(
+        initialized < configured,
+        "configuration must follow initialized, got {notifications:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_request_returns_the_servers_result() {
+    let client = start(&[], json!({})).await;
+    let echoed = client
+        .request("test/echo", json!({"n": 7}), PATIENT)
+        .await
+        .expect("echo should answer");
+    assert_eq!(echoed["n"], 7);
+}
+
+/// An unimplemented method is a *successful exchange with a negative answer*, and
+/// must be distinguishable from a transport failure. A client that tears down on
+/// `-32601` kills healthy servers.
+#[tokio::test]
+async fn an_unsupported_method_is_a_server_error_not_a_transport_failure() {
+    let client = start(&[], json!({})).await;
+    let failure = client
+        .request("textDocument/nonsense", json!({}), PATIENT)
+        .await
+        .expect_err("must fail");
+
+    assert!(
+        failure.is_method_not_found(),
+        "expected method-not-found, got {failure}"
+    );
+    // Still usable afterwards, which is the actual claim.
+    let echoed = client
+        .request("test/echo", json!({"alive": true}), PATIENT)
+        .await
+        .expect("the client must survive a -32601");
+    assert_eq!(echoed["alive"], true);
+}
+
+/// A timeout must name the method and the duration. "LSP request timed out" with
+/// neither is unactionable: a slow cold start and a wedged server read the same.
+#[tokio::test]
+async fn a_timeout_names_the_method_and_the_duration() {
+    let client = start(&[("FAKE_LSP_HANG_ON", "test/echo")], json!({})).await;
+
+    let failure = client
+        .request("test/echo", json!({}), Duration::from_millis(300))
+        .await
+        .expect_err("a hanging request must time out");
+
+    match &failure {
+        RequestFailure::TimedOut { method, after } => {
+            assert_eq!(method, "test/echo");
+            assert_eq!(*after, Duration::from_millis(300));
+        }
+        other => panic!("expected a timeout, got {other}"),
+    }
+    let text = failure.to_string();
+    assert!(text.contains("test/echo"), "{text}");
+    assert!(text.contains("300"), "{text}");
+}
+
+/// A timed-out request must not leave anything behind. If it did, the map grows
+/// for the life of the connection and a late answer resolves a caller that is
+/// gone.
+#[tokio::test]
+async fn a_timed_out_request_does_not_wedge_later_ones() {
+    let client = start(&[("FAKE_LSP_HANG_ON", "test/echo")], json!({})).await;
+
+    let _ = client
+        .request("test/echo", json!({}), Duration::from_millis(200))
+        .await
+        .expect_err("must time out");
+
+    // A different method still works.
+    let observed = state(&client).await;
+    assert_eq!(observed["initializeCount"], 1);
+}
+
+/// **When the connection dies, every in-flight request fails with the cause.**
+/// Without this each waits out its own timeout and reports a timeout instead of
+/// the real reason, so one dead server costs one timeout per request and explains
+/// none of them.
+#[tokio::test]
+async fn a_dying_server_fails_in_flight_requests_with_the_reason() {
+    let client = start(&[("FAKE_LSP_EXIT_ON", "test/echo")], json!({})).await;
+
+    // A generous timeout, so a timeout would be the *wrong* answer here: the
+    // failure must arrive from the close, not from the clock.
+    let failure = client
+        .request("test/echo", json!({}), Duration::from_secs(30))
+        .await
+        .expect_err("the request cannot be answered by an exiting server");
+
+    match &failure {
+        RequestFailure::Server(error) => {
+            // fail_all reports the method and the transport's reason.
+            assert!(error.message.contains("test/echo"), "{}", error.message);
+            assert!(
+                error.message.contains("stdout") || error.message.contains("closed"),
+                "the cause must be named, got {}",
+                error.message
+            );
+        }
+        RequestFailure::Closed { detail, .. } => {
+            assert!(!detail.is_empty(), "a close must carry a detail");
+        }
+        other => panic!("expected a close-driven failure, not {other}"),
+    }
+}
+
+/// A server dying at startup explains itself on stderr and nowhere else. That
+/// tail must reach the caller, or every such failure reads as an unexplained
+/// timeout.
+#[tokio::test]
+async fn a_server_that_fails_to_start_reports_its_stderr() {
+    let failure = match Client::start(
+        ServerSpec {
+            name: "broken".to_string(),
+            program: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "echo 'cannot open shared object file: libclang.so' >&2; exit 1".to_string(),
+            ],
+            root: std::path::PathBuf::from("."),
+            env: Vec::new(),
+            settings: json!({}),
+            init_options: json!({}),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    {
+        Err(failure) => failure,
+        Ok(_) => panic!("a server that exits immediately cannot complete a handshake"),
+    };
+
+    let text = failure.to_string();
+    assert!(
+        text.contains("libclang") || text.contains("initialize"),
+        "the failure should explain itself, got {text}"
+    );
+}
+
+/// **Group B: the server's questions must be answered, in order, with `null` for
+/// sections we do not have.** The server matches the array positionally, so a
+/// reordered answer hands it another section's settings.
+///
+/// This is omp's `answers missing workspace configuration sections with null in
+/// request order`, whose assertion is the literal array `[null, true, null]`.
+/// Asserting the array rather than "the server survived" is the difference between
+/// checking the behaviour and checking that nothing exploded.
+#[tokio::test]
+async fn a_configuration_pull_is_answered_in_request_order_with_null_for_gaps() {
+    let client = start(&[], json!({"html.auto_closing_tags": true})).await;
+
+    let answered = client
+        .request(
+            "test/serverRequest",
+            json!({
+                "method": "workspace/configuration",
+                "params": {"items": [
+                    {"section": "razor.format.attribute_indent_style"},
+                    {"section": "html.auto_closing_tags"},
+                    {}
+                ]}
+            }),
+            PATIENT,
+        )
+        .await
+        .expect("the server request should round-trip");
+
+    assert_eq!(
+        answered["result"],
+        json!([null, true, null]),
+        "positional order and null gaps both matter, got {}",
+        answered["result"]
+    );
+    assert_eq!(answered["error"], Value::Null, "this must not be an error");
+}
+
+/// A dotted section addresses a nested path when the settings are nested that
+/// way. Answering `null` for every nested request is how a server ends up running
+/// with none of its configuration, and it is silent.
+///
+/// Note the exact-key case is checked above (`html.auto_closing_tags` is a
+/// literal key), so between them both spellings are pinned.
+#[tokio::test]
+async fn dotted_configuration_sections_resolve_nested_paths() {
+    let client = start(
+        &[],
+        json!({"rust-analyzer": {"cargo": {"features": "all"}}}),
+    )
+    .await;
+
+    let answered = client
+        .request(
+            "test/serverRequest",
+            json!({
+                "method": "workspace/configuration",
+                "params": {"items": [
+                    {"section": "rust-analyzer.cargo"},
+                    {"section": "rust-analyzer.cargo.features"},
+                    {"section": "rust-analyzer.missing"}
+                ]}
+            }),
+            PATIENT,
+        )
+        .await
+        .expect("round-trip");
+
+    assert_eq!(
+        answered["result"],
+        json!([{"features": "all"}, "all", null]),
+        "a dotted section must walk the nested path, got {}",
+        answered["result"]
+    );
+}
+
+/// An unknown server request gets `-32601`, which is an **answer**. A server told
+/// "method not found" moves on; a server told nothing waits forever.
+#[tokio::test]
+async fn an_unknown_server_request_is_answered_with_method_not_found() {
+    let client = start(&[], json!({})).await;
+
+    let answered = client
+        .request(
+            "test/serverRequest",
+            json!({"method": "window/somethingWeDoNotHandle", "params": {}}),
+            PATIENT,
+        )
+        .await
+        .expect("round-trip");
+
+    // An *answer*, and specifically an error with the spec's code. Silence would
+    // leave the server blocked; a null success would tell it we handled something
+    // we did not.
+    assert_eq!(
+        answered["error"]["code"], -32601,
+        "an unhandled server request must be refused by code, got {}",
+        answered["error"]
+    );
+
+    // And the server keeps serving, which is the consequence that matters.
+    let observed = state(&client).await;
+    assert_eq!(observed["initializeCount"], 1);
+}
+
+/// `workspace/applyEdit` is refused in v1, but refused **in the spec's terms** so
+/// the server can react. An error would read as a client fault; `applied: false`
+/// is a legitimate answer that servers handle.
+#[tokio::test]
+async fn a_server_initiated_edit_is_refused_in_the_specs_terms() {
+    let client = start(&[], json!({})).await;
+
+    let answered = client
+        .request(
+            "test/serverRequest",
+            json!({
+                "method": "workspace/applyEdit",
+                "params": {"edit": {"changes": {}}}
+            }),
+            PATIENT,
+        )
+        .await
+        .expect("round-trip");
+
+    assert_eq!(
+        answered["result"]["applied"], false,
+        "v1 must refuse, got {}",
+        answered["result"]
+    );
+    assert!(
+        answered["result"]["failureReason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "a refusal must say why, got {}",
+        answered["result"]
+    );
+    assert_eq!(
+        answered["error"],
+        Value::Null,
+        "refusing is not an error: an error reads as a client fault"
+    );
+}
+
+/// Dynamic registration must be recorded *and* acknowledged. Some servers block
+/// semantic requests until it succeeds, and a client that only checks static
+/// capabilities concludes such a server can do nothing.
+#[tokio::test]
+async fn dynamic_registration_is_recorded_and_acknowledged() {
+    let client = start(&[("FAKE_LSP_NO_CAPABILITIES", "1")], json!({})).await;
+
+    // Statically, nothing.
+    assert!(
+        !client
+            .supports("hoverProvider", "textDocument/hover")
+            .await,
+        "the fixture advertised no capabilities"
+    );
+
+    client
+        .request(
+            "test/serverRequest",
+            json!({
+                "method": "client/registerCapability",
+                "params": {"registrations": [
+                    {"id": "hover-1", "method": "textDocument/hover"}
+                ]}
+            }),
+            PATIENT,
+        )
+        .await
+        .expect("round-trip");
+
+    // The registration is asynchronous relative to our request, so allow it to
+    // land. A poll rather than a sleep, so a slow machine does not flake.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        if client
+            .supports("hoverProvider", "textDocument/hover")
+            .await
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("a dynamically registered capability must be visible to `supports`");
+}
+
+/// Diagnostics are pushed, not requested. A client that only reads while awaiting
+/// a response loses them, and diagnostics are the tool's main product.
+#[tokio::test]
+async fn pushed_diagnostics_are_cached_by_uri() {
+    let client = start(&[], json!({})).await;
+    let uri = "file:///tmp/a.rs";
+
+    client
+        .open_document(uri, "rust", "fn main() {}\n")
+        .await
+        .expect("didOpen");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(published) = client.diagnostics_for(uri).await {
+            assert_eq!(published.diagnostics.len(), 1);
+            assert_eq!(published.diagnostics[0]["message"], "fake");
+            // The fixture echoes the version, which is what makes freshness
+            // decidable.
+            assert_eq!(published.version, Some(1));
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "pushed diagnostics never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A second `didOpen` for one URI is a client bug: the server already tracks the
+/// document, and re-opening resets its version expectations so every later
+/// `didChange` looks stale.
+#[tokio::test]
+async fn opening_a_document_twice_sends_only_one_did_open() {
+    let client = start(&[], json!({})).await;
+    let uri = "file:///tmp/b.rs";
+
+    client.open_document(uri, "rust", "").await.expect("first");
+    assert!(client.is_open(uri).await);
+    client.open_document(uri, "rust", "").await.expect("second");
+
+    let observed = state(&client).await;
+    assert_eq!(
+        observed["didOpen"][uri], 1,
+        "the second open must be suppressed, got {}",
+        observed["didOpen"]
+    );
+}
+
+/// Closing must forget the version, and closing something never opened must not
+/// tell the server about a document it does not have.
+#[tokio::test]
+async fn closing_a_document_forgets_it_and_closing_twice_is_a_no_op() {
+    let client = start(&[], json!({})).await;
+    let uri = "file:///tmp/c.rs";
+
+    client.open_document(uri, "rust", "").await.expect("open");
+    client.close_document(uri).await.expect("close");
+    assert!(!client.is_open(uri).await);
+
+    client.close_document(uri).await.expect("close again");
+    let observed = state(&client).await;
+    let closed = observed["didClose"]
+        .as_array()
+        .expect("an array")
+        .len();
+    assert_eq!(closed, 1, "only one didClose should have been sent");
+}
+
+/// `workspace/workspaceFolders` must be answered with the real root.
+///
+/// **This test exists because clippy found the gap, not because I planned it.**
+/// `Client.root` was flagged as never read, which was true: the request fell
+/// through to `-32601`, and a server told "method not found" for folders falls
+/// back to guessing a root. It then resolves imports against the wrong tree, which
+/// presents as "definition not found" for code that plainly exists — a wrong
+/// answer rather than an error, which is the worst shape.
+#[tokio::test]
+async fn a_workspace_folders_request_is_answered_with_the_root() {
+    let client = start(&[], json!({})).await;
+
+    let answered = client
+        .request(
+            "test/serverRequest",
+            json!({"method": "workspace/workspaceFolders", "params": null}),
+            PATIENT,
+        )
+        .await
+        .expect("round-trip");
+
+    let folders = answered["result"]
+        .as_array()
+        .expect("an array of folders, got a non-array");
+    assert_eq!(folders.len(), 1, "one root was configured");
+    assert!(
+        folders[0]["uri"]
+            .as_str()
+            .is_some_and(|uri| uri.starts_with("file://")),
+        "a folder needs a file URI, got {}",
+        folders[0]
+    );
+    assert!(
+        folders[0]["name"].is_string(),
+        "a folder needs a name, got {}",
+        folders[0]
+    );
+    assert_eq!(
+        answered["error"],
+        Value::Null,
+        "answering with -32601 would send the server guessing at a root"
+    );
+}
+
+/// A clean shutdown must actually end the process, and say so truthfully.
+#[tokio::test]
+async fn shutdown_ends_the_server_and_reports_success() {
+    let mut client = start(&[], json!({})).await;
+    assert!(
+        client.shutdown().await,
+        "a healthy server should shut down cleanly"
+    );
+}
+
+/// **A server that ignores `exit` must still be gone afterwards, and the report
+/// must be truthful.** Reporting a restart when the process survived is the
+/// daemon leak with no symptom, and omp has a regression for exactly that.
+#[tokio::test]
+async fn shutdown_escalates_to_a_kill_when_exit_is_ignored() {
+    let mut client = start(&[("FAKE_LSP_SKIP_EXIT", "1")], json!({})).await;
+    assert!(
+        client.shutdown().await,
+        "shutdown must escalate until the process is confirmed gone"
+    );
+}
+
+/// Requests after shutdown must fail rather than hang. A caller that does not
+/// know the client is dead should learn immediately.
+#[tokio::test]
+async fn requests_after_shutdown_fail_promptly() {
+    let mut client = start(&[], json!({})).await;
+    client.shutdown().await;
+
+    let failure = client
+        .request("test/echo", json!({}), Duration::from_secs(2))
+        .await
+        .expect_err("a shut-down client cannot answer");
+    // Any failure is acceptable; hanging is not. The deadline above is the test.
+    assert!(!failure.to_string().is_empty());
+}
