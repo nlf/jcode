@@ -303,6 +303,20 @@ impl Server {
                 }
                 self.publish_diagnostics(&uri, version);
             }
+            // Republish byte-identical diagnostics at the same version, which is what
+            // a server does when it re-analyses and nothing changed. Distinguishing
+            // this from "no new publish at all" is the whole reason the client keeps a
+            // generation counter, and nothing else in this fixture can produce it:
+            // didOpen and didChange both move the version along.
+            "test/republish" => {
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let version = params.get("version").and_then(Value::as_i64).unwrap_or(1);
+                self.publish_diagnostics(&uri, version);
+            }
             "textDocument/didChange" => {
                 let document = params.get("textDocument").cloned().unwrap_or(json!({}));
                 let uri = document

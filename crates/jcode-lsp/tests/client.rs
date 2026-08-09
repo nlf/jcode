@@ -607,3 +607,74 @@ async fn requests_after_shutdown_fail_promptly() {
     // Any failure is acceptable; hanging is not. The deadline above is the test.
     assert!(!failure.to_string().is_empty());
 }
+
+/// **An identical republish still advances the generation counter.**
+///
+/// This is the case the counter exists for, and the one a naive implementation gets
+/// wrong. When a server re-analyses a file and finds the same problems, it publishes
+/// the same diagnostics at the same version. Nothing in the payload distinguishes
+/// that from no publish at all — so a freshness wait that compares only content and
+/// version concludes "nothing new" and accepts a result computed *before* the edit it
+/// is supposed to be reporting on.
+///
+/// Asserted through the public API rather than by reading the field: what callers get
+/// from `observation_for` is what has to change, since that is what `FreshnessWait`
+/// consumes.
+#[tokio::test]
+async fn an_identical_republish_advances_the_generation() {
+    let client = start(&[], json!({})).await;
+    let uri = "file:///tmp/republish.rs";
+
+    client
+        .open_document(uri, "rust", "fn main() {}")
+        .await
+        .expect("open");
+    let first = settled_observation(&client, uri, 0).await;
+    assert!(
+        first.diagnostics.is_some(),
+        "didOpen must publish before this test means anything"
+    );
+
+    // Same URI, same version, byte-identical diagnostics.
+    client
+        .notify("test/republish", json!({"uri": uri, "version": 1}))
+        .await
+        .expect("republish");
+    let second = settled_observation(&client, uri, first.generation).await;
+
+    assert_eq!(
+        second.diagnostics, first.diagnostics,
+        "the fixture must republish identical content, or this tests the easy case"
+    );
+    assert_eq!(second.version, first.version, "and at the same version");
+    assert!(
+        second.generation > first.generation,
+        "an identical republish must still count as a new publish; \
+         generation stayed at {}",
+        first.generation
+    );
+}
+
+/// Wait for an observation whose generation has moved past `after`.
+///
+/// Publishes are asynchronous notifications, so there is no reply to await. Polling
+/// with a deadline is the honest way to observe one: a fixed sleep is either flaky or
+/// slow, and there is nothing to synchronise on.
+async fn settled_observation(
+    client: &jcode_lsp::Client,
+    uri: &str,
+    after: u64,
+) -> jcode_lsp::Observation {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let observation = client.observation_for(uri).await;
+        if observation.generation > after {
+            return observation;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no publish advanced the generation past {after} within 5s"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

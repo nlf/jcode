@@ -30,11 +30,14 @@
 //! it.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
+
+use crate::freshness::Observation;
 
 use crate::correlation::{Pendings, RequestFailure, ServerRequest};
 use crate::jsonrpc::{self, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
@@ -100,6 +103,15 @@ pub struct Client {
     open: Arc<Mutex<HashMap<String, i64>>>,
     /// Latest published diagnostics per URI, with the version they describe.
     diagnostics: Arc<Mutex<HashMap<String, PublishedDiagnostics>>>,
+    /// Bumped on **every** publish, for any URI.
+    ///
+    /// Load-bearing for [`crate::freshness`]: "the same publish" and "a fresh
+    /// publish of identical content" are different events, and only the second
+    /// means the server has re-analysed. Comparing the diagnostics themselves
+    /// cannot tell them apart, because an unchanged file republishes an identical
+    /// list — so without this counter the settle window never restarts and a stale
+    /// publish is accepted.
+    generation: Arc<AtomicU64>,
 }
 
 /// Diagnostics as published, with their document version.
@@ -162,6 +174,7 @@ impl Client {
             dynamic: Arc::new(Mutex::new(HashMap::new())),
             open: Arc::new(Mutex::new(HashMap::new())),
             diagnostics: Arc::new(Mutex::new(HashMap::new())),
+            generation: Arc::new(AtomicU64::new(0)),
         };
 
         client.spawn_router(rx);
@@ -207,6 +220,7 @@ impl Client {
     fn spawn_router(&self, mut rx: mpsc::UnboundedReceiver<FromServer>) {
         let pendings = Arc::clone(&self.pendings);
         let diagnostics = Arc::clone(&self.diagnostics);
+        let generation = Arc::clone(&self.generation);
         let dynamic = Arc::clone(&self.dynamic);
         let answers = self.answer_channel();
         let name = self.name.clone();
@@ -239,7 +253,8 @@ impl Client {
                                 pendings.complete(&id, result).await;
                             }
                             Incoming::Notification { method, params } => {
-                                handle_notification(&method, params, &diagnostics).await;
+                                handle_notification(&method, params, &diagnostics, &generation)
+                                    .await;
                             }
                             Incoming::Request { id, method, params } => {
                                 let request = ServerRequest { id, method, params };
@@ -431,6 +446,32 @@ impl Client {
         self.diagnostics.lock().await.get(uri).cloned()
     }
 
+    /// Diagnostics for a URI as a [`crate::freshness::Observation`], which is what
+    /// [`crate::freshness::FreshnessWait`] consumes.
+    ///
+    /// The generation is read **after** the lookup, and deliberately so. Both orders
+    /// are wrong in one direction and this is the safe one:
+    ///
+    /// - read the counter first and a publish landing in between makes the returned
+    ///   generation *older* than the diagnostics, so a genuinely new publish looks
+    ///   like the same one and the settle window does not restart. That accepts a
+    ///   stale result, which is the bug freshness exists to prevent.
+    /// - read it after, as here, and the same race makes the generation *newer* than
+    ///   the diagnostics. The waiter restarts its window and looks again. It costs a
+    ///   settle interval and reaches the right answer.
+    ///
+    /// A single lock covering both would remove the race, but the counter is shared
+    /// across URIs while the map is per-URI, so that means serialising every publish
+    /// behind one mutex to save a bounded wait on a rare interleaving. Not worth it.
+    pub async fn observation_for(&self, uri: &str) -> Observation {
+        let published = self.diagnostics.lock().await.get(uri).cloned();
+        Observation {
+            diagnostics: published.as_ref().map(|p| p.diagnostics.clone()),
+            version: published.as_ref().and_then(|p| p.version),
+            generation: self.generation.load(Ordering::SeqCst),
+        }
+    }
+
     /// Open a document, or do nothing if it is already open.
     ///
     /// A second `didOpen` for one URI is a client bug: the server is already
@@ -529,6 +570,7 @@ async fn handle_notification(
     method: &str,
     params: Value,
     diagnostics: &Arc<Mutex<HashMap<String, PublishedDiagnostics>>>,
+    generation: &Arc<AtomicU64>,
 ) {
     if method != "textDocument/publishDiagnostics" {
         // `window/logMessage`, `$/progress` and friends. Dropped for now;
@@ -552,6 +594,11 @@ async fn handle_notification(
         .lock()
         .await
         .insert(uri.to_string(), published);
+    // After the insert, so an observer that sees a new generation is guaranteed to
+    // see the publish that caused it. Bumping first would let a waiter read the new
+    // counter with the old diagnostics and restart its settle window against content
+    // it has already considered.
+    generation.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Answer a request from the server.
