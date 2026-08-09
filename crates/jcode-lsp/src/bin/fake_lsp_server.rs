@@ -46,7 +46,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use jcode_lsp::framing::{encode, MessageFramer};
+use jcode_lsp::framing::{encode, Framed, MessageFramer};
 use serde_json::{json, Value};
 
 /// What the server has observed, for `test/state`.
@@ -371,7 +371,7 @@ fn main() {
 
         loop {
             match framer.next_message() {
-                Ok(Some(body)) => {
+                Ok(Framed::Message(body)) => {
                     // Malformed JSON inside a well-framed message is the peer's
                     // problem, not a reason to die: a real server answers with a
                     // parse error and keeps going.
@@ -379,10 +379,12 @@ fn main() {
                         server.handle(&message);
                     }
                 }
-                Ok(None) => break,
-                // A framing error means the stream is desynchronised and there
-                // is no way to find the next boundary. Exiting is the honest
-                // response.
+                // Junk from the client. Skip it, exactly as a real server would
+                // rather than dying on whatever printed it.
+                Ok(Framed::Resync { .. }) => continue,
+                Ok(Framed::Incomplete) => break,
+                // A body over the cap is the only unrecoverable case: we cannot
+                // skip a body whose length we do not trust. Exiting is honest.
                 Err(_) => return,
             }
         }

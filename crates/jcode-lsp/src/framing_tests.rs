@@ -10,11 +10,16 @@ fn frame(body: &str) -> Vec<u8> {
     encode(body.as_bytes())
 }
 
+/// The next message as text, or `None` for incomplete.
+///
+/// Panics on a resync, so a test that expects a message and gets junk says so
+/// rather than reporting "incomplete" and looking like a buffering problem.
 fn take(framer: &mut MessageFramer) -> Option<String> {
-    framer
-        .next_message()
-        .expect("framing should succeed")
-        .map(|body| String::from_utf8(body).expect("utf-8"))
+    match framer.next_message().expect("framing should succeed") {
+        Framed::Message(body) => Some(String::from_utf8(body).expect("utf-8")),
+        Framed::Incomplete => None,
+        Framed::Resync { headers } => panic!("unexpected resync on {headers:?}"),
+    }
 }
 
 #[test]
@@ -208,34 +213,86 @@ fn a_zero_length_body_is_a_message_not_an_error() {
     assert_eq!(take(&mut framer).as_deref(), Some(""));
 }
 
+/// **A header block with no `Content-Length` is noise, not a fatal error.**
+///
+/// Corrected from omp, whose framer calls an `onResync` callback and drops past
+/// the offending terminator. This was fatal in my first draft, which would tear
+/// down a healthy server because a launcher script echoed a line to stdout.
 #[test]
-fn a_header_block_without_content_length_is_a_fatal_error() {
+fn a_header_block_without_content_length_resyncs_rather_than_failing() {
     let mut framer = MessageFramer::new();
-    framer.push(b"Content-Type: application/json\r\n\r\n{}");
-    let error = framer.next_message().expect_err("must not be silent");
-    assert!(
-        matches!(error, FramingError::MissingContentLength { .. }),
-        "got {error:?}"
-    );
-    // The message must name what was seen: this is the only diagnostic the
-    // caller gets before tearing the connection down.
-    assert!(error.to_string().contains("Content-Type"), "{error}");
+    framer.push(b"Content-Type: application/json\r\n\r\n");
+    match framer.next_message().expect("must not be fatal") {
+        Framed::Resync { headers } => {
+            // The header text is the only clue about what is polluting stdout.
+            assert!(headers.contains("Content-Type"), "{headers:?}");
+        }
+        other => panic!("expected a resync, got {other:?}"),
+    }
 }
 
+/// The point of resyncing: a real message behind the junk must still arrive.
+/// Failing fatally, or looping on the same header, both lose it.
 #[test]
-fn a_non_numeric_content_length_is_a_fatal_error() {
+fn a_real_message_after_junk_is_still_delivered() {
     let mut framer = MessageFramer::new();
-    framer.push(b"Content-Length: banana\r\n\r\n{}");
-    let error = framer.next_message().expect_err("must not be silent");
-    assert!(
-        matches!(error, FramingError::InvalidContentLength { .. }),
-        "got {error:?}"
+    // A wrapper script announcing itself, then a genuine message.
+    framer.push(b"Starting language server v1.2.3\r\n\r\n");
+    framer.push(&frame(r#"{"id":1}"#));
+
+    match framer.next_message().expect("not fatal") {
+        Framed::Resync { .. } => {}
+        other => panic!("expected a resync first, got {other:?}"),
+    }
+    assert_eq!(
+        take(&mut framer).as_deref(),
+        Some(r#"{"id":1}"#),
+        "the message behind the noise must survive"
     );
-    assert!(error.to_string().contains("banana"), "{error}");
+}
+
+/// A non-numeric length is the same situation as a missing one: we cannot locate
+/// a body either way, and the caller's only option is to skip.
+#[test]
+fn a_non_numeric_content_length_resyncs_too() {
+    let mut framer = MessageFramer::new();
+    framer.push(b"Content-Length: banana\r\n\r\n");
+    framer.push(&frame(r#"{"id":2}"#));
+
+    match framer.next_message().expect("not fatal") {
+        Framed::Resync { headers } => assert!(headers.contains("banana"), "{headers:?}"),
+        other => panic!("expected a resync, got {other:?}"),
+    }
+    assert_eq!(take(&mut framer).as_deref(), Some(r#"{"id":2}"#));
+}
+
+/// Resyncing must consume the junk. If it does not, the caller loops on the same
+/// header forever, which presents as a hang rather than as an error — strictly
+/// worse than the fatal behaviour it replaced.
+#[test]
+fn resyncing_consumes_the_junk_so_the_caller_cannot_loop() {
+    let mut framer = MessageFramer::new();
+    framer.push(b"junk: yes\r\n\r\n");
+    let before = framer.buffered();
+
+    assert!(matches!(
+        framer.next_message().expect("not fatal"),
+        Framed::Resync { .. }
+    ));
+    assert!(
+        framer.buffered() < before,
+        "the junk header must be consumed, or the caller spins on it"
+    );
+    assert_eq!(
+        framer.next_message().expect("not fatal"),
+        Framed::Incomplete,
+        "with the junk gone and nothing behind it, the answer is incomplete"
+    );
 }
 
 /// A corrupted length would otherwise have us wait forever for bytes that are
-/// never coming, holding a reservation for the claimed size.
+/// never coming, holding a reservation for the claimed size. This is the one
+/// genuinely fatal case: we cannot skip a body whose length we do not trust.
 #[test]
 fn a_body_over_the_cap_is_refused_rather_than_buffered() {
     let mut framer = MessageFramer::new();
@@ -305,12 +362,12 @@ fn a_body_with_literal_crlf_crlf_bytes_is_read_by_length() {
     framer.push(&chunk);
     assert_eq!(
         framer.next_message().expect("framing"),
-        Some(first),
+        Framed::Message(first),
         "the body must be taken by length, not by scanning for a terminator"
     );
     assert_eq!(
         framer.next_message().expect("framing"),
-        Some(second),
+        Framed::Message(second),
         "a CRLF inside the first body must not desynchronise the next message"
     );
     assert_eq!(framer.buffered(), 0);

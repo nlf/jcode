@@ -24,6 +24,22 @@
 //! and slicing by characters desynchronises the stream permanently: every
 //! subsequent message is misframed, so the failure looks like a server that
 //! went mad rather than a client that miscounted.
+//!
+//! # Why a bad header resyncs instead of failing
+//!
+//! **This was wrong in the first draft and is corrected from omp's
+//! implementation, which is the specification here.** A header block with no
+//! usable `Content-Length` is not a protocol violation to die on — it is
+//! non-protocol noise on stdout, and it happens: a launcher shell script echoing
+//! a line, a server printing a deprecation warning, a Node wrapper announcing a
+//! version. Their `drain` calls an `onResync` callback, drops past the offending
+//! terminator, and carries on. Treating it as fatal would tear down a healthy
+//! server because something printed to the wrong stream.
+//!
+//! So `next_message` returns [`Framed::Resync`] for junk, letting the caller log
+//! it and continue. The only genuinely fatal case left is a body larger than
+//! [`MAX_BODY_BYTES`], where we would otherwise wait forever for bytes that are
+//! never coming.
 
 /// Incremental framer over a byte stream.
 ///
@@ -34,20 +50,28 @@ pub struct MessageFramer {
     buffer: Vec<u8>,
 }
 
-/// A frame that cannot be parsed.
+/// What the framer found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Framed {
+    /// A whole message body.
+    Message(Vec<u8>),
+    /// A header block carrying no usable `Content-Length`, dropped as noise.
+    ///
+    /// The caller should log this and call again: there may be a real message
+    /// behind it. Carrying the header text because it is the only clue about
+    /// what is polluting stdout, and truncated because it could be anything.
+    Resync { headers: String },
+    /// Not enough bytes yet. The common case, and not an error.
+    Incomplete,
+}
+
+/// A frame that cannot be recovered from.
 ///
-/// Framing errors are not recoverable by skipping: once the byte stream is
-/// desynchronised there is no way to find the next real boundary, because a
-/// body may legitimately contain the header bytes. So these are fatal for the
-/// connection, and the caller's only correct response is to tear the client
-/// down. That is deliberate, and the reason each variant says what it saw:
-/// the message is the only diagnostic anyone will get.
+/// Only one case remains fatal. A body claiming to be enormous cannot be
+/// resynced past, because we would have to know where it ends to skip it, and the
+/// claimed length is exactly what we do not trust.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FramingError {
-    /// A header block with no `Content-Length`.
-    MissingContentLength { headers: String },
-    /// `Content-Length` present but not a number.
-    InvalidContentLength { value: String },
     /// A body claiming to be larger than the cap.
     BodyTooLarge { length: usize, cap: usize },
 }
@@ -55,13 +79,6 @@ pub enum FramingError {
 impl std::fmt::Display for FramingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingContentLength { headers } => write!(
-                f,
-                "LSP frame has no Content-Length header (headers: {headers:?})"
-            ),
-            Self::InvalidContentLength { value } => {
-                write!(f, "LSP frame has a non-numeric Content-Length: {value:?}")
-            }
             Self::BodyTooLarge { length, cap } => write!(
                 f,
                 "LSP frame declares a {length}-byte body, over the {cap}-byte cap"
@@ -82,6 +99,12 @@ impl std::error::Error for FramingError {}
 /// small enough that hitting it is a clear defect rather than a resource
 /// question.
 pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Header text kept when reporting a resync.
+///
+/// Bounded because the "header" is by definition not something we understand, so
+/// it could be a whole minified line. omp truncates to 200 for the same reason.
+const MAX_RESYNC_HEADER_CHARS: usize = 200;
 
 const HEADER_TERMINATOR: &[u8] = b"\r\n\r\n";
 const CONTENT_LENGTH: &str = "content-length";
@@ -107,21 +130,30 @@ impl MessageFramer {
 
     /// Take the next whole message body, if one is fully buffered.
     ///
-    /// Returns `Ok(None)` when more bytes are needed. That is the common case
-    /// and is not an error: it is what "the message has not arrived yet" looks
-    /// like.
-    pub fn next_message(&mut self) -> Result<Option<Vec<u8>>, FramingError> {
+    /// Returns [`Framed::Incomplete`] when more bytes are needed. That is the
+    /// common case and is not an error: it is what "the message has not arrived
+    /// yet" looks like.
+    pub fn next_message(&mut self) -> Result<Framed, FramingError> {
         let Some(terminator) = find(&self.buffer, HEADER_TERMINATOR) else {
             // No complete header block yet. Note we do not cap the header
             // length: a server sending an unterminated multi-megabyte header
             // would grow this buffer, but that is indistinguishable from a slow
             // header until the terminator arrives, and real servers send two
             // headers totalling well under 100 bytes.
-            return Ok(None);
+            return Ok(Framed::Incomplete);
         };
 
         let header_bytes = &self.buffer[..terminator];
-        let length = parse_content_length(header_bytes)?;
+        let Some(length) = parse_content_length(header_bytes) else {
+            // Junk on stdout rather than a protocol violation. Drop past the
+            // terminator so the next call can find a real message, instead of
+            // stalling on the same noise forever.
+            let headers = String::from_utf8_lossy(header_bytes);
+            let headers = headers.chars().take(MAX_RESYNC_HEADER_CHARS).collect();
+            self.buffer.drain(..terminator + HEADER_TERMINATOR.len());
+            return Ok(Framed::Resync { headers });
+        };
+
         if length > MAX_BODY_BYTES {
             return Err(FramingError::BodyTooLarge {
                 length,
@@ -136,7 +168,7 @@ impl MessageFramer {
             // the header: re-parsing it next time costs nothing and keeps this
             // function a pure "is there a message" question with no partial
             // state to get wrong.
-            return Ok(None);
+            return Ok(Framed::Incomplete);
         }
 
         let body = self.buffer[body_start..body_end].to_vec();
@@ -144,7 +176,7 @@ impl MessageFramer {
         // arrive in one chunk, and this keeps the tail in place for the next
         // call without copying it per message.
         self.buffer.drain(..body_end);
-        Ok(Some(body))
+        Ok(Framed::Message(body))
     }
 }
 
@@ -165,7 +197,12 @@ pub fn encode(body: &[u8]) -> Vec<u8> {
 /// (`Content-Length` and `content-length` both occur), so matching must not be
 /// exact. `Content-Type` is accepted and ignored: the LSP spec defines it, some
 /// servers send it, and nothing we do depends on it.
-fn parse_content_length(headers: &[u8]) -> Result<usize, FramingError> {
+///
+/// `None` means "this is not an LSP header block", which the caller resyncs past
+/// rather than dying on. A non-numeric value is treated the same way as a missing
+/// one: both mean we cannot locate a body, and neither is worth distinguishing to
+/// a caller whose only option is to skip.
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
     // Headers are ASCII by spec. `from_utf8_lossy` rather than a hard error so
     // a stray byte in an otherwise-parseable header block does not lose a
     // message we could have read.
@@ -177,16 +214,9 @@ fn parse_content_length(headers: &[u8]) -> Result<usize, FramingError> {
         if !name.trim().eq_ignore_ascii_case(CONTENT_LENGTH) {
             continue;
         }
-        let value = value.trim();
-        return value
-            .parse::<usize>()
-            .map_err(|_| FramingError::InvalidContentLength {
-                value: value.to_string(),
-            });
+        return value.trim().parse::<usize>().ok();
     }
-    Err(FramingError::MissingContentLength {
-        headers: text.to_string(),
-    })
+    None
 }
 
 /// First index of `needle` in `haystack`.

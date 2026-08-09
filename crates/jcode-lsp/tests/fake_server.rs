@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use jcode_lsp::framing::{encode, MessageFramer};
+use jcode_lsp::framing::{encode, Framed, MessageFramer};
 use serde_json::{json, Value};
 
 /// A spawned fake server plus its pipes.
@@ -76,10 +76,21 @@ impl Fake {
     fn await_message(&mut self, wanted: impl Fn(&Value) -> bool) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            while let Some(body) = self.framer.next_message().expect("framing") {
-                let message: Value = serde_json::from_slice(&body).expect("json");
-                if wanted(&message) {
-                    return message;
+            loop {
+                match self.framer.next_message().expect("framing") {
+                    Framed::Message(body) => {
+                        let message: Value = serde_json::from_slice(&body).expect("json");
+                        if wanted(&message) {
+                            return message;
+                        }
+                    }
+                    // The fake server emits only well-formed frames, so junk here
+                    // would mean our own framer or encoder is wrong. Fail loudly
+                    // rather than skipping and timing out with no explanation.
+                    Framed::Resync { headers } => {
+                        panic!("the fixture emitted an unframed header: {headers:?}")
+                    }
+                    Framed::Incomplete => break,
                 }
             }
             if Instant::now() > deadline {
@@ -397,4 +408,36 @@ fn malformed_json_in_a_valid_frame_does_not_kill_it() {
 
     let echoed = fake.request(2, "test/echo", json!({"still": "alive"}));
     assert_eq!(echoed["result"]["still"], "alive");
+}
+
+/// **Unframed junk must be skipped, not fatal — end to end through a real
+/// process.** This is the property the framer's resync exists for, and it was
+/// wrong in the first draft: a header block with no `Content-Length` was fatal,
+/// so a launcher script echoing one line would have torn down a healthy server.
+///
+/// Sent here in the client-to-server direction because that is the one this
+/// fixture can drive. The behaviour under test is the framer's, which is shared
+/// by both directions.
+#[test]
+fn unframed_junk_before_a_real_message_is_skipped_not_fatal() {
+    let mut fake = Fake::spawn(&[]);
+    fake.request(1, "initialize", json!({}));
+
+    {
+        let stdin = fake.stdin.as_mut().expect("stdin");
+        // A header block with no Content-Length: exactly what a wrapper script
+        // printing a banner looks like on the wire.
+        stdin
+            .write_all(b"Starting language server v1.2.3\r\n\r\n")
+            .expect("write");
+        stdin.flush().expect("flush");
+    }
+
+    // The server must still be serving. If junk were fatal it would have exited,
+    // and this request would time out with no explanation.
+    let echoed = fake.request(2, "test/echo", json!({"survived": true}));
+    assert_eq!(
+        echoed["result"]["survived"], true,
+        "unframed junk must be skipped rather than ending the session"
+    );
 }

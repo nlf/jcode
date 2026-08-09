@@ -18,5 +18,5 @@
 pub mod framing;
 pub mod jsonrpc;
 
-pub use framing::{encode, FramingError, MessageFramer, MAX_BODY_BYTES};
+pub use framing::{encode, Framed, FramingError, MessageFramer, MAX_BODY_BYTES};
 pub use jsonrpc::{DecodeError, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
