@@ -46,6 +46,38 @@ pub(crate) fn bash_tool_descriptions_for_test() -> [(&'static str, &'static str)
     ]
 }
 
+#[cfg(unix)]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// Route ordinary `cargo` invocations (including those inside child scripts)
+/// through the repository wrapper. Besides applying the project's build policy,
+/// that wrapper appends real action timings to rust-actions.jsonl.
+#[cfg(unix)]
+fn wrap_repo_cargo_commands(command: &str, working_dir: Option<&Path>) -> Option<String> {
+    let working_dir = working_dir?;
+    let repo = crate::build::find_repo_in_ancestors(working_dir)?;
+    let wrapper = repo.join("scripts").join("dev_cargo.sh");
+    if !wrapper.is_file() {
+        return None;
+    }
+
+    Some(format!(
+        r#"export JCODE_DEV_CARGO_SCRIPT={wrapper}
+cargo() {{
+  if [[ "${{JCODE_IN_DEV_CARGO:-0}}" == "1" ]]; then
+    command cargo "$@"
+  else
+    JCODE_IN_DEV_CARGO=1 "$JCODE_DEV_CARGO_SCRIPT" "$@"
+  fi
+}}
+export -f cargo
+{command}"#,
+        wrapper = shell_single_quote(&wrapper.to_string_lossy()),
+    ))
+}
+
 /// Build a clear timeout message. The `timeout` param is in milliseconds, which
 /// agents frequently mistake for seconds (e.g. passing 1000 thinking it means
 /// 1000s when it is 1s). Spell out the seconds equivalent and, for suspiciously
@@ -742,6 +774,17 @@ impl Tool for BashTool {
         // so `cat x &` is caught too.
         if let Some(refusal) = interception_refusal(&params.command, &ctx.session_id) {
             return Err(anyhow::anyhow!(refusal));
+        }
+
+        // Strictly after interception, which must see the command the model
+        // actually wrote. Wrapping prepends a `cargo()` shell function, and the
+        // interception rules scan leading tokens: with the order reversed,
+        // every command in this repository becomes unrecognizable and `cat`,
+        // `grep` and friends stop being redirected at all.
+        #[cfg(unix)]
+        if let Some(wrapped) = wrap_repo_cargo_commands(&params.command, ctx.working_dir.as_deref())
+        {
+            params.command = wrapped;
         }
 
         if run_in_background {

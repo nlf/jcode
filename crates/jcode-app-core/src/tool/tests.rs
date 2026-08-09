@@ -66,7 +66,7 @@ fn test_resolve_skill_aliases_to_skill_manage() {
 
 #[tokio::test]
 async fn test_discover_tools_not_registered_when_sponsors_disabled() {
-    // sponsors.enabled defaults to false; the discovery tool must not exist.
+    // sponsors.enabled is the legacy config key; when false, integration discovery must not exist.
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let names = registry.tool_names().await;
@@ -453,8 +453,8 @@ async fn print_tool_definition_token_report() {
 #[tokio::test]
 async fn tool_descriptions_stay_under_token_cap() {
     const DESCRIPTION_TOKEN_CAP: usize = 20;
-    // integration_tools keeps a deliberate second sentence disclosing that catalog
-    // entries are vetted/partnered integrations.
+    // integration_tools keeps a deliberate second sentence explaining that catalog
+    // entries integrate directly with the agent.
     // swarm appends the user-tunable swarm-prompt.md by design.
     const EXEMPT: &[&str] = &["integration_tools", "swarm"];
 
@@ -699,18 +699,45 @@ fn collect_param_descriptions(schema: &Value, path: &str, out: &mut Vec<(String,
 /// so each is capped. Longer guidance belongs in runtime error messages, docs,
 /// or the system prompt (the todo calibration rubrics, for example, live in
 /// the gate continuation messages in jcode-base::todo).
+///
+/// Exemptions must be justified inline, matching
+/// [`tool_descriptions_stay_under_token_cap`].
 #[tokio::test]
 async fn tool_parameter_descriptions_stay_under_token_cap() {
     const PARAM_DESCRIPTION_TOKEN_CAP: usize = 25;
 
+    // Enum rubrics whose text *is* the calibration. Each variant needs a
+    // definition the model can act on, and the alternative is not a shorter
+    // description but a differently-calibrated one: with the variants
+    // undefined, models pick the flattering end of the scale, which is the
+    // failure these fields exist to catch. Upstream widened
+    // `feedback_loop_relevance` from 3 variants to 5 and added
+    // `feedback_loop_traceability` for exactly that reason, so the cost buys
+    // discrimination rather than prose.
+    //
+    // `integration_tools.query` is one sentence over by two tokens, and the
+    // clause it would lose is the privacy disclosure that the text may be
+    // shared with providers.
+    const EXEMPT: &[&str] = &[
+        "todo $.properties.goals.items.properties.feedback_loop_relevance",
+        "todo $.properties.goals.items.properties.feedback_loop_traceability",
+        "integration_tools $.properties.query",
+    ];
+
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let mut over_cap: Vec<String> = Vec::new();
+    let mut exempt_seen: Vec<String> = Vec::new();
     for def in registry.definitions(None).await {
         let mut descriptions = Vec::new();
         collect_param_descriptions(&def.input_schema, "$", &mut descriptions);
         for (path, description) in descriptions {
+            let key = format!("{} {}", def.name, path);
             let tokens = crate::util::estimate_tokens(&description);
+            if EXEMPT.contains(&key.as_str()) {
+                exempt_seen.push(key);
+                continue;
+            }
             if tokens > PARAM_DESCRIPTION_TOKEN_CAP {
                 over_cap.push(format!(
                     "{} {} (~{} tokens): {}",
@@ -725,6 +752,15 @@ async fn tool_parameter_descriptions_stay_under_token_cap() {
         over_cap.len(),
         over_cap.join("\n")
     );
+
+    // An exemption that no longer names a real parameter is a stale licence to
+    // exceed the cap, so it has to fail rather than quietly widen the rule.
+    for exempt in EXEMPT {
+        assert!(
+            exempt_seen.iter().any(|seen| seen == exempt),
+            "exemption `{exempt}` matches no parameter; remove it or fix the path"
+        );
+    }
 }
 
 fn schema_type_includes(schema: &Value, expected: &str) -> bool {

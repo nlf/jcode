@@ -5,6 +5,31 @@ use crate::tool::bash::{BashTool, parse_heuristic_progress};
 use serde_json::json;
 use tokio::sync::mpsc;
 
+#[test]
+fn repository_commands_export_a_logged_cargo_function() {
+    let repo =
+        crate::build::find_repo_in_ancestors(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("test runs inside the jcode repository");
+    let wrapped = wrap_repo_cargo_commands("cargo test -p demo && echo done", Some(&repo))
+        .expect("jcode repository has dev_cargo.sh");
+
+    assert!(wrapped.contains("export JCODE_DEV_CARGO_SCRIPT="));
+    assert!(wrapped.contains("JCODE_IN_DEV_CARGO=1 \"$JCODE_DEV_CARGO_SCRIPT\" \"$@\""));
+    assert!(wrapped.contains("export -f cargo"));
+    assert!(wrapped.ends_with("cargo test -p demo && echo done"));
+}
+
+#[test]
+fn cargo_routing_is_limited_to_the_jcode_repository() {
+    assert!(wrap_repo_cargo_commands("cargo test", Some(std::path::Path::new("/"))).is_none());
+    assert!(wrap_repo_cargo_commands("cargo test", None).is_none());
+}
+
+#[test]
+fn cargo_wrapper_path_is_shell_quoted() {
+    assert_eq!(shell_single_quote("a'b"), "'a'\"'\"'b'");
+}
+
 fn make_ctx(stdin_tx: Option<mpsc::UnboundedSender<StdinInputRequest>>) -> ToolContext {
     ToolContext {
         session_id: "test-session".to_string(),
@@ -1048,5 +1073,42 @@ async fn the_destructive_gate_takes_precedence_over_interception() {
     assert!(
         !error.to_string().contains("`read` tool"),
         "it should be refused as destructive, not redirected: {error}"
+    );
+}
+
+/// Interception runs before the cargo wrapper, so a redirectable command is
+/// judged on what the model wrote rather than on the shell preamble wrapping
+/// prepends.
+///
+/// Ordering matters twice over: `candidates` scans leading tokens, which the
+/// preamble displaces, and the refusal echoes the original command back, which
+/// would otherwise hand the model a wall of generated shell instead of the one
+/// line it typed.
+#[tokio::test]
+async fn interception_sees_the_command_before_the_cargo_wrapper_rewrites_it() {
+    let repo =
+        crate::build::find_repo_in_ancestors(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("test runs inside the jcode repository");
+
+    let error = BashTool::new()
+        .execute(
+            serde_json::json!({ "command": "cat Cargo.toml" }),
+            gate_ctx(repo.to_str().expect("utf-8 repo path")),
+        )
+        .await
+        .expect_err("a read masquerading as a shell command must be refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("`read` tool"),
+        "it must be redirected to read: {message}"
+    );
+    assert!(
+        message.contains("Original command: cat Cargo.toml"),
+        "the echo must be the command the model wrote, not the wrapped form: {message}"
+    );
+    assert!(
+        !message.contains("JCODE_DEV_CARGO_SCRIPT"),
+        "the cargo preamble must not leak into the refusal: {message}"
     );
 }
