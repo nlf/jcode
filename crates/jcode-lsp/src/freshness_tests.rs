@@ -192,10 +192,12 @@ fn nothing_published_never_settles_into_a_clean_result() {
         Decision::Wait,
         "still not clean"
     );
-    // Only the budget ends it, and it ends as a timeout rather than as a result.
+    // Only the budget ends it, and it ends as a timeout rather than as a result --
+    // specifically the "nothing was published" timeout, which is the one a caller must
+    // never report as a clean file.
     assert_eq!(
         wait.observe(&nothing(0), ms(500)),
-        Decision::Accept(Freshness::TimedOut)
+        Decision::Accept(Freshness::TimedOutWithNothing)
     );
 }
 
@@ -210,10 +212,12 @@ fn a_timeout_is_reported_as_a_timeout_not_as_a_result() {
         timeout: ms(100),
     });
 
-    // A publish exists, but for the wrong version and with no time to settle.
+    // A publish exists, but for the wrong version and with no time to settle. Reported as
+    // the *with-publish* timeout: there is something to show, it just cannot be called
+    // authoritative.
     assert_eq!(
         wait.observe(&seen("old", Some(2), 1), ms(100)),
-        Decision::Accept(Freshness::TimedOut),
+        Decision::Accept(Freshness::TimedOutWithPublish),
         "out of budget with only a stale publish is a timeout, not a success"
     );
 }
@@ -473,4 +477,46 @@ fn percent_encoding_and_redundant_segments_are_both_handled() {
         "file:///a/renormalized.ts",
         "file:///a/./%72enormalized.ts"
     ));
+}
+
+/// **A timeout with a publish in hand is a different answer from a timeout with nothing.**
+///
+/// Both used to be `TimedOut`, and the two cases call for opposite behaviour: a caller that
+/// refuses to report anything on a timeout discards a real publish, and one that reports an
+/// empty result calls a file clean that was never analysed. Neither could do better, because
+/// the label did not say which case it was.
+///
+/// omp returns the cached publish on a timeout rather than discarding it. The reviewer
+/// raised the difference as a judgement call, which it is -- but the judgement was
+/// unmakeable by the caller, and that is the part worth fixing.
+#[test]
+fn a_timeout_says_whether_anything_was_published() {
+    // With a publish: usable, if not authoritative.
+    let mut with_publish = FreshnessWait::new(FreshnessRequest {
+        expected_version: None,
+        settle: ms(500),
+        timeout: ms(100),
+    });
+    let published = seen("boom", None, 1);
+    assert_eq!(
+        with_publish.observe(&published, ms(10)),
+        Decision::Wait,
+        "inside the budget, the settle window is still open"
+    );
+    assert_eq!(
+        with_publish.observe(&published, ms(150)),
+        Decision::Accept(Freshness::TimedOutWithPublish),
+        "a real publish must not be thrown away just because it did not settle"
+    );
+
+    // Without: the caller must not treat this as a clean file.
+    let mut with_nothing = FreshnessWait::new(FreshnessRequest {
+        expected_version: None,
+        settle: ms(500),
+        timeout: ms(100),
+    });
+    assert_eq!(
+        with_nothing.observe(&nothing(1), ms(150)),
+        Decision::Accept(Freshness::TimedOutWithNothing)
+    );
 }

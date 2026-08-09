@@ -90,12 +90,31 @@ pub enum Freshness {
     VersionMatched,
     /// Unversioned, and the stream went quiet. A heuristic, and the common case.
     Settled,
-    /// Nothing arrived in the budget.
+    /// The budget expired with a real publish in hand, but it never settled.
     ///
-    /// **Not the same as "no problems".** A caller must not report an empty
-    /// result as a clean file: the distinction between "the server says it is
-    /// clean" and "the server did not answer" is the whole point of this module.
-    TimedOut,
+    /// Usable: there *are* diagnostics, they just cannot be called authoritative. omp
+    /// returns the cached publish in this case rather than discarding it, and so should a
+    /// caller here -- reporting them with a caveat beats reporting nothing.
+    TimedOutWithPublish,
+    /// The budget expired and nothing was ever published.
+    ///
+    /// **Not the same as "no problems".** A caller must not report this as a clean file:
+    /// the distinction between "the server says it is clean" and "the server did not
+    /// answer" is the whole point of this module.
+    ///
+    /// # Why this is two variants and not one
+    ///
+    /// It was a single `TimedOut`, which conflated the two cases above -- and they call for
+    /// opposite behaviour. A cautious caller refusing to report anything on a timeout
+    /// throws away a real publish; a careless one reports an empty result as a clean file.
+    /// Neither could do better, because the label did not carry which case it was, and the
+    /// only way to tell was to inspect the observation the caller had just been handed and
+    /// re-derive it.
+    ///
+    /// The reviewer raised this as "TimedOut discards the cached publish where omp returns
+    /// it" and called it a judgement call. It is, but the judgement was unmakeable by the
+    /// caller, which is the part worth fixing.
+    TimedOutWithNothing,
 }
 
 /// One observation of the diagnostics cache.
@@ -154,7 +173,7 @@ impl FreshnessWait {
             // nothing to settle on, and treating "absent" as "quiet" would accept
             // an empty result as a clean file.
             return if elapsed >= self.request.timeout {
-                Decision::Accept(Freshness::TimedOut)
+                Decision::Accept(Freshness::TimedOutWithNothing)
             } else {
                 Decision::Wait
             };
@@ -191,10 +210,10 @@ impl FreshnessWait {
         }
 
         if elapsed >= self.request.timeout {
-            // Out of budget. What is cached is the best available answer, and
-            // reporting it as settled would overstate it — but it is a real
-            // publish, so `TimedOut` is the honest label.
-            return Decision::Accept(Freshness::TimedOut);
+            // Out of budget, but a publish is in hand. Reporting it as settled would
+            // overstate it, and discarding it would waste a real answer, so the label says
+            // exactly what happened and lets the caller decide.
+            return Decision::Accept(Freshness::TimedOutWithPublish);
         }
 
         if definitely_stale {
