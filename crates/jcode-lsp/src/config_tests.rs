@@ -919,3 +919,71 @@ fn a_path_containing_the_token_is_not_rewritten() {
     assert_eq!(substituted[1], "/tmp/$PID/socket", "a path was rewritten");
     assert_eq!(substituted[2], "--flag=$PID", "a flag value was rewritten");
 }
+
+/// **A non-map `servers` falls back to the bare reading rather than losing the file.**
+///
+/// omp gates the wrapper reading on `isRecord(rawServers)` and otherwise treats the
+/// top-level keys as servers, so `{"servers": 42, "gopls": {...}}` keeps gopls.
+///
+/// This was the last whole-file-loss path, and I was inclined to leave it because nobody
+/// writes that. The reviewer asked whether the reasoning was too convenient, and it was:
+/// the fix turned out to be *smaller* than the code it replaced, because inspecting the
+/// value directly is less machinery than a struct that serde has to reject first.
+/// "Unlikely input" is a reason not to add machinery, not a reason to keep a path that
+/// discards someone's whole configuration.
+#[test]
+fn a_non_map_servers_key_does_not_lose_the_file() {
+    let file = parse(
+        r#"{"servers": 42, "gopls": {"command": "gopls", "fileTypes": [".go"], "rootMarkers": ["go.mod"]}}"#,
+    )
+    .expect("a bogus servers key must not lose the file");
+
+    assert!(file.servers.contains_key("gopls"), "gopls was lost");
+    // `servers` itself is not a server, so it is reported as skipped rather than
+    // silently dropped.
+    assert_eq!(file.skipped, vec!["servers".to_string()]);
+}
+
+/// The wrapper form still wins when `servers` is a map.
+///
+/// The fallback must not become "always read the top level", or a wrapped config would
+/// have its `servers` key parsed as a server named `servers`.
+#[test]
+fn the_wrapper_form_still_takes_precedence_when_it_is_a_map() {
+    let file = parse(
+        r#"{"servers": {"gopls": {"command": "gopls", "fileTypes": [".go"], "rootMarkers": ["go.mod"]}}}"#,
+    )
+    .expect("wrapped");
+
+    assert!(file.servers.contains_key("gopls"));
+    assert_eq!(
+        file.servers.len(),
+        1,
+        "the wrapper key leaked in as a server"
+    );
+    assert!(file.skipped.is_empty());
+}
+
+/// `idleTimeoutMs` is read in either shape.
+///
+/// It sits beside the servers in the bare form and beside the `servers` key in the
+/// wrapped one. Rewriting `parse` to inspect the object made one lookup cover both, and
+/// this is what says so.
+#[test]
+fn the_idle_timeout_is_read_in_both_shapes() {
+    let wrapped = parse(r#"{"idleTimeoutMs": 500, "servers": {}}"#).expect("wrapped");
+    assert_eq!(
+        wrapped.idle_timeout,
+        Some(std::time::Duration::from_millis(500))
+    );
+
+    let bare = parse(r#"{"idleTimeoutMs": 700}"#).expect("bare");
+    assert_eq!(
+        bare.idle_timeout,
+        Some(std::time::Duration::from_millis(700))
+    );
+    assert!(
+        bare.servers.is_empty() && bare.skipped.is_empty(),
+        "idleTimeoutMs was treated as a server: {bare:?}"
+    );
+}

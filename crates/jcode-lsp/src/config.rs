@@ -208,40 +208,47 @@ pub struct Config {
 /// and losing the other twenty entries to it is the wrong failure. Found by an
 /// adversarial reviewer.
 pub fn parse(contents: &str) -> Result<ConfigFile, serde_json::Error> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Wrapper {
-        #[serde(default)]
-        servers: Option<BTreeMap<String, serde_json::Value>>,
-        #[serde(default)]
-        idle_timeout_ms: Option<u64>,
-    }
-
     let value: serde_json::Value = serde_json::from_str(contents)?;
+    let object = value.as_object().ok_or_else(|| {
+        // A config file has to be an object. An array or a bare string is not a shape
+        // with a fallback reading, unlike the cases below.
+        serde::de::Error::custom("an LSP config file must be a JSON object")
+    })?;
 
-    // Try the wrapper first. A bare map whose keys happen to include "servers" is
-    // ambiguous, and the wrapper reading wins -- same as omp, which checks
-    // `isRecord(value.servers)` before falling back.
-    let wrapper: Wrapper = serde_json::from_value(value.clone())?;
-    if let Some(raw) = wrapper.servers {
-        let (servers, skipped) = coerce_servers(raw);
+    // Read `idleTimeoutMs` wherever it appears: it is a sibling of the servers in the
+    // bare form and a sibling of the `servers` key in the wrapped one, so one lookup
+    // covers both.
+    let idle = object
+        .get("idleTimeoutMs")
+        .and_then(serde_json::Value::as_u64);
+
+    // The wrapper form, but only when `servers` is actually a map. omp gates on
+    // `isRecord(rawServers)` and otherwise falls through to the bare reading, so
+    // `{"servers": 42, "gopls": {...}}` keeps gopls rather than losing the file.
+    //
+    // This used to deserialize a `Wrapper` struct, which errored on a non-map `servers`
+    // before any fallback could happen -- the last remaining whole-file-loss path, and
+    // one I was inclined to leave because "nobody writes that". A reviewer asked whether
+    // that reasoning was too convenient, and it was: the fix is to inspect the value
+    // instead of asking serde to, which is both smaller than the struct it replaces and
+    // closer to what omp does. "Unlikely input" is a reason to not add machinery, not a
+    // reason to keep a path that discards a user's whole configuration.
+    if let Some(raw) = object.get("servers").and_then(serde_json::Value::as_object) {
+        let (servers, skipped) = coerce_servers(raw.clone().into_iter().collect());
         return Ok(ConfigFile {
             servers,
             skipped,
-            idle_timeout: wrapper
-                .idle_timeout_ms
-                .map(std::time::Duration::from_millis),
+            idle_timeout: idle.map(std::time::Duration::from_millis),
         });
     }
 
-    // Bare map. `idleTimeoutMs` is not a server, so it is removed before parsing;
-    // otherwise a number where a ServerConfig belongs fails the whole file.
-    let mut bare = value;
-    let idle = bare
-        .as_object_mut()
-        .and_then(|map| map.remove("idleTimeoutMs"))
-        .and_then(|value| value.as_u64());
-    let raw: BTreeMap<String, serde_json::Value> = serde_json::from_value(bare)?;
+    // Bare map. `idleTimeoutMs` is a setting rather than a server, so it is dropped
+    // before the entries are read; otherwise it would be reported as a skipped server.
+    let raw: BTreeMap<String, serde_json::Value> = object
+        .iter()
+        .filter(|(name, _)| name.as_str() != "idleTimeoutMs")
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let (servers, skipped) = coerce_servers(raw);
     Ok(ConfigFile {
         servers,
