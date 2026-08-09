@@ -1032,3 +1032,66 @@ async fn a_failed_start_leaks_neither_tasks_nor_processes() {
     // surviving processes. That relies on `kill_on_drop(true)` in `Transport::spawn`, which
     // is also what makes the tasks exit here, so the task delta is evidence for both.
 }
+
+/// **Several tool calls sharing one `Client` must not receive each other's answers.**
+///
+/// This is the shape the crate will actually be used in: one client per project, and any
+/// number of concurrent `lsp` tool calls against it. The reviewer's untouched list ended
+/// with it, noting that nothing tested `request()` interleaved with `open_document()`
+/// beyond the ten-sender transport test -- which proves frames do not interleave, a
+/// weaker claim than answers reaching the right caller.
+///
+/// The failure this rules out is the worst kind for a navigation tool: not an error, but
+/// one caller receiving another's result. A definition lookup would silently return the
+/// wrong file, and nothing anywhere would report a problem.
+///
+/// Each worker tags its request with its own identity and asserts the echo comes back
+/// with that tag, so a crossed answer is a failure rather than a coincidence. 40 requests
+/// across 4 tasks on 4 worker threads, interleaved with document opens and closes so the
+/// notification path is contending for the same writer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_callers_each_receive_their_own_answer() {
+    let client = std::sync::Arc::new(start(&[], json!({})).await);
+
+    let mut handles = Vec::new();
+    for worker in 0..4 {
+        let client = std::sync::Arc::clone(&client);
+        handles.push(tokio::spawn(async move {
+            let uri = format!("file:///tmp/concurrent{worker}.rs");
+            for round in 0..10 {
+                // Notifications on the same writer, so the request path is contending
+                // rather than running alone.
+                client.open_document(&uri, "rust", "fn a() {}").await.ok();
+
+                let value = client
+                    .request(
+                        "test/echo",
+                        json!({"worker": worker, "round": round}),
+                        Duration::from_secs(5),
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("worker {worker} round {round}: {error}"));
+
+                assert_eq!(
+                    value["worker"], worker,
+                    "worker {worker} received another caller's answer: {value}"
+                );
+                assert_eq!(
+                    value["round"], round,
+                    "worker {worker} received an answer from another round: {value}"
+                );
+
+                client.close_document(&uri).await.ok();
+            }
+        }));
+    }
+    for handle in handles {
+        handle.await.expect("a worker panicked");
+    }
+
+    assert_eq!(
+        client.outstanding().await,
+        0,
+        "40 concurrent requests left entries in the pending map"
+    );
+}

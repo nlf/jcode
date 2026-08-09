@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 185 lib tests plus 58
+**Tests written exceed cases ported**, deliberately. 185 lib tests plus 59
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -119,8 +119,12 @@ right" have not been checked against each other.
   diagnostic formatting lands, because the ledger dedups *formatted* output.
 - Windows beyond reading the `cfg!` branches; symlinked binaries; case-insensitive
   filesystems in detection.
-- two tool calls sharing one `Client`: nothing tests `request()` interleaved with
-  `open_document()` beyond the ten-sender transport test.
+- ~~two tool calls sharing one `Client`~~ — now tested
+  (`concurrent_callers_each_receive_their_own_answer`): 4 tasks on 4 threads, 40 requests
+  interleaved with opens and closes, each tagged and asserted against its own echo. Correct
+  as written; the ten-sender transport test proved frames do not interleave, which is
+  weaker than answers reaching the right caller. Mutation-verified with a constant request
+  id, which crosses answers between workers.
 
 ## Known gaps, named
 
