@@ -860,11 +860,57 @@ fn lookup_section(settings: &Value, section: &str) -> Value {
 
 /// A `file://` URI for a path.
 ///
-/// Minimal on purpose: enough for `rootUri` and workspace folders. Full
-/// percent-encoding arrives with the document work, where a path with a `#` in it
-/// actually matters.
+/// Percent-encodes what a `file:` URI must, matching `pathToFileURL` (which is what omp
+/// uses via Bun). The set is deliberately narrow: `#` and `?` because they otherwise
+/// start a fragment or query and **silently truncate the path**, the space and control
+/// characters because they are not legal in a URI, `%` because leaving it raw makes an
+/// existing escape ambiguous, and every non-ASCII byte as its UTF-8 encoding.
+///
+/// The exact set is not a judgement call: it was taken from `pathToFileURL`'s output over
+/// 24 paths and pinned in a differential test. Two members surprised me and are why
+/// guessing was not good enough -- `~` **is** escaped (to `%7E`) even though it is
+/// unreserved in RFC 3986, and `*` is **not**. My first draft had both backwards.
+///
+/// # Why this is not "minimal on purpose" any more
+///
+/// It used to be `format!("file://{}", path.display())`, with a comment saying full
+/// encoding would arrive with the document work "where a path with a `#` in it actually
+/// matters". But this function produces `rootUri` and the workspace folders, which are
+/// sent in `initialize` -- so a project checked out in a directory containing `#` had its
+/// root truncated at the handshake, before any document existed. Every later import
+/// resolution would then be relative to the wrong tree, and the failure would look like a
+/// broken language server rather than a client bug.
+///
+/// The deferral was reasonable for the case named and wrong for the case it was in.
+/// Reported by an adversarial reviewer as unreached.
 fn path_to_uri(path: &std::path::Path) -> String {
-    format!("file://{}", path.display())
+    let mut uri = String::from("file://");
+    for byte in path.to_string_lossy().as_bytes() {
+        match byte {
+            // Unreserved, plus the path characters that carry meaning we want to keep.
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'/'
+            | b':'
+            | b'+'
+            | b'@'
+            | b'$'
+            | b'&'
+            | b'='
+            | b'('
+            | b')'
+            | b'*'
+            | b','
+            | b';'
+            | b'\'' => uri.push(*byte as char),
+            other => uri.push_str(&format!("%{other:02X}")),
+        }
+    }
+    uri
 }
 
 fn workspace_folder(root: &std::path::Path) -> Value {
@@ -948,3 +994,7 @@ pub fn method_not_found(message: &str) -> ResponseError {
 pub fn placeholder_id() -> RequestId {
     RequestId::Number(0)
 }
+
+#[cfg(test)]
+#[path = "client_tests.rs"]
+mod tests;
