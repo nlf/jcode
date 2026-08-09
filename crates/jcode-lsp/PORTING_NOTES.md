@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 153 lib tests plus 50
+**Tests written exceed cases ported**, deliberately. 172 lib tests plus 51
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -71,6 +71,19 @@ Sources, all under `/tmp/omp/packages/coding-agent`:
 
 An 8th file, `test/task/subagent-lsp.test.ts` (293 lines, 6 cases), is excluded
 wholesale: it tests subagent LSP inheritance against omp's session model.
+
+## Known gaps, named
+
+Things verified to be wrong-or-absent and deliberately left, so that none of them is
+indistinguishable from an oversight. Each has a test or a doc comment at the site.
+
+| gap | where | why it is left |
+|---|---|---|
+| `biome` and `swiftlint` are not LSP servers | `config::detect` doc comment | omp attaches `createClient` adapters to both; `swiftlint lint --reporter json` prints and exits. We have no adapter layer, so detection reports them available and a spawn would die. The data is right, the adapter is missing |
+| a decoy `content-length:` in a banner misframes | `framing::parse_content_length` doc, pinned by `a_decoy_header_in_a_banner_wins_the_scan_as_omp_does` | omp has the identical weakness. Requiring the *last* candidate would break the bare-LF recovery that function exists for. Measured: a 5-byte body is extracted |
+| omp F1/F2 config-cache invalidation | `config_tests::a_reload_gap_is_recorded` | there is no cache to invalidate; the test asserts the premise, so adding one fails loudly |
+| Windows local-bin filesystem layouts | Group F below | `.venv/Scripts` cannot be built on macOS. The suffix *ordering* is tested on every platform |
+| symlinks in URI comparison | `freshness::equivalent_uris` doc | lexical normalization only, matching omp; resolving them needs the filesystem and omp does not either |
 
 ## The count, now derived rather than asserted
 
