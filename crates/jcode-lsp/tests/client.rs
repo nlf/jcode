@@ -142,6 +142,16 @@ async fn a_timeout_names_the_method_and_the_duration() {
 /// A timed-out request must not leave anything behind. If it did, the map grows
 /// for the life of the connection and a late answer resolves a caller that is
 /// gone.
+///
+/// # This test used to be unable to fail
+///
+/// It asserted only that a *later* request still worked -- which it does whether or not
+/// the timed-out one was forgotten, because a leaked entry inconveniences nobody
+/// immediately. A reviewer reported three times that deleting the `forget` on the
+/// timeout arm left the entire suite green, and they were right each time.
+///
+/// The leak has no symptom, so the test needs to look at the thing that leaks. Hence
+/// `Client::outstanding`, which exists for this.
 #[tokio::test]
 async fn a_timed_out_request_does_not_wedge_later_ones() {
     let client = start(&[("FAKE_LSP_HANG_ON", "test/echo")], json!({})).await;
@@ -151,9 +161,19 @@ async fn a_timed_out_request_does_not_wedge_later_ones() {
         .await
         .expect_err("must time out");
 
+    assert_eq!(
+        client.outstanding().await,
+        0,
+        "a timed-out request stayed in the pending map; it grows for the life of the \
+         connection and a late answer would resolve a caller that is gone"
+    );
+
     // A different method still works.
     let observed = state(&client).await;
     assert_eq!(observed["initializeCount"], 1);
+
+    // And the successful one did not leak either.
+    assert_eq!(client.outstanding().await, 0);
 }
 
 /// **A timeout must return at its deadline, not at the deadline plus a courtesy
@@ -587,6 +607,11 @@ async fn shutdown_escalates_to_a_kill_when_exit_is_ignored() {
 
 /// Requests after shutdown must fail rather than hang. A caller that does not
 /// know the client is dead should learn immediately.
+///
+/// Also covers the *other* `forget`: a request whose write fails was never sent, so
+/// nobody will ever answer it and leaving it pending leaks until the connection dies.
+/// A mutation deleting that one survived the suite even after the timeout arm was
+/// covered, because "the request failed" is true either way.
 #[tokio::test]
 async fn requests_after_shutdown_fail_promptly() {
     let mut client = start(&[], json!({})).await;
@@ -598,6 +623,12 @@ async fn requests_after_shutdown_fail_promptly() {
         .expect_err("a shut-down client cannot answer");
     // Any failure is acceptable; hanging is not. The deadline above is the test.
     assert!(!failure.to_string().is_empty());
+
+    assert_eq!(
+        client.outstanding().await,
+        0,
+        "a request that was never written stayed in the pending map"
+    );
 }
 
 /// **An identical republish still advances the generation counter.**

@@ -444,6 +444,21 @@ impl Client {
             .any(|registered| registered == method)
     }
 
+    /// How many requests are still awaiting an answer.
+    ///
+    /// Exists for tests. The invariant it checks is real but invisible from outside:
+    /// a request that ends in a timeout must remove itself from the pending map, or
+    /// the map grows for the life of the connection and a late answer resolves a
+    /// caller that is already gone.
+    ///
+    /// Added because a reviewer pointed out three times that deleting the `forget` on
+    /// the timeout arm left the whole suite green: the test that claimed to cover it
+    /// only checked that a *later* request still worked, which it does either way. A
+    /// leak with no symptom needs something that can see the leak.
+    pub async fn outstanding(&self) -> usize {
+        self.pendings.outstanding().await
+    }
+
     /// Diagnostics last published for a URI.
     pub async fn diagnostics_for(&self, uri: &str) -> Option<PublishedDiagnostics> {
         self.diagnostics.lock().await.get(uri).cloned()

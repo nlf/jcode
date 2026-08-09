@@ -73,15 +73,42 @@ pub fn identity(message: &str) -> &str {
 /// Scans colons left to right and takes the first that begins a valid
 /// `:digits:digits<whitespace>` run, matching the semantics of omp's lazy regex. See
 /// [`identity`] for why the direction is load-bearing.
+///
+/// # The search stops at the first newline
+///
+/// omp's pattern is `/^.*?:\d+:\d+\s+/`: anchored at the start, and `.` does not match
+/// `\n` in JavaScript without the `s` flag. So a location only counts as a prefix if it
+/// is on the **first line**.
+///
+/// Without that bound, a multi-line diagnostic whose first line carries no location gets
+/// stripped through the newline to a location further down:
+///
+/// ```text
+/// Something failed\n at foo.ts:1:2 bar
+/// ```
+///
+/// omp leaves that whole (no first-line location), where an unbounded scan returns
+/// `"bar"` — so two unrelated failures that both happen to end in `bar` become one
+/// identity and the second is suppressed. That is the same over-merge as the round-one
+/// `"previously"` bug, one level up, and it was introduced by the fix for it. rustc's
+/// notes and TypeScript's related-information are both multi-line, so this is the common
+/// shape rather than a contrived one.
+///
+/// Found by an adversarial reviewer, on the third pass, in the area I asked them to
+/// check hardest. Verified against the real regex in node before changing anything.
 fn strip_location_prefix(message: &str) -> Option<&str> {
+    // Only the first line can hold the prefix. The rest of the message is compared as
+    // part of the identity, which is what makes two multi-line diagnostics with
+    // different notes stay distinct.
+    let first_line_end = message.find('\n').unwrap_or(message.len());
     let mut search_from = 0usize;
-    while let Some(offset) = message[search_from..].find(':') {
+    while let Some(offset) = message[search_from..first_line_end].find(':') {
         let colon = search_from + offset;
         if let Some(rest) = location_after(message, colon) {
             return Some(rest);
         }
         search_from = colon + 1;
-        if search_from >= message.len() {
+        if search_from >= first_line_end {
             break;
         }
     }

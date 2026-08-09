@@ -430,3 +430,74 @@ fn the_location_parsers_edges_match_omps_regex() {
         );
     }
 }
+
+/// **Only the first line can carry the location prefix.**
+///
+/// omp's pattern is anchored and `.` does not match `\n`, so a location on a later line
+/// is part of the message. My leftmost scan crossed newlines, and the damage is the same
+/// over-merge as the round-one bug it was introduced to fix: a multi-line diagnostic
+/// whose first line has no location got stripped down to whatever followed a location
+/// further in, so two unrelated failures could share an identity and one would be
+/// silently suppressed.
+///
+/// rustc notes and TypeScript related-information are both multi-line, so this is the
+/// ordinary shape. Found by an adversarial reviewer on the third pass, in the area I had
+/// asked them to look at hardest.
+///
+/// Values are differential, printed by omp's regex in node.
+#[test]
+fn a_location_on_a_later_line_is_part_of_the_message() {
+    let cases: &[(&str, &str)] = &[
+        // No location on line one: nothing is stripped, even though line two has one.
+        (
+            "Something failed\n at foo.ts:1:2 bar",
+            "Something failed\n at foo.ts:1:2 bar",
+        ),
+        (
+            "no location\nsecond.ts:3:4 message",
+            "no location\nsecond.ts:3:4 message",
+        ),
+        // A location on line one strips, and the later lines survive untouched.
+        (
+            "src/a.ts:12:5 [error] x\n note: see src/b.ts:9:9 here",
+            "[error] x\n note: see src/b.ts:9:9 here",
+        ),
+        (
+            "src/a.ts:1:2 first\nsrc/b.ts:3:4 second",
+            "first\nsrc/b.ts:3:4 second",
+        ),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            identity(input),
+            *expected,
+            "for {input:?}, which omp's regex maps to {expected:?}"
+        );
+    }
+}
+
+/// Two multi-line diagnostics that differ only in a later line stay distinct.
+///
+/// The consequence of the unit above. Both messages below end in `bar` and have no
+/// first-line location; an unbounded scan reduced both to `"bar"` and the ledger dropped
+/// the second.
+#[test]
+fn multi_line_diagnostics_are_not_merged_by_a_shared_tail() {
+    let mut ledger = Ledger::new();
+
+    let first = ledger.reduce(
+        "src/a.ts",
+        &["Something failed\n at foo.ts:1:2 bar".to_string()],
+    );
+    assert_eq!(first.messages.len(), 1);
+
+    let second = ledger.reduce(
+        "src/a.ts",
+        &["Something else failed\n at other.ts:5:6 bar".to_string()],
+    );
+    assert_eq!(
+        second.messages.len(),
+        1,
+        "a distinct multi-line diagnostic was suppressed: {second:?}"
+    );
+}

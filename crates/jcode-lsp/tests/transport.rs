@@ -458,3 +458,37 @@ async fn concurrent_sends_do_not_interleave_frames() {
     }
     assert_eq!(seen.len(), 10, "all ten must round-trip");
 }
+
+/// **`wait_for_exit` returns false when the process outlives the deadline.**
+///
+/// The doc comment on it calls a server that survives its own shutdown "the daemon leak
+/// with no symptom", and until now nothing checked the distinction it names: a mutation
+/// making the function always return `true` survived the entire suite, three review
+/// passes running. Every existing test waits on a process that *does* exit, so a
+/// too-generous answer is indistinguishable from a correct one.
+///
+/// A zero deadline against a live process is the cheapest way to reach the false arm
+/// without depending on timing.
+#[tokio::test]
+async fn waiting_for_a_live_process_to_exit_reports_failure() {
+    let (mut transport, _rx) = spawn(&[("FAKE_LSP_HANG_ON", "test/echo")]);
+
+    assert!(
+        !transport.wait_for_exit(Duration::from_millis(0)).await,
+        "a running process must not be reported as exited; a caller reporting a \
+         restart would then claim a teardown that never happened"
+    );
+
+    // Still alive, which is what makes the assertion above meaningful rather than a
+    // race against a process that had already died.
+    assert!(
+        transport.exited().expect("try_wait").is_none(),
+        "the process exited on its own, so the check above proved nothing"
+    );
+
+    // And killing it does report success, so `false` above was not simply constant.
+    assert!(
+        transport.kill(Duration::from_secs(5)).await,
+        "a killed process must be confirmed gone"
+    );
+}
