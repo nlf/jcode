@@ -987,3 +987,77 @@ fn the_idle_timeout_is_read_in_both_shapes() {
         "idleTimeoutMs was treated as a server: {bare:?}"
     );
 }
+
+/// **`warmupTimeoutMs` and `capabilities` survive the parse.**
+///
+/// Both are real fields in `defaults.json` that omp consumes -- `marksman` sets a 2000ms
+/// warm-up, `rust-analyzer` declares five extension capabilities -- and serde was dropping
+/// both silently. Tolerating unknown fields is deliberate here (real servers send values
+/// outside the spec), and that tolerance is precisely why these went unnoticed for the
+/// whole port: a field in the data but not in the struct is invisible.
+///
+/// Neither is consumed yet, because startup readiness and the rust-analyzer extensions are
+/// later work. Parsed anyway, so the gap is a visible `todo` rather than a silent loss, and
+/// so that whoever wires them finds the values already present.
+///
+/// Reported by an adversarial reviewer as unreached.
+#[test]
+fn the_startup_and_capability_fields_are_not_silently_dropped() {
+    let config = defaults();
+
+    assert_eq!(
+        config.servers["marksman"].warmup_timeout_ms,
+        Some(2000),
+        "marksman's warm-up override was dropped"
+    );
+    // Every other server leaves it unset, which is what "use the default" looks like.
+    assert_eq!(config.servers["gopls"].warmup_timeout_ms, None);
+
+    let rust = &config.servers["rust-analyzer"].capabilities;
+    assert_eq!(
+        rust.len(),
+        5,
+        "rust-analyzer's declared capabilities were dropped: {rust:?}"
+    );
+    for capability in [
+        "flycheck",
+        "ssr",
+        "expandMacro",
+        "runnables",
+        "relatedTests",
+    ] {
+        assert_eq!(
+            rust.get(capability),
+            Some(&true),
+            "{capability} is missing from {rust:?}"
+        );
+    }
+    // And a server that declares none has an empty map rather than a missing field.
+    assert!(config.servers["gopls"].capabilities.is_empty());
+}
+
+/// A config file can set both, and an unknown capability name is preserved.
+///
+/// Kept as a string-keyed map rather than an enum precisely so that a server declaring
+/// something we have not heard of is carried rather than rejected -- the same tolerance
+/// argument the crate makes for not depending on `lsp-types`.
+#[test]
+fn a_config_file_can_set_the_startup_and_capability_fields() {
+    let mut config = defaults();
+    merge(
+        &mut config,
+        parse(
+            r#"{"gopls": {"warmupTimeoutMs": 9000, "capabilities": {"somethingNew": true, "off": false}}}"#,
+        )
+        .expect("overlay"),
+    );
+
+    let gopls = &config.servers["gopls"];
+    assert_eq!(gopls.warmup_timeout_ms, Some(9000));
+    assert_eq!(gopls.capabilities.get("somethingNew"), Some(&true));
+    assert_eq!(
+        gopls.capabilities.get("off"),
+        Some(&false),
+        "an explicitly false capability must be kept, not filtered out"
+    );
+}

@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 182 lib tests plus 57
+**Tests written exceed cases ported**, deliberately. 184 lib tests plus 57
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -102,9 +102,11 @@ right" have not been checked against each other.
 - a `TimedOut` freshness result discards the cached publish where omp returns it. A
   judgement call rather than a bug, but an unexamined one.
 - `idle_timeout` is parsed and consumed by nothing, pending Q1.
-- `warmupTimeoutMs` and `capabilities` in `defaults.json` are silently dropped by serde
-  (they affect `marksman` and `rust-analyzer`). Unknown fields are tolerated by design,
-  which is also how these went unnoticed.
+- ~~`warmupTimeoutMs` and `capabilities` silently dropped by serde~~ — checked, real,
+  now parsed. Neither is *consumed* yet (startup readiness and the rust-analyzer
+  extensions are later work), but a field present in the data and absent from the struct
+  is invisible, where one present and unused is a `todo` a reader can find. Four for four
+  on this list.
 - omp's `stripDiagnosticNoise` (`utils.ts:194`) is unported. It will matter when
   diagnostic formatting lands, because the ledger dedups *formatted* output.
 - Windows beyond reading the `cfg!` branches; symlinked binaries; case-insensitive

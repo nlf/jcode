@@ -84,6 +84,10 @@ pub struct ServerOverlay {
     pub is_linter: Option<bool>,
     #[serde(default)]
     pub disabled: Option<bool>,
+    #[serde(default)]
+    pub warmup_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub capabilities: Option<BTreeMap<String, bool>>,
 }
 
 impl ServerOverlay {
@@ -106,6 +110,8 @@ impl ServerOverlay {
             settings: self.settings,
             is_linter: self.is_linter.unwrap_or(false),
             disabled: self.disabled.unwrap_or(false),
+            warmup_timeout_ms: self.warmup_timeout_ms,
+            capabilities: self.capabilities.unwrap_or_default(),
         })
     }
 }
@@ -137,6 +143,30 @@ pub struct ServerConfig {
     /// must not be the one asked for a definition. See [`servers_for_file`].
     #[serde(default)]
     pub is_linter: bool,
+    /// How long to allow this server's warm-up, overriding the default.
+    ///
+    /// `marksman` sets 2000ms in `defaults.json`. omp reads it in `servers.ts:90` as
+    /// `serverConfig.warmupTimeoutMs ?? WARMUP_TIMEOUT_MS`.
+    ///
+    /// **Parsed but not yet consumed**, because startup and readiness are not built.
+    /// Carried rather than dropped: serde tolerates unknown fields by design here (real
+    /// servers send values outside the spec), and that tolerance is exactly why these two
+    /// fields went unnoticed for the whole port. A field that is present in the data and
+    /// absent from the struct is invisible; one that is present and unused is a `todo` a
+    /// reader can find.
+    #[serde(default)]
+    pub warmup_timeout_ms: Option<u64>,
+    /// Server-specific extensions this server supports.
+    ///
+    /// `rust-analyzer` declares five (`flycheck`, `ssr`, `expandMacro`, `runnables`,
+    /// `relatedTests`). omp gates its extension requests on them via `hasCapability`.
+    ///
+    /// **Parsed but not yet consumed**, for the same reason as
+    /// [`Self::warmup_timeout_ms`]: the requests these gate are v2 work. Kept as a map so
+    /// a server declaring a capability we have not heard of is preserved rather than
+    /// rejected.
+    #[serde(default)]
+    pub capabilities: BTreeMap<String, bool>,
     /// Turned off by a config file. Kept in the map rather than removed so that
     /// `status` can say "disabled" instead of staying silent.
     #[serde(default)]
@@ -345,6 +375,12 @@ pub fn merge(base: &mut Config, overlay: ConfigFile) {
                 }
                 if let Some(disabled) = over.disabled {
                     existing.disabled = disabled;
+                }
+                if over.warmup_timeout_ms.is_some() {
+                    existing.warmup_timeout_ms = over.warmup_timeout_ms;
+                }
+                if let Some(capabilities) = over.capabilities {
+                    existing.capabilities = capabilities;
                 }
             }
             None => {
