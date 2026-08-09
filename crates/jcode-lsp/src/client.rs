@@ -54,6 +54,14 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// microseconds, so anything approaching this is already pathological.
 const WRITE_DEADLINE: Duration = Duration::from_secs(5);
 
+/// Deadline for a best-effort `$/cancelRequest`.
+///
+/// Much shorter than [`WRITE_DEADLINE`] because the caller's own timeout has
+/// already expired by the time we send it. A courtesy notification must not add
+/// seconds to a failure that has already been decided, and the server it is aimed
+/// at is precisely the one likely to be wedged.
+const CANCEL_DEADLINE: Duration = Duration::from_millis(250);
+
 /// How long `shutdown` may take before we stop being polite.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -346,9 +354,21 @@ impl Client {
                 // Tell the server to stop working on it. Advisory, and worth
                 // sending: a server still computing an abandoned request is
                 // spending our CPU.
-                let _ = self
-                    .notify("$/cancelRequest", json!({"id": id}))
-                    .await;
+                //
+                // **Sent with a short deadline of its own, and detached.** The
+                // caller's timeout has already expired, so making them wait a
+                // further `WRITE_DEADLINE` for a courtesy notification turns a
+                // 300ms timeout into a 5.3s one against exactly the wedged server
+                // that caused it. The cancel is best-effort by nature, so a
+                // background attempt is the honest shape.
+                let writer = self.transport.writer();
+                if let Ok(body) =
+                    serde_json::to_vec(&jsonrpc::notification("$/cancelRequest", &json!({"id": id})))
+                {
+                    tokio::spawn(async move {
+                        let _ = writer.send(&body, CANCEL_DEADLINE).await;
+                    });
+                }
                 Err(RequestFailure::TimedOut {
                     method: method.to_string(),
                     after: timeout,

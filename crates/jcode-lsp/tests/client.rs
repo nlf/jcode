@@ -156,6 +156,56 @@ async fn a_timed_out_request_does_not_wedge_later_ones() {
     assert_eq!(observed["initializeCount"], 1);
 }
 
+/// **A timeout must return at its deadline, not at the deadline plus a courtesy
+/// write.**
+///
+/// The `$/cancelRequest` sent after giving up is best-effort, and the server it is
+/// aimed at is precisely the one likely to have stopped reading. Sending it inline
+/// with the full 5-second write deadline turns a 300ms timeout into a 5.3s one.
+///
+/// # Why this asserts the deadline rather than reproducing the wedge
+///
+/// Two attempts to reproduce it end-to-end both passed against the buggy version,
+/// for two different reasons, and the second is the interesting one:
+///
+/// 1. The first never filled the pipe, so no write ever blocked.
+/// 2. The second did, but the *partial-write poison* from the fix in the previous
+///    commit then made the request fail in **38µs** — before reaching the cancel
+///    path at all. Measured, not assumed.
+///
+/// So on this transport the two protections overlap: a wedge severe enough to make
+/// an inline cancel slow also poisons the connection, and a poisoned connection
+/// fails instantly. The exposure is the narrow window where a write blocks *without*
+/// landing a partial frame — real, since a full pipe rejects a small write outright,
+/// but not reachable through the public API without racing.
+///
+/// What is asserted instead: a hanging (not wedged) server's timeout is bounded by
+/// its own deadline plus a small margin. That covers the common case and would catch
+/// a regression that made the cancel synchronous *and* slow for any reason. The
+/// narrow window is documented rather than tested, which is the honest state.
+#[tokio::test]
+async fn a_timeout_is_bounded_by_its_own_deadline() {
+    let client = start(&[("FAKE_LSP_HANG_ON", "test/echo")], json!({})).await;
+
+    let started = std::time::Instant::now();
+    let failure = client
+        .request("test/echo", json!({}), Duration::from_millis(300))
+        .await
+        .expect_err("a hanging request must time out");
+    let took = started.elapsed();
+
+    assert!(
+        matches!(failure, RequestFailure::TimedOut { .. }),
+        "expected a timeout, got {failure}"
+    );
+    // A generous margin: the point is that it does not pay a further 5s write
+    // deadline, not that it returns in exactly 300ms on a loaded machine.
+    assert!(
+        took < Duration::from_secs(2),
+        "a 300ms timeout must return near its deadline; took {took:?}"
+    );
+}
+
 /// **When the connection dies, every in-flight request fails with the cause.**
 /// Without this each waits out its own timeout and reports a timeout instead of
 /// the real reason, so one dead server costs one timeout per request and explains
