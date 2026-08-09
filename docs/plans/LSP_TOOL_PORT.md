@@ -1,8 +1,10 @@
 # Plan: port omp's `lsp` tool to Rust, behind omp's tests
 
-Status: **draft, revision 2**, written 2026-08-09, revised the same day after an
-adversarial review. Every measurement below was re-taken; the review's findings
-and the errors they corrected are recorded at the end rather than edited away.
+Status: **ready to implement (revision 3)**, written 2026-08-09 and revised twice
+the same day against two adversarial reviews. Every measurement was re-taken and
+independently confirmed. Both review passes and the errors they corrected are
+recorded at the end rather than edited away. **Questions 1 and 2 at the end block
+Phase 0 and need answering first.**
 
 Companion to `docs/plans/OMP_TOOL_PORT.md`, which shipped the file tools by the
 same method, and to the oh-my-pi survey in `~/NLFCODE.md`, which ranks `lsp` as
@@ -75,14 +77,28 @@ radius" below, which exists because of it.
 ## Scope
 
 **In, v1:** a real stdio JSON-RPC client with process lifecycle; config loading
-with auto-detection; and the read-only actions that carry most of the value:
+with auto-detection; the read-only actions that carry most of the value —
 `diagnostics` (single file), `definition`, `references`, `hover`, `symbols`
-(document + workspace), `type_definition`, `implementation`, `status`.
+(document + workspace), `type_definition`, `implementation`, `status` — **plus
+`request`**, which needs no `WorkspaceEdit` machinery and is what makes an
+incomplete v1 usable.
+
+**`request` forces a write-tier tool into v1, and that is a real consequence
+rather than a footnote.** It can send an arbitrary LSP method, so it cannot be
+auto-approved. Under the two-tool split (question 2) it therefore belongs on
+`lsp_edit`, which means **v1 ships two tools**: a read-only `lsp` and a minimal
+`lsp_edit` carrying only `request`. That is more surface than "v1 is the
+read-only half" suggests, and it changes what question 4 is asking: shipping v1
+first still ships an approval-gated tool, just one with a single action.
+
+If that is unwanted, the alternative is to drop `request` back to v2 and accept
+that an unported operation is unreachable until then. **Recommend keeping it in
+v1**: the whole reason to have it is that our v1 will not cover everything.
 
 **In, v2:** the write actions — `rename`, `code_actions`, `rename_file` — plus
-`reload`, `capabilities`, `request`. These are separated because they apply
+`reload` and `capabilities`. These are separated because they apply
 `WorkspaceEdit`s, which is a second body of work (edit application, overlap
-validation, resource ops) and a second approval surface.
+validation, resource ops).
 
 **Out, and each for a stated reason:**
 
@@ -211,11 +227,12 @@ ever.
 
 ## Blast radius: every surface keyed on a tool name
 
-**This section exists because the first draft did not have it and the review
-found seven live surfaces it missed.** The file-tool port's review found exactly
-the same category and recorded the lesson; not applying it here was a failure to
-read our own history. Each row below breaks **silently** — no compile error,
-because every one of them is a string match with a default arm.
+**This section exists because the first draft did not have it. The first review
+found seven live surfaces it missed; the second review, against this table, found
+one more that matters and three that are benign.** The file-tool port's review
+found exactly the same category and recorded the lesson; not applying it here was
+a failure to read our own history, twice. Each row below breaks **silently** — no
+compile error, because every one of them is a string match with a default arm.
 
 | surface | what it keys on | what breaks |
 |---|---|---|
@@ -223,7 +240,9 @@ because every one of them is a string match with a default arm.
 | `jcode-usage-types/src/lib.rs:82-112` | tool name → telemetry category | `lsp` falls to `Other`. `ast_grep` is listed at `:91`; the read-only `lsp` belongs beside it, and a write `lsp_edit` under `Write` at `:95` |
 | `jcode-telemetry-core/src/lib.rs:1069,1125,1132,2291` | four separate write-tool name lists | LSP renames are invisible to file-write telemetry in all four |
 | `jcode-tui/src/tui/app/observe.rs:89-106` | `mutates_repo` list | a rename leaves the TUI's git-info cache stale. `ast_edit` is in the list at `:103` for exactly this reason |
+| `jcode-tui-tool-display/src/lib.rs:40` `is_edit_tool_name` | `"write"｜"edit"｜"multiedit"｜"patch"｜"apply_patch"` | **the consequential one, found on the second pass.** Five production call sites gate edit-diff rendering and pinning on it: `ui_messages.rs:4062`, `ui_pinned.rs:788`, `ui_prepare.rs:1576`, `state_ui.rs:61`, `input.rs:2454`. An `lsp_edit` rename renders and pins as a plain tool row, not as an edit, **everywhere in the TUI**. Its own doc comment at `:38` says a renamed edit tool "must still display its diffs rather than degrade to a bare tool name" — the warning was already written |
 | `jcode-tui/src/tui/remote_diff.rs:51-61` | `"edit"｜"write"｜"multiedit"` plus the `file_path` **argument** | remote diffs miss every LSP rename. Note the existing comment at `:63`: hashline already forced this code to stop trusting `file_path` alone |
+| `jcode-app-core/src/agent/tools.rs:104-148` | per-name arg display in run mode | `lsp` falls to the silent default arm, so `jcode run` prints the tool name and nothing about the call |
 | `jcode-tui/src/tui/app/state_ui_storage.rs:14` | canonical tool name → which args survive compaction | undecided for `lsp`; falls to the default arm, so a compacted transcript may lose what the call was |
 | `jcode-tui/src/tui/ui_tools.rs:1484` | the stub's arg names | renders `lsp :0` |
 | `jcode-app-core/src/agent/inline_tail.rs:128-147` | per-tool "interesting field" map | the live status line shows nothing for `lsp`. `file` would be the field |
@@ -231,6 +250,17 @@ because every one of them is a string match with a default arm.
 | `jcode-productivity-core/src/aggregate.rs:109` | `tool("grep") + tool("agentgrep") + tool("glob")` | navigation activity uncounted. Judgement call whether LSP counts as search |
 | `jcode-desktop2/src/edits.rs` | string-scans raw JSON for `"file_path"` | an edit card with no files. Only if a write action lands there |
 | user `pre_tool` hooks | tool args | a hook written against `{file_path, old_string}` sees neither |
+
+**Checked and benign, recorded so a fourth reviewer does not have to find them
+again.** Each keys on a tool name, so each belongs under this heading, but each
+passes an unknown name through unchanged rather than mishandling it:
+
+| surface | why it is fine |
+|---|---|
+| `jcode-provider-core/src/anthropic.rs:367-397` | OAuth name mapping both directions; `lsp`/`lsp_edit` pass through. Note the "keep in sync" cross-reference at `jcode-tool-types/src/lib.rs:106` — if a mapping is ever added, it must be added in both |
+| `jcode-tool-types/src/lib.rs:71` `resolve_tool_name` | alias resolution; no `lsp` alias exists, and per `~/NLFCODE.md` a *stale* alias here silently broke `grep` for a release. **Do not add one.** The invariant tests (`registered_tools_are_never_aliased_to_something_else`) already guard it |
+| `jcode-productivity-core/src/scan.rs:350` `canonical_tool_name` | counts by raw name, so a new name counts as itself |
+| `jcode-tui-tool-display/src/lib.rs:21` `canonical_tool_name` | identity for unknown names |
 
 **The unifying fact: LSP write actions have no `file_path` argument.** The paths
 live inside a `WorkspaceEdit` the *server* returned, which is not visible in the
@@ -249,9 +279,15 @@ at least had the paths in its own payload.
    spirit of the prior port's
    `every_file_tool_call_still_yields_a_file_path_for_downstream_consumers`.
 
-**Minimum set for v1** (read-only, so most rows do not apply): the cli-runtime
-mapping, the telemetry category, `ui_tools`, `inline_tail`, and
-`state_ui_storage`. The rest arrive with v2's write actions.
+**Minimum set for v1.** Most `file_path`-keyed rows are v2 concerns, but **v1
+ships `lsp_edit` carrying `request`** (see Scope), so it is not purely read-only:
+the cli-runtime mapping, the telemetry category (both names), `ui_tools`,
+`inline_tail`, `agent/tools.rs`, and `state_ui_storage`. `is_edit_tool_name`,
+`observe.rs`, `remote_diff`, `catchup`, and `desktop2` wait for v2, because
+`request` does not apply a `WorkspaceEdit` — **unless** the model uses it to send
+`textDocument/rename` by hand, which it can. That is an argument for treating
+`is_edit_tool_name` as v1 too, and the cheap resolution is to add both names
+there once rather than reason about which methods a raw `request` might carry.
 
 ## Phase 0 — decide the surface, then reconcile the stub (½ day)
 
@@ -408,29 +444,52 @@ Where a behaviour depends on a surface we lack, **drop the test and record why**
 in `crates/jcode-lsp/PORTING_NOTES.md`. A dropped test is a decision, not an
 omission.
 
-**Exit, stated so it cannot be satisfied vacuously and cannot be redefined
-later:** every case in the groups marked "Port all" is ported, and the count is
-fixed **here**, not in `PORTING_NOTES.md` after the fact:
+**Exit, in two parts. The first part is the one that actually closes the
+loophole.**
 
-| group | cases | v1 or v2 |
-|---|---|---|
-| A framing and lifecycle | 15 | v1 |
-| B server→client requests | 7 | v1 |
-| C diagnostics freshness | 10 | v1 |
-| D position resolution | 6 | v1 |
-| G sanitization | 4 | v1 |
-| H dedup ledger | 9 | v1 |
-| F config and detection (selected subset) | 5 | v1 |
-| **v1 total** | **56** | |
-| E `WorkspaceEdit` application | 12 | v2 |
-| **v2 total** | **68** | |
+**(a) Enumerate before counting.** The first commit of Phase 1 writes, into
+`crates/jcode-lsp/PORTING_NOTES.md`, the **case titles** from omp's test files
+assigned to each group, with each marked *port*, *drop (reason)*, or *v2*. Only
+then is the count real. The numbers in the table below are estimates taken from
+reading the files; they are the target, not the evidence.
 
-Each must fail with an **assertion** — not a compile error and not `todo!()`.
-The first draft set this target at 40, which was **less than the sum of its own
-"port all" groups**, so a whole group could have been dropped silently. If a
-group turns out to contain fewer real cases than listed, the correction goes in
-`PORTING_NOTES.md` with the reason; the number may shrink by evidence, never by
-convenience.
+This is the second review's sharpest point and it is correct: the first draft set
+the target at 40, below the sum of its own groups; revision 2 hardened tildes
+into an exact 56, which errs the other way. **The enumeration, not the number, is
+what closes it.** A count asserted from a skim is not more trustworthy for being
+precise.
+
+Two known discrepancies the enumeration must resolve, both already visible:
+
+- **Group C says "port all (~10)" but `lsp-diagnostics-freshness.test.ts` has
+  15 cases**, and at least three of them test surfaces this plan excludes (the
+  deferred-diagnostics channel, batched sibling writes, custom formatting). So
+  "port all" cannot mean the file, and C is an unenumerated subset. Enumerate it
+  and drop the writethrough-dependent cases by name.
+- **Group G is "~5 cases" in the body and 4 in the table.** Resolve by counting.
+
+**(b) The count, once enumerated.** Every case marked *port* is ported, each
+failing with an **assertion** — not a compile error and not `todo!()`:
+
+| group | target | tests | v1 or v2 |
+|---|---|---|---|
+| A framing and lifecycle | 15 | the client | v1 |
+| B server→client requests | 7 | the client | v1 |
+| C diagnostics freshness | ~10 of 15 | the client | v1 |
+| D position resolution | 6 | the tool | v1 |
+| G sanitization | 4-5 | the tool | v1 |
+| H dedup ledger | 9 | the tool | v1 |
+| F config and detection (subset) | 5 | the tool | v1 |
+| **v1 total** | **~56** | | |
+| E `WorkspaceEdit` application | 12 | the tool | v2 |
+| **v2 total** | **~68** | | |
+
+The `tests` column exists because Phase 2's exit depends on it: **A, B, and C
+are the groups that exercise the client rather than the tool surface**, so they
+are the ones that can be green before any tool exists.
+
+A number may shrink against a recorded reason in `PORTING_NOTES.md`; it may never
+shrink for convenience.
 
 ## Phase 2 — implement the client (1.5 weeks)
 
@@ -458,13 +517,26 @@ already written.
 6. **Document sync.** `didOpen` with an inferred `languageId`, version tracking,
    `didClose`. A `didOpen` for a file already open must not be sent twice.
 
-**Exit for Phase 2** (the first draft stated none): all 41 tests from groups A,
-B, and C are green — those are the groups that test the client rather than the
-tool — and a hand-run smoke check against both real servers, `rust-analyzer` and
-`clangd`, completes `initialize` → `didOpen` → one `definition` → `shutdown` →
-`exit` with the process confirmed gone. The process check matters: a clean
-shutdown that leaves the child alive is the leak the risk table names, and it
-looks identical to success from inside the client.
+**Exit for Phase 2** (the first draft stated none): every case from groups **A,
+B, and C** is green — those are the groups that test the client rather than the
+tool, **32 by the current estimate** (15 + 7 + 10), to be replaced by the
+enumerated count from Phase 1. Revision 2 said "41" here, which matched no subset
+of its own table (it was A+B+C+H, and H tests the tool); the number is now
+derived from the group list rather than asserted beside it.
+
+Plus a hand-run smoke check against **both** real servers completing
+`initialize` → `didOpen` → one `definition` → `shutdown` → `exit` with the child
+process confirmed gone. The process check matters: a clean shutdown that leaves
+the child alive is the leak the risk table names, and it looks identical to
+success from inside the client.
+
+**The clangd half of that needs a fixture this plan must budget for.** This
+repository is Rust, and `clangd`'s root markers are `compile_commands.json` and
+friends, so there is nothing here for it to attach to. Phase 2 therefore creates
+a minimal C fixture — one `.c` file and a hand-written `compile_commands.json`
+under the crate's `tests/` — as part of the smoke check. Two lines of JSON, but
+without it the exit criterion is unsatisfiable, which is how a criterion quietly
+becomes optional.
 
 ### Client registry: the ownership question, and it is not omp's
 
@@ -900,3 +972,94 @@ than assumed:
 - `SnapshotStore::record(path, text, seen_lines)` at
   `jcode-hashline/src/snapshots.rs:113` matches the call shape proposed here.
 - The four rust-analyzer readiness constants at `client.ts:634-637`.
+
+---
+
+# Second review, folded in 2026-08-09 (revision 3)
+
+The same reviewer checked revision 2. **The measurement layer held — it re-took
+every number and they were right.** It found three things to fix and one
+judgement to concede, all applied:
+
+**1. Phase 2's exit criterion said "41 tests from groups A, B, and C" when
+A+B+C = 32.** 41 was A+B+C+H, and H tests the tool rather than the client. A
+number asserted beside a group list instead of derived from it, which is the same
+defect as the first draft's 40 wearing different clothes. The exit now names the
+groups and derives the count, and the group table gained a `tests` column
+(`client` or `tool`) so Phase 2's scope follows from the data.
+
+**2. Moving `request` to v1 was applied in Phase 4 and Sequencing but not in
+Scope**, which still listed it under v2. Worse than a stale line: because
+`request` can send an arbitrary method it is write-tier, so **v1 now ships two
+tools** — a read-only `lsp` plus a minimal `lsp_edit` carrying only `request`.
+Scope now says so, and question 4 ("ship v1 first?") is explicitly re-framed,
+because "v1 is the read-only half" is no longer true.
+
+**3. The blast-radius table was still incomplete, on its third pass.**
+`is_edit_tool_name` (`jcode-tui-tool-display/src/lib.rs:40`) gates edit-diff
+rendering and pinning at five production call sites, so an `lsp_edit` rename
+would render as a plain tool row throughout the TUI. **Its own doc comment
+already warned about exactly this**: "a renamed edit tool must still display its
+diffs rather than degrade to a bare tool name." Also added `agent/tools.rs` (run
+mode's per-name arg display) and a second table of four **checked-and-benign**
+name-keyed surfaces, so a fourth reviewer does not spend a pass re-finding them.
+
+That is three consecutive passes at this one category, each finding something.
+The lesson is now stronger than "grep before planning": **an exhaustive list of
+name-keyed switches should be a checked-in test**, not a table in a document that
+goes stale. Worth proposing separately — a test that fails when a registered tool
+name is absent from every dispatch site that enumerates names would have caught
+all eleven at once.
+
+**4. A conceded judgement, and it is the sharpest point in either review.**
+Revision 2 hardened the group counts from "~15", "~10" into an exact 56. The
+reviewer's objection: that is *the same genus of error* as the first draft's 40,
+now erring high instead of low, because **no case titles were ever enumerated**.
+A precise number taken from a skim is not more trustworthy for being precise.
+
+Two visible symptoms it named: Group C says "port all" against a 15-case file
+while claiming 10, at least three of whose cases test excluded writethrough
+machinery; and Group G is "~5" in the body against 4 in the table.
+
+Phase 1's exit is now **two-part**: enumerate the case titles per group into
+`PORTING_NOTES.md` as the first commit, *then* count. The table's numbers are
+labelled a target rather than evidence. This is the right shape — the enumeration
+is the falsifiable artifact, and the number is a consequence of it.
+
+**5. Phase 2's clangd smoke test was unsatisfiable as written.** This repository
+is Rust; `clangd`'s root marker is `compile_commands.json`. Nothing here for it
+to attach to. Phase 2 now budgets a minimal C fixture, which is two lines of JSON
+and one `.c` file — but without it the criterion would have quietly become
+optional, which is how exit criteria die.
+
+**6. The estimate is now accepted as credible.** The phases sum to ~4.7-5 weeks
+against the 5-week headline. The reviewer's retained caveat is worth recording
+because it will probably be right: **Phase 3 is the phase most likely to
+stretch**, since the live-run defect budget (eight defects on the prior port)
+sits inside its 4-5 days with no explicit buffer.
+
+**7. One methodological note worth keeping.** The "130 test cases" figure is a
+*static* count. At runtime the regressions file executes 76 from 75 declarations,
+because one `it` sits inside a `for` loop over `[false, true]`. Static is the
+right thing to have counted; just do not be surprised when a runner disagrees by
+one.
+
+## The reviewer conceded its own error
+
+It had reported that `test/task/subagent-lsp.test.ts` "does not exist anywhere in
+/tmp/omp". It does — 293 lines, 6 cases. Its search covered `test/` and
+`test/tools/` and never `test/task/`, and it then made a claim about the whole
+tree that its search could not support. It named this as the same failure mode
+this document's revision note describes, which is the correct reading.
+
+Cosmetic knock-on: "5,025 lines across 7 files" is accurate as scoped, but there
+is an **8th** lsp test file of 293 lines deliberately excluded, and the do-not-port
+line names it.
+
+## Verdict
+
+The reviewer's stated position: **sound enough to implement from** with the fixes
+above applied. They are applied. One judgement disagreement is retained rather
+than resolved, and it is recorded above as item 4 — the enumeration requirement
+is the response to it, and whether that is sufficient will be visible in Phase
+1's first commit rather than arguable now.
