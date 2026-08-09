@@ -13,10 +13,13 @@
 //!
 //! # Status
 //!
-//! Under construction, bottom up. `framing` and `jsonrpc` are done and tested.
+//! Under construction, bottom up. `framing`, `jsonrpc` and `transport` are done
+//! and tested.
 
 pub mod framing;
 pub mod jsonrpc;
+pub mod transport;
 
 pub use framing::{encode, Framed, FramingError, MessageFramer, MAX_BODY_BYTES};
 pub use jsonrpc::{DecodeError, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
+pub use transport::{FromServer, Transport, WriteError};
