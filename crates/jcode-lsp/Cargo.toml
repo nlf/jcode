@@ -1,0 +1,36 @@
+[package]
+name = "jcode-lsp"
+version = "0.1.0"
+edition = "2024"
+
+# A Language Server Protocol client. Ported from omp's `packages/coding-agent/
+# src/lsp`, behind their tests. See `docs/plans/LSP_TOOL_PORT.md`.
+#
+# Deliberately holds no jcode types: the tool adapter in `jcode-app-core`
+# translates. That keeps `cargo test -p jcode-lsp` off the 24-second `app-core`
+# compile, which is the same argument the hashline and ast crates made.
+#
+# No `lsp-types` dependency, by choice. It models the whole protocol including
+# everything we never send, and its enums are exhaustive where real servers send
+# values outside the spec. Hand-written structs for the ~15 methods we use are
+# smaller than the impedance matching, and tolerating unknown fields is the
+# behaviour we actually need.
+
+[dependencies]
+tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# A real process speaking real framed JSON-RPC over stdio. In-process fakery
+# cannot catch a header split across reads, a body split across reads, or a
+# server that stops reading its stdin, and those are the failures that actually
+# happen. Kept out of the library by `required-features` on nothing: it is a
+# plain bin, compiled for tests via CARGO_BIN_EXE_fake_lsp_server.
+[[bin]]
+name = "fake_lsp_server"
+path = "src/bin/fake_lsp_server.rs"

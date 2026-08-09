@@ -12,6 +12,7 @@ members = [
     "crates/jcode-app-core",
     "crates/jcode-hashline",
     "crates/jcode-ast",
+    "crates/jcode-lsp",
     "crates/jcode-bash-intercept",
     "crates/jcode-patch",
     "crates/jcode-read",
