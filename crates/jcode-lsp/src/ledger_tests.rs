@@ -387,3 +387,46 @@ fn whitespace_spelling_does_not_defeat_deduplication() {
         "a tab-separated repeat was reported again: {second:?}"
     );
 }
+
+/// The location parser's edge cases, differential against omp's regex.
+///
+/// Written because changing `location_after` to consume any whitespace altered its
+/// control flow, and "requiring at least one whitespace still rejects a bare `a:1:2`"
+/// was a claim I believed rather than knew. It holds, and so do ten neighbours -- but
+/// the way to establish that is to run omp's actual pattern over the awkward inputs
+/// and compare, not to reason about it.
+///
+/// Each right-hand value was printed by `/^.*?:\d+:\d+\s+/` in node.
+#[test]
+fn the_location_parsers_edges_match_omps_regex() {
+    let cases: &[(&str, &str)] = &[
+        // No whitespace after the location: not a prefix, kept whole. This is the one
+        // the whitespace requirement exists for.
+        ("a:1:2", "a:1:2"),
+        // Trailing whitespace and nothing else: the prefix is the entire string, so the
+        // identity is empty. Odd, and omp agrees, so it stays.
+        ("a:1:2 ", ""),
+        ("a:1:2  ", ""),
+        ("a:1:2\t", ""),
+        // An empty path is still a location.
+        (":1:2 x", "x"),
+        // No colon before the digits: `1:2` is not `path:line:col`.
+        ("1:2 x", "1:2 x"),
+        // A missing column, and a missing line.
+        ("a:1: x", "a:1: x"),
+        ("a::2 x", "a::2 x"),
+        // Leftmost wins, so the second location survives in the identity.
+        ("a:1:2 x:3:4 y", "x:3:4 y"),
+        // Zeroes are digits.
+        ("a:0:0 x", "x"),
+        // A digit run must end at the colon, not run into a word.
+        ("a:1:2x y", "a:1:2x y"),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            identity(input),
+            *expected,
+            "for {input:?}, which omp's regex maps to {expected:?}"
+        );
+    }
+}
