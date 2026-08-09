@@ -468,28 +468,40 @@ Two known discrepancies the enumeration must resolve, both already visible:
   and drop the writethrough-dependent cases by name.
 - **Group G is "~5 cases" in the body and 4 in the table.** Resolve by counting.
 
-**(b) The count, once enumerated.** Every case marked *port* is ported, each
-failing with an **assertion** — not a compile error and not `todo!()`:
+**(b) The count, once enumerated. This is now done** —
+`crates/jcode-lsp/PORTING_NOTES.md` lists all 130 case titles with a disposition
+each, reconciled by script so every case is cited exactly once. Every case marked
+*port* is ported, each failing with an **assertion** — not a compile error and
+not `todo!()`:
 
-| group | target | tests | v1 or v2 |
+| group | enumerated | tests | v1 or v2 |
 |---|---|---|---|
-| A framing and lifecycle | 15 | the client | v1 |
-| B server→client requests | 7 | the client | v1 |
-| C diagnostics freshness | ~10 of 15 | the client | v1 |
-| D position resolution | 6 | the tool | v1 |
-| G sanitization | 4-5 | the tool | v1 |
-| H dedup ledger | 9 | the tool | v1 |
-| F config and detection (subset) | 5 | the tool | v1 |
-| **v1 total** | **~56** | | |
-| E `WorkspaceEdit` application | 12 | the tool | v2 |
-| **v2 total** | **~68** | | |
+| A framing and lifecycle | 14 of 17 | the client | v1 |
+| B server→client requests | 7 of 7 | the client | v1 |
+| C diagnostics freshness | 6 of 16 | the client | v1 |
+| D position resolution | 5 of 5 | the tool | v1 |
+| G sanitization | 3 of 4 | the tool | v1 |
+| H dedup ledger | 9 of 9 | the tool | v1 |
+| F config and detection | 5 of 12 | the tool | v1 |
+| write actions: `request` only | 2 of 6 | the tool | v1 |
+| **v1 total** | **51** | | |
+| E `WorkspaceEdit` application | 11 of 11 | the tool | v2 |
+| write actions: `rename_file` | 4 of 6 | the tool | v2 |
+| **v2 total** | **66** | | |
+
+**The enumeration moved the target from 56 to 51, and the reason is the one the
+second review predicted.** Group C was estimated at "port all (~10)" against a
+15-case file that is mostly writethrough machinery: 6 are portable. Group A's 15
+included three cases about surfaces we do not have. Group F is 5 of 12, the drops
+being Windows path resolution and omp's plugin marketplace.
 
 The `tests` column exists because Phase 2's exit depends on it: **A, B, and C
 are the groups that exercise the client rather than the tool surface**, so they
-are the ones that can be green before any tool exists.
+are the ones that can be green before any tool exists. That is **27** cases
+(14 + 7 + 6).
 
-A number may shrink against a recorded reason in `PORTING_NOTES.md`; it may never
-shrink for convenience.
+A number may shrink further against a recorded reason in `PORTING_NOTES.md`; it
+may never shrink for convenience.
 
 ## Phase 2 — implement the client (1.5 weeks)
 
@@ -519,10 +531,10 @@ already written.
 
 **Exit for Phase 2** (the first draft stated none): every case from groups **A,
 B, and C** is green — those are the groups that test the client rather than the
-tool, **32 by the current estimate** (15 + 7 + 10), to be replaced by the
-enumerated count from Phase 1. Revision 2 said "41" here, which matched no subset
-of its own table (it was A+B+C+H, and H tests the tool); the number is now
-derived from the group list rather than asserted beside it.
+tool, **27 by the enumeration** (14 + 7 + 6). Revision 2 said "41" here, which
+matched no subset of its own table (it was A+B+C+H, and H tests the tool); the
+number is now derived from the group list and then from the enumeration rather
+than asserted beside it.
 
 Plus a hand-run smoke check against **both** real servers completing
 `initialize` → `didOpen` → one `definition` → `shutdown` → `exit` with the child
