@@ -753,6 +753,14 @@ fn column_mode_state() -> TestState {
 /// surfaces in unrelated tests drawing a notification into a small area. Clear
 /// that history so a column test cannot fail a swarm-buffer test.
 fn draw_state(state: &TestState, width: u16, height: u16) -> ratatui::buffer::Buffer {
+    // Hold the shared test-env lock across the draw. Column mode is suppressed
+    // whenever the decorative idle animation is active, and that is driven by
+    // the process-global JCODE_IDLE_ANIMATION env var. The idle-animation tests
+    // set it under this same lock, so without taking it here their window
+    // overlaps our draw, `idle_donut_active` returns true, and the right-hand
+    // column silently never opens: `diff_pane_area` comes back None and every
+    // column assertion fails depending only on scheduling.
+    let _env = crate::storage::lock_test_env();
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
     terminal
