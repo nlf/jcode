@@ -30,11 +30,11 @@
 //! — the behaviour we want when a server dies with requests outstanding.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 use crate::jsonrpc::{RequestId, ResponseError};
 

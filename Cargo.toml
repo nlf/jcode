@@ -41,6 +41,7 @@ members = [
     "crates/jcode-desktop2",
     "crates/jcode-memory-types",
     "crates/jcode-message-types",
+    "crates/jcode-text-sanitize",
     "crates/jcode-overnight-core",
     "crates/jcode-plan",
     "crates/jcode-productivity-core",

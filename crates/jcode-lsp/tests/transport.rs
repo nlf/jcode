@@ -9,7 +9,7 @@ use std::time::Duration;
 use jcode_lsp::framing::encode;
 use jcode_lsp::jsonrpc::{self, RequestId};
 use jcode_lsp::transport::{FromServer, Transport, WriteError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Generous, because these run on a loaded machine and a flaky timeout test is
 /// worse than no test. The failures under test are permanent hangs, so any finite
@@ -431,9 +431,12 @@ async fn concurrent_sends_do_not_interleave_frames() {
             // A sizeable payload per message, so an interleave would be likely
             // rather than theoretical.
             let params = json!({"pad": "y".repeat(8 * 1024), "id": id});
-            let body =
-                serde_json::to_vec(&jsonrpc::request(&RequestId::Number(id), "test/echo", &params))
-                    .expect("serialize");
+            let body = serde_json::to_vec(&jsonrpc::request(
+                &RequestId::Number(id),
+                "test/echo",
+                &params,
+            ))
+            .expect("serialize");
             transport.send(&body, WRITE_DEADLINE).await.expect("write");
         }));
     }

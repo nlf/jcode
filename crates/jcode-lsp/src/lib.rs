@@ -19,6 +19,7 @@
 
 pub mod client;
 pub mod correlation;
+pub mod display;
 pub mod framing;
 pub mod freshness;
 pub mod jsonrpc;
@@ -26,11 +27,14 @@ pub mod ledger;
 pub mod position;
 pub mod transport;
 
-pub use client::{Capabilities, Client, PublishedDiagnostics, ServerSpec, DEFAULT_REQUEST_TIMEOUT};
+pub use client::{Capabilities, Client, DEFAULT_REQUEST_TIMEOUT, PublishedDiagnostics, ServerSpec};
 pub use correlation::{Pendings, RequestFailure, ServerRequest, SharedPendings};
-pub use framing::{encode, Framed, FramingError, MessageFramer, MAX_BODY_BYTES};
-pub use freshness::{equivalent_uris, Decision, Freshness, FreshnessRequest, FreshnessWait, Observation};
+pub use display::{block, expand_tabs, inline, truncate};
+pub use framing::{Framed, FramingError, MAX_BODY_BYTES, MessageFramer, encode};
+pub use freshness::{
+    Decision, Freshness, FreshnessRequest, FreshnessWait, Observation, equivalent_uris,
+};
+pub use jsonrpc::{DecodeError, Incoming, METHOD_NOT_FOUND, RequestId, ResponseError};
 pub use ledger::{Ledger, Reduced};
-pub use position::{parse_symbol, resolve_column, PositionError, SymbolSpec};
-pub use jsonrpc::{DecodeError, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
+pub use position::{PositionError, SymbolSpec, parse_symbol, resolve_column};
 pub use transport::{FromServer, Transport, WriteError, Writer};

@@ -1,0 +1,19 @@
+[package]
+name = "jcode-text-sanitize"
+version = "0.1.0"
+edition = "2024"
+
+# Terminal-escape and control-character sanitization for text that came from
+# somewhere we do not control: captured command output, a language server's
+# diagnostic message, anything else that reaches a renderer.
+#
+# A leaf crate with no dependencies, deliberately. `strip_ansi_escape_sequences`
+# lived in `jcode-base`, which takes two minutes to compile; `jcode-lsp` needs the
+# same function and exists partly to keep its own test loop under two seconds.
+# The choice was to duplicate the stripper or to move it somewhere cheap, and a
+# second implementation of escape-sequence parsing is how the two drift apart.
+#
+# `jcode_base::message::strip_ansi_escape_sequences` still re-exports this, so no
+# existing caller changed.
+
+[dependencies]

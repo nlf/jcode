@@ -199,12 +199,9 @@ fn a_symbol_absent_from_the_line_is_an_error_naming_what_is_there() {
 
 #[test]
 fn an_out_of_range_occurrence_is_an_error_saying_how_many_there_are() {
-    let error =
-        resolve_column("foo(foo);\n", 1, Some("foo#5")).expect_err("only two occurrences");
+    let error = resolve_column("foo(foo);\n", 1, Some("foo#5")).expect_err("only two occurrences");
     match &error {
-        PositionError::OccurrenceOutOfRange {
-            wanted, found, ..
-        } => {
+        PositionError::OccurrenceOutOfRange { wanted, found, .. } => {
             assert_eq!(*wanted, 5);
             assert_eq!(*found, 2);
         }
@@ -321,5 +318,8 @@ fn a_case_insensitive_match_is_used_when_there_is_no_exact_one() {
 #[test]
 fn an_empty_symbol_finds_nothing_rather_than_matching_everywhere() {
     let error = resolve_column("anything\n", 1, Some("")).expect_err("empty matches nothing");
-    assert!(matches!(error, PositionError::SymbolNotFound { .. }), "{error}");
+    assert!(
+        matches!(error, PositionError::SymbolNotFound { .. }),
+        "{error}"
+    );
 }

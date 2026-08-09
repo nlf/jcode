@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use jcode_lsp::client::{Client, ServerSpec};
 use jcode_lsp::correlation::RequestFailure;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PATIENT: Duration = Duration::from_secs(10);
 
@@ -422,9 +422,7 @@ async fn dynamic_registration_is_recorded_and_acknowledged() {
 
     // Statically, nothing.
     assert!(
-        !client
-            .supports("hoverProvider", "textDocument/hover")
-            .await,
+        !client.supports("hoverProvider", "textDocument/hover").await,
         "the fixture advertised no capabilities"
     );
 
@@ -446,10 +444,7 @@ async fn dynamic_registration_is_recorded_and_acknowledged() {
     // land. A poll rather than a sleep, so a slow machine does not flake.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
-        if client
-            .supports("hoverProvider", "textDocument/hover")
-            .await
-        {
+        if client.supports("hoverProvider", "textDocument/hover").await {
             return;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -520,10 +515,7 @@ async fn closing_a_document_forgets_it_and_closing_twice_is_a_no_op() {
 
     client.close_document(uri).await.expect("close again");
     let observed = state(&client).await;
-    let closed = observed["didClose"]
-        .as_array()
-        .expect("an array")
-        .len();
+    let closed = observed["didClose"].as_array().expect("an array").len();
     assert_eq!(closed, 1, "only one didClose should have been sent");
 }
 

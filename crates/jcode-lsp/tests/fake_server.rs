@@ -13,8 +13,8 @@ use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use jcode_lsp::framing::{encode, Framed, MessageFramer};
-use serde_json::{json, Value};
+use jcode_lsp::framing::{Framed, MessageFramer, encode};
+use serde_json::{Value, json};
 
 /// A spawned fake server plus its pipes.
 /// `stdin` is an `Option` so a test can close it and watch the server react to
@@ -160,7 +160,10 @@ fn it_echoes_params_so_a_request_can_be_round_tripped() {
     let mut fake = Fake::spawn(&[]);
     let sent = json!({"nested": {"list": [1, 2, 3]}, "text": "héllo → 日本語"});
     let response = fake.request(1, "test/echo", sent.clone());
-    assert_eq!(response["result"], sent, "non-ASCII must survive the round trip");
+    assert_eq!(
+        response["result"], sent,
+        "non-ASCII must survive the round trip"
+    );
 }
 
 #[test]
@@ -224,7 +227,10 @@ fn changes_are_recorded_in_version_order_and_closing_forgets_the_document() {
     );
     let after = fake.state(3);
     assert_eq!(after["didClose"], json!([uri]));
-    assert_eq!(after["openDocuments"], 0, "a closed document must be dropped");
+    assert_eq!(
+        after["openDocuments"], 0,
+        "a closed document must be dropped"
+    );
 }
 
 /// Notification order is asserted because LSP ordering rules are real:
@@ -282,7 +288,10 @@ fn split_writes_still_produce_readable_messages() {
     assert_eq!(response["result"]["serverInfo"]["name"], "fake-lsp");
 
     let echoed = fake.request(2, "test/echo", json!({"n": 1}));
-    assert_eq!(echoed["result"]["n"], 1, "a second split message must also arrive");
+    assert_eq!(
+        echoed["result"]["n"], 1,
+        "a second split message must also arrive"
+    );
 }
 
 /// A server that exits mid-request. The client must reject the pending request
@@ -295,11 +304,12 @@ fn it_can_exit_while_a_request_is_in_flight() {
 
     // stdout reaching EOF is how the client learns the server is gone.
     let mut buffer = Vec::new();
-    fake.stdout
-        .read_to_end(&mut buffer)
-        .expect("read to EOF");
+    fake.stdout.read_to_end(&mut buffer).expect("read to EOF");
     let status = fake.child.wait().expect("wait");
-    assert!(status.success(), "the fixture should exit cleanly: {status:?}");
+    assert!(
+        status.success(),
+        "the fixture should exit cleanly: {status:?}"
+    );
 }
 
 /// A server that accepts a request and never answers, so timeout and
@@ -353,7 +363,10 @@ fn shutdown_then_exit_ends_the_process() {
             assert!(status.success(), "clean exit expected, got {status:?}");
             return;
         }
-        assert!(Instant::now() < deadline, "the server did not exit after `exit`");
+        assert!(
+            Instant::now() < deadline,
+            "the server did not exit after `exit`"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -370,7 +383,10 @@ fn closing_stdin_ends_the_process() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(status) = fake.child.try_wait().expect("try_wait") {
-            assert!(status.success(), "EOF should end it cleanly, got {status:?}");
+            assert!(
+                status.success(),
+                "EOF should end it cleanly, got {status:?}"
+            );
             return;
         }
         assert!(
@@ -403,7 +419,9 @@ fn malformed_json_in_a_valid_frame_does_not_kill_it() {
     let mut fake = Fake::spawn(&[]);
     fake.request(1, "initialize", json!({}));
     let stdin = fake.stdin.as_mut().expect("stdin");
-    stdin.write_all(&encode(b"{not json at all")).expect("write");
+    stdin
+        .write_all(&encode(b"{not json at all"))
+        .expect("write");
     stdin.flush().expect("flush");
 
     let echoed = fake.request(2, "test/echo", json!({"still": "alive"}));

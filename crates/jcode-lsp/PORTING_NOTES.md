@@ -13,11 +13,11 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | B server→client requests | 7 | 7 | done, in `client` |
 | C diagnostics freshness | 6 | 6 | done, in `freshness` |
 | D position resolution | 5 | 5 | done, in `position` |
-| G sanitization | 3 | 0 | **not started** — needs the render layer |
+| G sanitization | 3 | 3 | done, in `display` — **did not need the render layer** |
 | H dedup ledger | 9 | 9 | done, in `ledger` |
 | F config and detection | 5 | 0 | **not started** — needs config loading |
 | write: `request` | 2 | 0 | needs the tool adapter |
-| **v1 total** | **51** | **41** | |
+| **v1 total** | **51** | **44** | |
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
@@ -246,12 +246,44 @@ rather than a decision that Windows does not matter.
 Not cosmetic: a diagnostic message goes through our TUI, and a server is free to
 put tabs and control characters in it.
 
+**Ported in `display`, and the "needs the render layer" blocker in the table above
+was wrong.** omp's three cases run through a themed renderer and assert on the
+rendered string, which is what made them look render-dependent. But every
+assertion is about the *text*: no tab survives, the words are still separated, an
+over-long error is bounded. Those are properties of a string function. The theme
+and the terminal width contribute nothing to what is being checked, so waiting for
+a render layer would have meant leaving a real safety property untested for the
+sake of copying their test harness.
+
+Recorded because the mistake is instructive: I read "renderer output" in a test
+title and inferred a dependency the assertions do not have.
+
 | # | case | line | disposition |
 |---|---|---|---|
-| G1 | sanitizes symbol metadata in renderer output | 1296 | **port** |
-| G2 | sanitizes tabs in rendered diagnostic output | 1334 | **port** |
-| G3 | sanitizes expanded generic error output (#7041) | 1358 | **port** — their issue number, so this was a real incident |
+| G1 | sanitizes symbol metadata in renderer output | 1296 | **ported** — `display::inline` |
+| G2 | sanitizes tabs in rendered diagnostic output | 1334 | **ported** — `display::block` |
+| G3 | sanitizes expanded generic error output (#7041) | 1358 | **ported** — `block` + `truncate`; their case asserts length as well as tabs, so truncation is part of it |
 | — | renders hover code through the cached theme highlighter (`lsp-render.test.ts`) | 14 | **drop** — omp's theme highlighter. Our TUI has its own; the *sanitization* property is what transfers |
+
+Two deliberate divergences, both on the test file:
+
+- **Tab width 4, not omp's 3.** Theirs is `DEFAULT_TAB_WIDTH` in
+  `packages/utils/src/tab-spacing.ts`; ours matches
+  `jcode-app-core/src/tool/tool_diff.rs`, so a diagnostic and a diff on one screen
+  agree about how wide a tab is. No ported case asserts a width, only the absence
+  of tabs.
+- **Tab stops, not a fixed substitution.** omp replaces each tab with three
+  spaces wherever it falls; we advance to the next stop. Theirs cannot misalign a
+  column because it never claims to align one. Ours is tested for it
+  (`a_tab_advances_to_the_next_stop_rather_than_a_fixed_width`), and that test
+  fails against omp's own algorithm — which is the point of writing it down.
+
+ANSI stripping was **not** reimplemented. `jcode-base` already had a stripper more
+thorough than omp's regex, but `jcode-base` takes two minutes to compile and this
+crate exists partly to keep its test loop at two seconds. Rather than duplicate the
+parser or pay the compile, the function moved to a new leaf crate
+(`jcode-text-sanitize`, 0.17s, no dependencies) and `jcode-base` re-exports it, so
+no existing caller changed.
 
 ## Group H — dedup ledger (9 port, all of `lsp-diagnostics-dedup.test.ts`)
 

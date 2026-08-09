@@ -46,8 +46,8 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use jcode_lsp::framing::{encode, Framed, MessageFramer};
-use serde_json::{json, Value};
+use jcode_lsp::framing::{Framed, MessageFramer, encode};
+use serde_json::{Value, json};
 
 /// What the server has observed, for `test/state`.
 #[derive(Default)]
@@ -374,7 +374,10 @@ impl Server {
             // `test/serverRequest` caller is parked on it, so a test can assert on
             // the client's actual answer rather than merely that it replied.
             (None, Some(id)) => {
-                let key = id.as_str().map(str::to_string).unwrap_or_else(|| id.to_string());
+                let key = id
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| id.to_string());
                 let parked = self.lock().awaiting.remove(&key);
                 if let Some((caller, method)) = parked {
                     self.respond(

@@ -6,69 +6,13 @@ fn sanitize_fenced_block(text: &str) -> String {
 
 /// Remove terminal escape sequences before captured command output is rendered.
 ///
-/// Captured output is not attached to a terminal, so retaining control sequences
-/// cannot provide useful styling. It can, however, leak SGR parameters as visible
-/// text or allow OSC and other terminal commands to reach the renderer.
-pub fn strip_ansi_escape_sequences(text: &str) -> String {
-    fn consume_csi(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-        for ch in chars.by_ref() {
-            if ('@'..='~').contains(&ch) {
-                break;
-            }
-        }
-    }
-
-    fn consume_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-        let mut saw_escape = false;
-        for ch in chars.by_ref() {
-            if ch == '\u{7}' || (saw_escape && ch == '\\') {
-                break;
-            }
-            saw_escape = ch == '\u{1b}';
-        }
-    }
-
-    fn consume_escape(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
-        match chars.peek().copied() {
-            Some('[') => {
-                chars.next();
-                consume_csi(chars);
-            }
-            Some(']' | 'P' | 'X' | '^' | '_') => {
-                chars.next();
-                consume_string(chars);
-            }
-            Some(_) => {
-                while chars
-                    .peek()
-                    .is_some_and(|ch| ('\u{20}'..='\u{2f}').contains(ch))
-                {
-                    chars.next();
-                }
-                if chars
-                    .peek()
-                    .is_some_and(|ch| ('\u{30}'..='\u{7e}').contains(ch))
-                {
-                    chars.next();
-                }
-            }
-            None => {}
-        }
-    }
-
-    let mut clean = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '\u{1b}' => consume_escape(&mut chars),
-            '\u{9b}' => consume_csi(&mut chars),
-            '\u{90}' | '\u{98}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => consume_string(&mut chars),
-            '\u{80}'..='\u{9f}' => {}
-            _ => clean.push(ch),
-        }
-    }
-    clean
-}
+/// Re-exported from `jcode-text-sanitize`, which is where the implementation now
+/// lives. It moved because `jcode-lsp` needs the same function and depending on this
+/// crate for it costs a two-minute compile, and the alternative was a second
+/// escape-sequence parser that would drift from this one.
+///
+/// Kept as a `pub use` under this path so no caller had to change.
+pub use jcode_text_sanitize::strip_ansi_escape_sequences;
 
 pub fn format_input_shell_result_markdown(shell: &InputShellResult) -> String {
     let status = if shell.failed_to_start {

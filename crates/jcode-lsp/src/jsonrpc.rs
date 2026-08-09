@@ -202,9 +202,7 @@ pub fn decode(value: Value) -> Result<Incoming, DecodeError> {
         // back to `None` here is the deadlock described on `RequestId`: the
         // request would classify as a notification, go unanswered, and stall the
         // server. `Other` preserves it so the answer echoes it verbatim.
-        Some(raw) => Some(
-            serde_json::from_value(raw.clone()).unwrap_or(RequestId::Other(raw)),
-        ),
+        Some(raw) => Some(serde_json::from_value(raw.clone()).unwrap_or(RequestId::Other(raw))),
     };
     let method = object
         .remove("method")
@@ -216,9 +214,7 @@ pub fn decode(value: Value) -> Result<Incoming, DecodeError> {
         (Some(method), None) => Ok(Incoming::Notification { method, params }),
         (None, Some(id)) => {
             let result = match object.remove("error") {
-                Some(Value::Null) | None => {
-                    Ok(object.remove("result").unwrap_or(Value::Null))
-                }
+                Some(Value::Null) | None => Ok(object.remove("result").unwrap_or(Value::Null)),
                 Some(raw) => match serde_json::from_value::<ResponseError>(raw) {
                     Ok(error) => Err(error),
                     // A malformed error object is still a failure, and reporting

@@ -14,7 +14,9 @@ async fn a_registered_request_receives_its_answer() {
     let id = pendings.next_id();
     let receive = pendings.register(id.clone(), "textDocument/hover").await;
 
-    pendings.complete(&id, Ok(json!({"contents": "docs"}))).await;
+    pendings
+        .complete(&id, Ok(json!({"contents": "docs"})))
+        .await;
 
     let result = receive.await.expect("the channel should deliver");
     assert_eq!(result.expect("a success")["contents"], "docs");
@@ -86,7 +88,9 @@ async fn an_answer_to_an_unknown_id_is_dropped_quietly() {
 async fn forgetting_a_request_removes_it_and_names_it() {
     let pendings = Pendings::new();
     let id = pendings.next_id();
-    pendings.register(id.clone(), "textDocument/definition").await;
+    pendings
+        .register(id.clone(), "textDocument/definition")
+        .await;
 
     assert_eq!(
         pendings.forget(&id).await.as_deref(),
@@ -94,7 +98,11 @@ async fn forgetting_a_request_removes_it_and_names_it() {
         "forget should report what was abandoned, for the error message"
     );
     assert_eq!(pendings.outstanding().await, 0);
-    assert_eq!(pendings.forget(&id).await, None, "forgetting twice is a no-op");
+    assert_eq!(
+        pendings.forget(&id).await,
+        None,
+        "forgetting twice is a no-op"
+    );
 }
 
 /// **Every outstanding request must fail when the connection dies.** Without
@@ -159,7 +167,9 @@ async fn a_server_request_sharing_our_id_does_not_resolve_our_request() {
     // Ours, outstanding, with id 1.
     let ours = pendings.next_id();
     assert_eq!(ours, RequestId::Number(1));
-    let receive = pendings.register(ours.clone(), "textDocument/documentSymbol").await;
+    let receive = pendings
+        .register(ours.clone(), "textDocument/documentSymbol")
+        .await;
 
     // The server asks us something, also with id 1. Legal: separate id spaces.
     let inbound = jsonrpc::decode(json!({
@@ -176,7 +186,10 @@ async fn a_server_request_sharing_our_id_does_not_resolve_our_request() {
         other => panic!("a method plus an id must be a request, got {other:?}"),
     };
     assert_eq!(server_request.method, "workspace/configuration");
-    assert_eq!(server_request.id, ours, "the collision is real, not contrived");
+    assert_eq!(
+        server_request.id, ours,
+        "the collision is real, not contrived"
+    );
 
     // Ours is untouched: still outstanding, still unresolved.
     assert_eq!(
@@ -186,7 +199,9 @@ async fn a_server_request_sharing_our_id_does_not_resolve_our_request() {
     );
 
     // And it still completes correctly when its real answer arrives.
-    pendings.complete(&ours, Ok(json!([{"name": "main"}]))).await;
+    pendings
+        .complete(&ours, Ok(json!([{"name": "main"}])))
+        .await;
     let result = receive.await.expect("delivered").expect("a success");
     assert_eq!(result[0]["name"], "main");
 }

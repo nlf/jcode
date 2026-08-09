@@ -210,7 +210,10 @@ fn a_message_with_no_location_prefix_is_kept_whole() {
     let message = "pyright: Broken import (E1)";
     assert_eq!(identity(message), message);
     assert_eq!(identity(""), "");
-    assert_eq!(identity("[error] no location here"), "[error] no location here");
+    assert_eq!(
+        identity("[error] no location here"),
+        "[error] no location here"
+    );
 }
 
 /// A location-shaped string with nothing after it is not a prefix: stripping it
@@ -225,7 +228,10 @@ fn a_bare_location_with_no_message_is_not_stripped() {
 #[test]
 fn an_incomplete_location_is_not_stripped() {
     // Line but no column.
-    assert_eq!(identity("src/a.ts:12 [error] thing"), "src/a.ts:12 [error] thing");
+    assert_eq!(
+        identity("src/a.ts:12 [error] thing"),
+        "src/a.ts:12 [error] thing"
+    );
     // Non-numeric where the line should be.
     assert_eq!(
         identity("src/a.ts:ab:5 [error] thing"),

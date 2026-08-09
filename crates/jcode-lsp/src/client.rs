@@ -30,17 +30,17 @@
 //! it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc};
 
 use crate::freshness::Observation;
 
 use crate::correlation::{Pendings, RequestFailure, ServerRequest};
-use crate::jsonrpc::{self, Incoming, RequestId, ResponseError, METHOD_NOT_FOUND};
+use crate::jsonrpc::{self, Incoming, METHOD_NOT_FOUND, RequestId, ResponseError};
 use crate::transport::{FromServer, Transport};
 
 /// Default per-request deadline when the caller names none.
@@ -320,12 +320,13 @@ impl Client {
         let id = self.pendings.next_id();
         let receive = self.pendings.register(id.clone(), method).await;
 
-        let body = serde_json::to_vec(&jsonrpc::request(&id, method, &params)).map_err(|error| {
-            RequestFailure::Write {
-                method: method.to_string(),
-                detail: error.to_string(),
-            }
-        })?;
+        let body =
+            serde_json::to_vec(&jsonrpc::request(&id, method, &params)).map_err(|error| {
+                RequestFailure::Write {
+                    method: method.to_string(),
+                    detail: error.to_string(),
+                }
+            })?;
 
         if let Err(error) = self.transport.send(&body, WRITE_DEADLINE).await {
             // Remove the pending entry: nobody will ever answer a request that
@@ -377,9 +378,10 @@ impl Client {
                 // that caused it. The cancel is best-effort by nature, so a
                 // background attempt is the honest shape.
                 let writer = self.transport.writer();
-                if let Ok(body) =
-                    serde_json::to_vec(&jsonrpc::notification("$/cancelRequest", &json!({"id": id})))
-                {
+                if let Ok(body) = serde_json::to_vec(&jsonrpc::notification(
+                    "$/cancelRequest",
+                    &json!({"id": id}),
+                )) {
                     tokio::spawn(async move {
                         let _ = writer.send(&body, CANCEL_DEADLINE).await;
                     });
@@ -394,12 +396,13 @@ impl Client {
 
     /// Send a notification. Nothing answers it.
     pub async fn notify(&self, method: &str, params: Value) -> Result<(), RequestFailure> {
-        let body = serde_json::to_vec(&jsonrpc::notification(method, &params)).map_err(|error| {
-            RequestFailure::Write {
-                method: method.to_string(),
-                detail: error.to_string(),
-            }
-        })?;
+        let body =
+            serde_json::to_vec(&jsonrpc::notification(method, &params)).map_err(|error| {
+                RequestFailure::Write {
+                    method: method.to_string(),
+                    detail: error.to_string(),
+                }
+            })?;
         self.transport
             .send(&body, WRITE_DEADLINE)
             .await
@@ -590,10 +593,7 @@ async fn handle_notification(
         // version of 0 and must not be conflated with it.
         version: params.get("version").and_then(Value::as_i64),
     };
-    diagnostics
-        .lock()
-        .await
-        .insert(uri.to_string(), published);
+    diagnostics.lock().await.insert(uri.to_string(), published);
     // After the insert, so an observer that sees a new generation is guaranteed to
     // see the publish that caused it. Bumping first would let a waiter read the new
     // counter with the old diagnostics and restart its settle window against content
@@ -703,11 +703,9 @@ async fn handle_server_request(
         | "workspace/diagnostic/refresh" => jsonrpc::response(&id, &Value::Null),
         // Anything else: the spec's "method not found", which is an answer. A
         // server told this moves on; a server told nothing waits.
-        other => jsonrpc::error_response(
-            &id,
-            METHOD_NOT_FOUND,
-            &format!("Method not found: {other}"),
-        ),
+        other => {
+            jsonrpc::error_response(&id, METHOD_NOT_FOUND, &format!("Method not found: {other}"))
+        }
     };
 
     let _ = answers.send(answer);

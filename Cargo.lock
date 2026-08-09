@@ -3563,6 +3563,7 @@ dependencies = [
  "jcode-telemetry-core",
  "jcode-terminal-image",
  "jcode-terminal-launch",
+ "jcode-text-sanitize",
  "jcode-tool-core",
  "jcode-tool-types",
  "jcode-transport",
@@ -3759,6 +3760,7 @@ name = "jcode-lsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "jcode-text-sanitize",
  "serde",
  "serde_json",
  "tempfile",
@@ -4372,6 +4374,10 @@ dependencies = [
  "anyhow",
  "dirs",
 ]
+
+[[package]]
+name = "jcode-text-sanitize"
+version = "0.1.0"
 
 [[package]]
 name = "jcode-tool-core"

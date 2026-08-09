@@ -76,7 +76,10 @@ fn a_string_id_is_preserved_verbatim() {
             assert_eq!(id, RequestId::String("fake-1".to_string()));
             // Round-trips to the same JSON, or our answer names an id the server
             // never sent and it waits forever.
-            assert_eq!(serde_json::to_value(&id).expect("serialize"), json!("fake-1"));
+            assert_eq!(
+                serde_json::to_value(&id).expect("serialize"),
+                json!("fake-1")
+            );
         }
         other => panic!("expected a request, got {other:?}"),
     }
@@ -161,7 +164,10 @@ fn ids_hash_consistently_with_equality_and_do_not_collide_across_kinds() {
     // resolve one request with another's answer.
     assert_eq!(pending.len(), 3, "the three must not collide");
     assert_eq!(pending.get(&RequestId::Number(1)), Some(&"number one"));
-    assert_eq!(pending.get(&RequestId::String("1".into())), Some(&"string one"));
+    assert_eq!(
+        pending.get(&RequestId::String("1".into())),
+        Some(&"string one")
+    );
     assert_eq!(pending.get(&RequestId::Other(json!(1.5))), Some(&"float"));
 
     assert_ne!(RequestId::Number(1), RequestId::String("1".into()));

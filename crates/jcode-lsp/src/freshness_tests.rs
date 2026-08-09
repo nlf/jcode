@@ -63,7 +63,10 @@ fn a_publish_for_an_older_version_is_never_settled_on() {
     });
 
     // Stale, and it stays stale no matter how quiet the stream goes.
-    assert_eq!(wait.observe(&seen("stale", Some(3), 1), ms(0)), Decision::Wait);
+    assert_eq!(
+        wait.observe(&seen("stale", Some(3), 1), ms(0)),
+        Decision::Wait
+    );
     assert_eq!(
         wait.observe(&seen("stale", Some(3), 1), ms(500)),
         Decision::Wait,
@@ -91,7 +94,10 @@ fn an_unversioned_publish_is_accepted_once_the_stream_goes_quiet() {
     // First sight starts the window.
     assert_eq!(wait.observe(&seen("error", None, 1), ms(0)), Decision::Wait);
     // Still inside it.
-    assert_eq!(wait.observe(&seen("error", None, 1), ms(50)), Decision::Wait);
+    assert_eq!(
+        wait.observe(&seen("error", None, 1), ms(50)),
+        Decision::Wait
+    );
     // The window has passed with nothing newer.
     assert_eq!(
         wait.observe(&seen("error", None, 1), ms(100)),
@@ -111,8 +117,14 @@ fn a_newer_publish_restarts_the_settle_window() {
     });
 
     // The stale publish, at +10ms.
-    assert_eq!(wait.observe(&seen("stale error", None, 1), ms(10)), Decision::Wait);
-    assert_eq!(wait.observe(&seen("stale error", None, 1), ms(100)), Decision::Wait);
+    assert_eq!(
+        wait.observe(&seen("stale error", None, 1), ms(10)),
+        Decision::Wait
+    );
+    assert_eq!(
+        wait.observe(&seen("stale error", None, 1), ms(100)),
+        Decision::Wait
+    );
 
     // The real one, at +150ms. A *different generation*, so the window restarts and
     // the stale one is never accepted.
@@ -121,7 +133,10 @@ fn a_newer_publish_restarts_the_settle_window() {
         Decision::Wait,
         "a fresh publish must restart the window rather than inheriting the old one"
     );
-    assert_eq!(wait.observe(&seen("real error", None, 2), ms(200)), Decision::Wait);
+    assert_eq!(
+        wait.observe(&seen("real error", None, 2), ms(200)),
+        Decision::Wait
+    );
     assert_eq!(
         wait.observe(&seen("real error", None, 2), ms(250)),
         Decision::Accept(Freshness::Settled),
@@ -272,7 +287,10 @@ fn identical_uris_match_without_decoding() {
 /// `file:///C:/x` and `file:///c:/x` are the same file.
 #[test]
 fn windows_drive_letter_case_is_folded() {
-    assert!(equivalent_uris("file:///C:/src/main.rs", "file:///c:/src/main.rs"));
+    assert!(equivalent_uris(
+        "file:///C:/src/main.rs",
+        "file:///c:/src/main.rs"
+    ));
     assert!(equivalent_uris(
         "file:///c:/src/main.rs",
         "file:///C:/src/main.rs"
@@ -316,8 +334,14 @@ fn encoded_special_characters_decode_to_the_same_path() {
 /// sending a stray `%` should not make us stop matching its publishes entirely.
 #[test]
 fn an_invalid_percent_escape_is_left_as_written() {
-    assert!(equivalent_uris("file:///tmp/100%.rs", "file:///tmp/100%.rs"));
-    assert!(!equivalent_uris("file:///tmp/100%.rs", "file:///tmp/100.rs"));
+    assert!(equivalent_uris(
+        "file:///tmp/100%.rs",
+        "file:///tmp/100%.rs"
+    ));
+    assert!(!equivalent_uris(
+        "file:///tmp/100%.rs",
+        "file:///tmp/100.rs"
+    ));
 }
 
 /// A truncated escape at the very end must not panic. Reached by a server
@@ -341,8 +365,14 @@ fn a_non_hex_escape_is_not_decoded() {
 /// than mangled by the Windows path.
 #[test]
 fn a_non_file_uri_is_compared_as_written() {
-    assert!(equivalent_uris("untitled:Untitled-1", "untitled:Untitled-1"));
-    assert!(!equivalent_uris("untitled:Untitled-1", "untitled:Untitled-2"));
+    assert!(equivalent_uris(
+        "untitled:Untitled-1",
+        "untitled:Untitled-1"
+    ));
+    assert!(!equivalent_uris(
+        "untitled:Untitled-1",
+        "untitled:Untitled-2"
+    ));
 }
 
 /// A path whose first character happens to be a letter followed by a colon, but

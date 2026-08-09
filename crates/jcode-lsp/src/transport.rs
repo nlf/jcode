@@ -32,15 +32,15 @@
 //! draining stdout. Hence a background task, and hence the channel out of it.
 
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::Duration;
 
-use crate::framing::{encode, Framed, MessageFramer};
+use crate::framing::{Framed, MessageFramer, encode};
 
 /// How much stderr to keep.
 ///
@@ -353,7 +353,9 @@ impl Transport {
     /// omp has a regression test for precisely that, because a server that
     /// survives its own shutdown is the daemon leak with no symptom.
     pub async fn wait_for_exit(&mut self, deadline: Duration) -> bool {
-        tokio::time::timeout(deadline, self.child.wait()).await.is_ok()
+        tokio::time::timeout(deadline, self.child.wait())
+            .await
+            .is_ok()
     }
 
     /// Kill the process and confirm it is gone.
