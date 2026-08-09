@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 172 lib tests plus 51
+**Tests written exceed cases ported**, deliberately. 177 lib tests plus 52
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -41,8 +41,20 @@ not exist and no caller *could* have used it. Fixed in `95edc50e7`, which added 
 counter and `observation_for`.
 
 The general lesson, and the reason this section exists: a module with passing tests
-and no caller looks finished from every angle except the one that matters. The next
-one to check when the adapter lands is `ledger`.
+and no caller looks finished from every angle except the one that matters.
+
+**It then happened a second time, to the same group.** `freshness::equivalent_uris`
+was tested, exported, and called by nothing: both client lookups did exact-string
+`get`, so the C3 URI-equivalence case was unhandled on the hot path. I even *improved*
+that function in `fe70e26a7` -- adding lexical path normalization to fix a real
+divergence from omp -- without noticing that nothing called it. A reviewer found it.
+
+Wired in `112b67b10`'s successor: `diagnostics_for` tries the exact key first, then
+scans by equivalence, and `observation_for` goes through it.
+
+So the check is not "does this module have tests" but "name the caller". Still
+outstanding by that test: `ledger`, whose caller is the diagnostics half of the tool
+adapter and is blocked on Q2.
 
 **What remains for v1 is the two groups needing surfaces that do not exist yet**
 (config loading for F, result rendering for G) and the tool adapter, which is

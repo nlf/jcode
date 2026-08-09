@@ -37,7 +37,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 
-use crate::freshness::Observation;
+use crate::freshness::{Observation, equivalent_uris};
 
 use crate::correlation::{Pendings, RequestFailure, ServerRequest};
 use crate::jsonrpc::{self, Incoming, METHOD_NOT_FOUND, RequestId, ResponseError};
@@ -460,8 +460,35 @@ impl Client {
     }
 
     /// Diagnostics last published for a URI.
+    ///
+    /// Matches by [`equivalent_uris`] rather than by string, because a server is free to
+    /// echo a different spelling of the URI it was given: percent-encoded where we sent
+    /// raw, a different drive-letter case, redundant path segments. omp keys their whole
+    /// diagnostics map through an equivalence function for this reason
+    /// (`EquivalentUriMap`), and one of their freshness tests has a server renormalizing
+    /// `/renormalized.ts` to `/%72enormalized.ts`.
+    ///
+    /// A reviewer pointed out that `equivalent_uris` was tested and exported while both
+    /// lookups here did exact-string `get`, so the whole C3 group was dead code on the
+    /// hot path -- and an earlier commit had *improved* that function without noticing
+    /// nothing called it. The same mistake as `freshness` before its generation counter:
+    /// a module with passing tests and no caller looks finished.
+    ///
+    /// # Cost
+    ///
+    /// The exact hit is tried first and is the overwhelmingly common case, so the scan
+    /// only happens when a server renormalized. It is O(open files) with a string
+    /// normalization each, on a path that is already waiting on a language server. The
+    /// alternative -- normalizing every key on insert -- would lose the URI the server
+    /// actually used, which is what has to be echoed back in later requests.
     pub async fn diagnostics_for(&self, uri: &str) -> Option<PublishedDiagnostics> {
-        self.diagnostics.lock().await.get(uri).cloned()
+        let map = self.diagnostics.lock().await;
+        if let Some(published) = map.get(uri) {
+            return Some(published.clone());
+        }
+        map.iter()
+            .find(|(published_uri, _)| equivalent_uris(uri, published_uri))
+            .map(|(_, published)| published.clone())
     }
 
     /// Diagnostics for a URI as a [`crate::freshness::Observation`], which is what
@@ -481,8 +508,13 @@ impl Client {
     /// A single lock covering both would remove the race, but the counter is shared
     /// across URIs while the map is per-URI, so that means serialising every publish
     /// behind one mutex to save a bounded wait on a rare interleaving. Not worth it.
+    ///
+    /// Uses the same equivalence matching as [`Self::diagnostics_for`]: an exact hit
+    /// first, then a scan. A freshness wait that missed a renormalized publish would
+    /// wait out its whole timeout and report no diagnostics for a file the server had
+    /// already analysed, which is the exact failure this module exists to prevent.
     pub async fn observation_for(&self, uri: &str) -> Observation {
-        let published = self.diagnostics.lock().await.get(uri).cloned();
+        let published = self.diagnostics_for(uri).await;
         Observation {
             diagnostics: published.as_ref().map(|p| p.diagnostics.clone()),
             version: published.as_ref().and_then(|p| p.version),

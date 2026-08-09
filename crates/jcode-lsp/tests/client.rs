@@ -701,3 +701,84 @@ async fn settled_observation(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// **A server that renormalizes the URI still matches its own publish.**
+///
+/// omp's freshness suite has a server publishing for `/%72enormalized.ts` after being
+/// given `/renormalized.ts`, and their diagnostics map is keyed through an equivalence
+/// function so it matches anyway.
+///
+/// `equivalent_uris` existed here, with tests, while both lookups on the client did
+/// exact-string `get` -- so the function was dead code on the hot path and this whole
+/// case was unhandled. A reviewer caught it; an earlier commit of mine had even improved
+/// that function without noticing nothing called it.
+///
+/// Consequence if unmatched: the freshness wait sees no publish, waits out its full
+/// timeout, and reports no diagnostics for a file the server analysed correctly.
+#[tokio::test]
+async fn a_renormalized_publish_still_matches_the_uri_we_asked_about() {
+    let client = start(&[], json!({})).await;
+    let ours = "file:///tmp/renormalized.rs";
+    // What a lax server might publish instead: percent-encoded first letter of the
+    // basename, exactly as omp's fixture does.
+    let theirs = "file:///tmp/%72enormalized.rs";
+
+    client
+        .notify("test/republish", json!({"uri": theirs, "version": 1}))
+        .await
+        .expect("republish");
+
+    // Poll until the publish lands, then assert we can find it under *our* spelling.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if client.diagnostics_for(ours).await.is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a publish under an equivalent URI was never matched; equivalent_uris is \
+             not wired into the lookup"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // And the observation path, which is what FreshnessWait consumes.
+    let observation = client.observation_for(ours).await;
+    assert!(
+        observation.diagnostics.is_some(),
+        "observation_for did not match the renormalized publish"
+    );
+}
+
+/// A different file is still a different file.
+///
+/// The equivalence scan must not become "any URI matches any publish", which would make
+/// diagnostics appear against files that have none.
+#[tokio::test]
+async fn an_unrelated_uri_does_not_match_a_publish() {
+    let client = start(&[], json!({})).await;
+
+    client
+        .notify(
+            "test/republish",
+            json!({"uri": "file:///tmp/one.rs", "version": 1}),
+        )
+        .await
+        .expect("republish");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.diagnostics_for("file:///tmp/one.rs").await.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no publish arrived");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        client.diagnostics_for("file:///tmp/two.rs").await.is_none(),
+        "an unrelated URI matched another file's diagnostics"
+    );
+    // A prefix of the real path must not match either.
+    assert!(
+        client.diagnostics_for("file:///tmp/one").await.is_none(),
+        "a prefix matched"
+    );
+}
