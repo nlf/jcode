@@ -202,19 +202,65 @@ pub fn encode(body: &[u8]) -> Vec<u8> {
 /// rather than dying on. A non-numeric value is treated the same way as a missing
 /// one: both mean we cannot locate a body, and neither is worth distinguishing to
 /// a caller whose only option is to skip.
+///
+/// # Why this scans rather than splitting on `\r\n`
+///
+/// It used to split the block into `\r\n` lines. That loses a real message when a
+/// server prints a banner terminated by a **bare LF** just before its first frame:
+///
+/// ```text
+/// Starting language server...\nContent-Length: 22\r\n\r\n{...}
+/// ```
+///
+/// The bare `\n` is not a line break to a `\r\n` split, so the whole thing is one
+/// "line" whose name is `Starting language server...\nContent-Length` — which
+/// matches nothing, so the block is resynced past and **the real message goes with
+/// it**. Worse, the body then gets parsed as the next header block, resyncing again,
+/// so one banner can eat several messages.
+///
+/// Measured before the fix: `messages=0 resyncs=3`. Found by an adversarial reviewer
+/// probing exactly this, not by any test I wrote.
+///
+/// omp searches the whole block with `/Content-Length: (\d+)/i` and so recovers.
+/// This scans for the same thing, with one addition: the match must not be preceded
+/// by a header-name character, so `X-Content-Length: 5` is not mistaken for the real
+/// header. omp would accept that; a stricter reading costs nothing and no test of
+/// theirs depends on the looser one.
 fn parse_content_length(headers: &[u8]) -> Option<usize> {
     // Headers are ASCII by spec. `from_utf8_lossy` rather than a hard error so
     // a stray byte in an otherwise-parseable header block does not lose a
     // message we could have read.
     let text = String::from_utf8_lossy(headers);
-    for line in text.split("\r\n") {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if !name.trim().eq_ignore_ascii_case(CONTENT_LENGTH) {
+    let lowered = text.to_ascii_lowercase();
+
+    let mut from = 0usize;
+    while let Some(offset) = lowered[from..].find(CONTENT_LENGTH) {
+        let start = from + offset;
+        let after = start + CONTENT_LENGTH.len();
+        from = after;
+
+        // Not a continuation of a longer header name (`X-Content-Length`).
+        let preceded_by_name_char = text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+        if preceded_by_name_char {
             continue;
         }
-        return value.trim().parse::<usize>().ok();
+
+        // `: <digits>`, tolerating any whitespace around the colon.
+        let rest = text[after..].trim_start();
+        let Some(value) = rest.strip_prefix(':') else {
+            continue;
+        };
+        let digits: String = value
+            .trim_start()
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(length) = digits.parse::<usize>() {
+            return Some(length);
+        }
     }
     None
 }

@@ -259,3 +259,79 @@ fn a_location_shape_inside_the_message_does_not_confuse_identity() {
         identity(with_range)
     );
 }
+
+/// **A location inside the message is not the location prefix.**
+///
+/// Found by an adversarial reviewer. Diagnostics routinely cite a second place --
+/// "declared at", "first defined here", "previous definition" -- and the identity
+/// must be taken from the *leading* location only.
+///
+/// The first implementation searched from the right, so both messages below stripped
+/// through the embedded `src/b.ts:3:1` and became `"previously"`. Two diagnostics
+/// about different files then shared an identity, and the ledger suppressed the second
+/// as already-reported: the model is never told about a real error, which is the worst
+/// failure this module can have. Measured before the fix; both returned `"previously"`.
+#[test]
+fn a_location_inside_the_message_does_not_become_the_identity() {
+    let first = "src/a.ts:12:5 [error] declared at src/b.ts:3:1 previously";
+    let second = "src/c.ts:9:9 [error] declared at src/b.ts:3:1 previously";
+
+    assert_eq!(
+        identity(first),
+        "[error] declared at src/b.ts:3:1 previously",
+        "only the leading location may be stripped"
+    );
+    // Same identity here is correct: same problem, different place, which is exactly
+    // what identity is for.
+    assert_eq!(identity(first), identity(second));
+
+    // But a genuinely different message must not collapse into it.
+    let different = "src/c.ts:9:9 [error] declared at src/b.ts:3:1 elsewhere";
+    assert_ne!(
+        identity(first),
+        identity(different),
+        "different diagnostics must not share an identity"
+    );
+}
+
+/// Two diagnostics differing only past an embedded location stay distinct in the
+/// ledger, not just in `identity`.
+///
+/// The unit above proves the string function; this proves the consequence, since the
+/// bug's damage was a suppressed report rather than a wrong string.
+#[test]
+fn diagnostics_differing_after_an_embedded_location_are_both_reported() {
+    let mut ledger = Ledger::new();
+
+    let first = ledger.reduce(
+        "src/a.ts",
+        &["src/a.ts:12:5 [error] declared at src/b.ts:3:1 previously".to_string()],
+    );
+    assert_eq!(first.messages.len(), 1);
+
+    let second = ledger.reduce(
+        "src/a.ts",
+        &["src/a.ts:12:5 [error] declared at src/b.ts:3:1 elsewhere".to_string()],
+    );
+    assert_eq!(
+        second.messages.len(),
+        1,
+        "a different diagnostic was suppressed as a duplicate: {second:?}"
+    );
+}
+
+/// A colon inside the path still resolves correctly, which is what the rightmost
+/// search was trying to protect.
+///
+/// `fixtures/pkg:2/example.ts:12:5` is omp's own fixture. Leftmost scanning handles it
+/// because the candidate at `pkg:2` fails the `digits` + whitespace test, so nothing
+/// was traded away by changing direction. This test is why that claim is checkable.
+#[test]
+fn a_colon_in_the_path_is_not_mistaken_for_the_line_number() {
+    assert_eq!(
+        identity("fixtures/pkg:2/example.ts:12:5 [error] boom"),
+        "[error] boom"
+    );
+    // Two colons in the path.
+    assert_eq!(identity("a:1/b:2/c.ts:9:3 [warning] hm"), "[warning] hm");
+}

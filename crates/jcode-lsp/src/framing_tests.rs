@@ -380,3 +380,103 @@ fn pushing_nothing_changes_nothing() {
     assert_eq!(take(&mut framer), None);
     assert_eq!(framer.buffered(), 0);
 }
+
+/// **A banner terminated by a bare LF must not eat the message after it.**
+///
+/// Found by an adversarial reviewer, not by me. Servers print to stdout before they
+/// start framing (`rust-analyzer` and `gopls` both have modes that do), and a banner
+/// ending in `\n` rather than `\r\n` used to take the following real message with it:
+/// the header block was split on `\r\n` only, so the banner and the `Content-Length`
+/// became one unparseable "line", the whole block was resynced past, and the body was
+/// then read as the *next* header block and resynced past too.
+///
+/// Measured before the fix: `messages=0 resyncs=3` for one banner and one message.
+///
+/// This is the difference between "a language server prints a banner" being a
+/// harmless log line and being a lost `initialize` response, which is a hang.
+#[test]
+fn a_bare_lf_banner_does_not_consume_the_following_message() {
+    let body = br#"{"jsonrpc":"2.0"}"#;
+    let mut framer = MessageFramer::new();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"Starting language server...\n");
+    wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    wire.extend_from_slice(body);
+    framer.push(&wire);
+
+    // The banner and the header arrive in one block, and the header wins.
+    match framer.next_message().expect("no framing error") {
+        Framed::Message(message) => assert_eq!(message, body),
+        other => panic!("the message was lost to the banner prefix: {other:?}"),
+    }
+}
+
+/// The same, with the banner in its own read.
+///
+/// Chunk boundaries are not under our control, so a banner that arrives separately
+/// must resync cleanly and leave the next message intact.
+#[test]
+fn a_banner_in_its_own_chunk_resyncs_without_eating_the_next_message() {
+    let body = br#"{"id":1}"#;
+    let mut framer = MessageFramer::new();
+
+    // A banner with a proper header terminator: this is noise, and resyncing is right.
+    framer.push(b"Some notice\r\n\r\n");
+    assert!(
+        matches!(
+            framer.next_message().expect("no error"),
+            Framed::Resync { .. }
+        ),
+        "a header block with no Content-Length must resync"
+    );
+
+    framer.push(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    framer.push(body);
+    match framer.next_message().expect("no error") {
+        Framed::Message(message) => assert_eq!(message, body),
+        other => panic!("expected the message, got {other:?}"),
+    }
+}
+
+/// A header whose name merely *ends* with `content-length` is not the real header.
+///
+/// Substring scanning is what fixes the bare-LF case, and this is its cost: without a
+/// boundary check, `X-Content-Length: 5` would be read as a body length of 5 and the
+/// stream would desynchronise. omp's regex would accept it; a boundary check costs
+/// nothing.
+#[test]
+fn a_header_name_ending_in_content_length_is_not_the_real_header() {
+    let body = br#"{"ok":true}"#;
+    let mut framer = MessageFramer::new();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"X-Content-Length: 5\r\n");
+    wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    wire.extend_from_slice(body);
+    framer.push(&wire);
+
+    match framer.next_message().expect("no error") {
+        Framed::Message(message) => {
+            assert_eq!(message, body, "a decoy header name was used as the length")
+        }
+        other => panic!("expected the message, got {other:?}"),
+    }
+}
+
+/// Case and surrounding whitespace do not matter, per RFC 7230.
+#[test]
+fn the_length_header_is_case_and_whitespace_insensitive() {
+    for header in [
+        "content-length: 8\r\n\r\n",
+        "CONTENT-LENGTH: 8\r\n\r\n",
+        "Content-Length:8\r\n\r\n",
+        "Content-Length:   8\r\n\r\n",
+    ] {
+        let mut framer = MessageFramer::new();
+        framer.push(header.as_bytes());
+        framer.push(br#"{"a":1}!"#);
+        match framer.next_message().expect("no error") {
+            Framed::Message(message) => assert_eq!(message.len(), 8, "for {header:?}"),
+            other => panic!("{header:?} did not parse: {other:?}"),
+        }
+    }
+}

@@ -31,34 +31,57 @@ use std::collections::{HashMap, HashSet};
 
 /// The identity of a diagnostic: what is wrong, not where.
 ///
-/// Strips a leading `path:line:col ` prefix. The path may itself contain colons —
-/// `fixtures/pkg:2/example.ts:12:5` is one of omp's own fixtures — so the prefix is
-/// found by locating the **last** `:digits:digits ` sequence rather than the first
-/// colon. Splitting on the first would leave `2/example.ts:12:5` in the identity and
-/// defeat the whole mechanism for such paths.
+/// Strips a leading `path:line:col ` prefix, taking the **leftmost** position where a
+/// `:digits:digits` followed by whitespace occurs.
+///
+/// # Leftmost, not rightmost, and this was a real bug
+///
+/// The first version searched from the right, reasoning that a path may itself
+/// contain a colon (`fixtures/pkg:2/example.ts:12:5` is one of omp's own fixtures)
+/// and that the last `:digits:digits` must therefore be the true location.
+///
+/// That is wrong, because a diagnostic *message* frequently contains a location too:
+///
+/// ```text
+/// src/a.ts:12:5 [error] declared at src/b.ts:3:1 previously
+/// src/c.ts:9:9 [error] declared at src/b.ts:3:1 previously
+/// ```
+///
+/// Searching from the right strips through the embedded `src/b.ts:3:1` and leaves
+/// `"previously"` for both — so two diagnostics about *different files* share an
+/// identity, and the second is suppressed as already-reported. The model is then
+/// never told about a real error. Found by an adversarial reviewer probing this
+/// exact shape; measured before the fix, both messages returned `"previously"`.
+///
+/// Leftmost also handles the colon-in-path case, which is why nothing was traded
+/// away: omp's `/^.*?:\d+:\d+\s+/` is lazy, so it extends `.*?` only as far as
+/// needed to reach the first position where `:digits:digits` *and the whitespace
+/// after it* both match. In `fixtures/pkg:2/example.ts:12:5 `, the candidate at
+/// `pkg:2/...` fails because `2/example` is not `digits` followed by whitespace, so
+/// the match moves on and lands correctly. The rightmost search was solving a problem
+/// the lazy match had already solved, and introduced a worse one doing it.
 ///
 /// An unparseable message keeps its full text. That is the safe direction: a
 /// message we cannot decompose is compared whole, so at worst it fails to dedup.
 /// Guessing at a prefix could strip real content and merge two different problems.
 pub fn identity(message: &str) -> &str {
-    let Some(rest) = strip_location_prefix(message) else {
-        return message;
-    };
-    rest
+    strip_location_prefix(message).unwrap_or(message)
 }
 
 /// Find the end of a `path:line:col ` prefix and return what follows.
+///
+/// Scans colons left to right and takes the first that begins a valid
+/// `:digits:digits<whitespace>` run, matching the semantics of omp's lazy regex. See
+/// [`identity`] for why the direction is load-bearing.
 fn strip_location_prefix(message: &str) -> Option<&str> {
-    // Walk colons from the right. The location prefix is the last one whose two
-    // following segments are numbers, so a colon inside the path cannot be
-    // mistaken for the line number.
-    let mut search_from = message.len();
-    while let Some(colon) = message[..search_from].rfind(':') {
+    let mut search_from = 0usize;
+    while let Some(offset) = message[search_from..].find(':') {
+        let colon = search_from + offset;
         if let Some(rest) = location_after(message, colon) {
             return Some(rest);
         }
-        search_from = colon;
-        if search_from == 0 {
+        search_from = colon + 1;
+        if search_from >= message.len() {
             break;
         }
     }
