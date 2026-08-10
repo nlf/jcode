@@ -1837,11 +1837,13 @@ applied result. Seven modules, all mutation-tested, clippy clean.
 > part. See `~/NLFCODE.md` items 1 and 2 for the full accounting.
 
 - **The repair layer** — 83% of `apply.ts`. Phase 5, gated on measurement.
-  **Tier 1 shipped in `c9173e170`** (`repair.rs`): two-sided echo, duplicate
-  prefix/suffix, indentation. The "2-3 weeks" figure measured the layer by line
-  count, but the bulk of those lines are the closer-spare rules, which are
-  inseparable from a tree-sitter veto and remain unported. The textual rules
-  that carry the everyday value were an afternoon.
+  **Shipped in `c9173e170`** (`repair.rs`: two-sided echo, duplicate
+  prefix/suffix, indentation) and **`729bf1f2f`** (the suffix closer spare,
+  behind `jcode_ast::parses_cleanly`). The "2-3 weeks" figure measured the
+  layer by line count, which is why it was an order of magnitude off: most of
+  those lines are the spare rules and their two-pass machinery, and the
+  textual rules that carry the everyday value were an afternoon. Still
+  unported: the prefix spare and the landing-shift rules.
 - **Block ops (`N*`)** — needs tree-sitter. `block.test.ts` is 49 cases.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
 - **Recovery (3-way merge on drift)** — `recovery.ts`, 12.6 KB.
