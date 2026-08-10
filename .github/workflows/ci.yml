@@ -259,6 +259,29 @@ jobs:
             "$(rustup which cargo)" test --target ${{ matrix.target }} \
             -p jcode-base --lib secret_input -- --nocapture
 
+      - name: Run config save-format cohort (all platforms)
+        shell: bash
+        # Same looks-green-but-never-ran trap as the cohort above, and these
+        # tests are squarely in it: `jcode-base --lib` is otherwise only invoked
+        # by a Windows-only filter, so config::format_tests and
+        # config::color_tests would be compiled here and never executed.
+        #
+        # They guard a user-visible data property -- that saving one setting
+        # does not strip the comments and reorder the keys in a config users are
+        # told to hand-edit -- and the bug they cover was silent: the file still
+        # parsed, so nothing failed. The integration test is named explicitly
+        # because `--lib` does not run `tests/`.
+        #
+        # Serial: these swap JCODE_HOME and share the process-global config
+        # snapshot, and one of them deliberately seeds a hostile baseline.
+        run: |
+          python3 .github/scripts/run_with_timeout.py 600 \
+            "$(rustup which cargo)" test --target ${{ matrix.target }} \
+            -p jcode-base --lib config:: -- --test-threads=1 --nocapture
+          python3 .github/scripts/run_with_timeout.py 600 \
+            "$(rustup which cargo)" test --target ${{ matrix.target }} \
+            -p jcode-base --test config_save_preserves_user_file -- --nocapture
+
       - name: Run embedding numeric-stability cohort (Linux only)
         if: runner.os == 'Linux'
         shell: bash
