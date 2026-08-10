@@ -41,6 +41,25 @@
 //! including the one named for the changed-key case. A test whose name implies
 //! coverage it does not have is worse than a missing one, so check the
 //! implementation can actually fail the test before trusting the name.
+//!
+//! Every helper the change introduced was then mutation-tested the same way,
+//! and each is caught by a named test:
+//!
+//! | broken behavior | caught by |
+//! |---|---|
+//! | `set_preserving_decor` drops decor | `a_trailing_comment_on_the_changed_line_survives` |
+//! | `clear_loaded_snapshot` skipped on a missing file | `a_save_with_no_existing_file_creates_one` |
+//! | `changed_keys` reports untouched keys as changed | `a_save_that_changes_nothing_leaves_the_file_byte_identical` (+3) |
+//! | `apply_changes` ignores removals | `a_removal_deletes_the_key_from_the_file_text` |
+//! | `descend_or_create` will not create a table | `a_new_setting_lands_in_a_section_that_did_not_exist` (+2) |
+//! | `save` re-snapshots from the written text | `a_second_save_does_not_write_the_whole_struct_out` |
+//! | `save` re-serializes instead of patching (the original bug) | 10 of the 13 |
+//!
+//! The second row is why `a_save_with_no_existing_file_creates_one` seeds a
+//! *polluting* config before switching to an empty home. Without that it
+//! depended on whichever test ran before it leaving a hostile baseline, which
+//! is how the underlying defect stayed hidden: the test passed for the wrong
+//! reason, and mutation testing was what exposed it.
 
 use super::Config;
 
@@ -444,11 +463,29 @@ fn a_save_with_no_existing_file_creates_one() {
     let _guard = crate::storage::lock_test_env();
     let prev_home = std::env::var_os("JCODE_HOME");
     let dir = tempfile::TempDir::new().expect("tempdir");
+
+    // Establish the hostile baseline this test exists to defend against,
+    // rather than hoping a previously-run test left one. Load a config that
+    // already says `centered = true`, so `LOADED_SNAPSHOT` records it; then
+    // switch to an empty home. If the snapshot is not cleared, `centered =
+    // true` matches the stale baseline, reads as untouched, and is never
+    // written -- the silent setting-drop this guards.
+    let polluter = tempfile::TempDir::new().expect("polluter tempdir");
+    crate::env::set_var("JCODE_HOME", polluter.path());
+    Config::invalidate_cache();
+    let polluter_path = Config::path().expect("config path");
+    std::fs::write(&polluter_path, "[display]\ncentered = true\n").expect("seed polluter");
+    Config::invalidate_cache();
+    assert!(
+        Config::load().display.centered,
+        "precondition: the polluting config must be loaded, so it is snapshotted"
+    );
+
     crate::env::set_var("JCODE_HOME", dir.path());
     Config::invalidate_cache();
 
     let path = Config::path().expect("config path");
-    assert!(!path.exists(), "precondition: no config file yet");
+    assert!(!path.exists(), "precondition: no config file in the new home");
 
     let mut cfg = Config::load();
     cfg.display.centered = true;
@@ -458,7 +495,8 @@ fn a_save_with_no_existing_file_creates_one() {
     let written = std::fs::read_to_string(&path).expect("read back");
     assert!(
         written.contains("centered = true"),
-        "the change must be in the new file:\n{written}"
+        "the change must be in the new file, not suppressed by a stale \
+         baseline from a different config:\n{written}"
     );
 
     match prev_home {
