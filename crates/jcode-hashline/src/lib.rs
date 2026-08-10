@@ -14,6 +14,7 @@ pub mod parser;
 pub mod patcher;
 pub mod prefixes;
 pub mod recovery;
+pub mod repair;
 pub mod snapshots;
 
 pub use apply::{apply_ops, ApplyResult};
@@ -32,4 +33,5 @@ pub use recovery::{
     has_anchor_scoped_op, try_recover, Recovered, HEADTAIL_DRIFT_WARNING,
     RECOVERY_EXTERNAL_WARNING, RECOVERY_LINE_REMAP_WARNING, RECOVERY_SESSION_CHAIN_WARNING,
 };
+pub use repair::{compute_balance, repair_boundaries, RepairOutcome};
 pub use snapshots::{Snapshot, SnapshotStore, SnapshotStoreOptions};

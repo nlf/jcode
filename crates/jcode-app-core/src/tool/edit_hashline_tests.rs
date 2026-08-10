@@ -107,6 +107,43 @@ async fn an_edit_against_a_stale_tag_is_relocated_onto_its_real_target() {
     );
 }
 
+/// Boundary repair, reached through the tool rather than the library. The
+/// payload restates the function signature and closing brace bordering the
+/// range, which applied literally would duplicate both.
+#[tokio::test]
+async fn a_payload_that_restates_its_neighbours_is_repaired_before_it_lands() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("f.js");
+    std::fs::write(&path, "function f() {\n  old();\n}\n").expect("write");
+    let tag = read_tag(temp.path(), "hl-repair", "f.js").await;
+
+    let output = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "f.js",
+                "input": format!(
+                    "[f.js#{tag}]\nPUT 2.=2:\n+function f() {{\n+  fresh();\n+}}"
+                ),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-repair"),
+        )
+        .await
+        .expect("the echo is repaired rather than refused");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "function f() {\n  fresh();\n}\n",
+        "the signature and closing brace must not double"
+    );
+    // The model is told what was changed for it, so it can author the next
+    // patch without the same mistake.
+    assert!(
+        output.output.contains("boundary echo"),
+        "a repaired edit must say so: {}",
+        output.output
+    );
+}
+
 /// The refusal that hashline exists for: the model's target is the very thing
 /// that changed, so there is nowhere safe to put the edit.
 #[tokio::test]

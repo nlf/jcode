@@ -226,6 +226,15 @@ pub fn prepare(
         });
     }
 
+    // Repair the payload's edges before anything reads it. This has to happen
+    // ahead of the seen-line guard and the apply, because a repair changes
+    // which lines the edit actually writes, and a guard run against the
+    // unrepaired payload would be judging an edit that is not the one applied.
+    let file_lines: Vec<&str> = current_text.split('\n').collect();
+    let mut ops = ops.to_vec();
+    let repaired = crate::repair::repair_boundaries(&mut ops, &file_lines);
+    let ops = ops.as_slice();
+
     // The guard runs only when the tag matches: only then do anchor line
     // numbers index the content the store recorded.
     if enforce_seen_lines
@@ -247,7 +256,7 @@ pub fn prepare(
         after: applied.text,
         move_dest: applied.move_dest,
         removed: applied.removed,
-        warnings: Vec::new(),
+        warnings: repaired.warnings,
     })
 }
 
