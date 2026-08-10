@@ -18,3 +18,6 @@ usvg = "0.46"
 
 [dev-dependencies]
 tempfile = "3"
+# Arms the real-home write guard for this crate's tests. Dev-dependencies are
+# compiled only for test targets. See crates/jcode-storage/src/test_guard.rs.
+jcode-storage = { path = "../jcode-storage", features = ["test-guard"] }

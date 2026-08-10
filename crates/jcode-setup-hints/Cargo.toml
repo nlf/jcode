@@ -29,3 +29,6 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = "3"
+# Arms the real-home write guard for this crate's tests. Dev-dependencies are
+# compiled only for test targets. See crates/jcode-storage/src/test_guard.rs.
+jcode-storage = { path = "../jcode-storage", features = ["test-guard"] }

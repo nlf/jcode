@@ -1593,6 +1593,12 @@ mod tests {
     fn detects_bedrock_login_env_file_credentials() {
         let _guard = lock_test_env();
         let temp = tempfile::tempdir().unwrap();
+        // XDG_CONFIG_HOME alone does not sandbox this on macOS, where
+        // dirs::config_dir() is ~/Library/Application Support and ignores XDG
+        // entirely. Without JCODE_HOME this test wrote a real bedrock.env into
+        // the developer's config dir; app_config_dir() honours JCODE_HOME on
+        // every platform.
+        let _jcode_home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
         let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path().as_os_str());
         for key in [
             "JCODE_BEDROCK_ENABLE",
@@ -1632,6 +1638,9 @@ mod tests {
     fn configured_profile_from_bedrock_env_overrides_stale_bearer_token() {
         let _guard = lock_test_env();
         let temp = tempfile::tempdir().unwrap();
+        // See the note in detects_bedrock_login_env_file_credentials: XDG is
+        // not consulted on macOS, so JCODE_HOME is what actually sandboxes.
+        let _jcode_home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
         let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path().as_os_str());
         let _removed = [
             "JCODE_BEDROCK_ENABLE",
@@ -1827,6 +1836,9 @@ mod tests {
     fn ignores_persisted_bedrock_catalog_from_different_region() {
         let _guard = lock_test_env();
         let temp = tempfile::tempdir().unwrap();
+        // See the note in detects_bedrock_login_env_file_credentials: XDG is
+        // not consulted on macOS, so JCODE_HOME is what actually sandboxes.
+        let _jcode_home = EnvVarGuard::set("JCODE_HOME", temp.path().as_os_str());
         let _xdg = EnvVarGuard::set("XDG_CONFIG_HOME", temp.path().as_os_str());
         {
             let _region = EnvVarGuard::set(REGION_ENV, "us-east-1");
