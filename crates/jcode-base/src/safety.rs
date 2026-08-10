@@ -583,6 +583,65 @@ mod tests {
         });
     }
 
+    /// **A tool nobody classified requires permission.** The default arm is the safe one.
+    ///
+    /// Stated as an invariant rather than as one more name in the list above, because it is
+    /// the property the design rests on: a new tool is safe *by omission*, and only an
+    /// explicit addition to `AUTO_ALLOWED` can make it silent.
+    ///
+    /// Written while adding an LSP tool, where the question "what happens if I forget to
+    /// register it" had to have a checkable answer. It does: the tool prompts. That is
+    /// annoying and not dangerous, which is the correct direction for a mistake to fall.
+    #[test]
+    fn an_unregistered_tool_requires_permission_rather_than_being_silently_allowed() {
+        with_temp_home(|| {
+            let sys = SafetySystem::new();
+            for name in [
+                "lsp",
+                "lsp_edit",
+                "tool_invented_tomorrow",
+                "",
+                "READ_BUT_SHOUTED_WRONGLY_x",
+            ] {
+                assert_eq!(
+                    sys.classify(name),
+                    ActionTier::RequiresPermission,
+                    "{name:?} is not in AUTO_ALLOWED and must therefore prompt; a default \
+                     that auto-allowed would make every forgotten registration a silent \
+                     capability"
+                );
+            }
+        });
+    }
+
+    /// Nothing in `AUTO_ALLOWED` writes files.
+    ///
+    /// The list and the writing tools are maintained in different crates, so this asserts
+    /// they never intersect. The failure it prevents is the worst one available here: a
+    /// file-modifying tool that never prompts.
+    ///
+    /// The names are duplicated from `jcode-tui-tool-display::is_edit_tool_name` rather than
+    /// imported, because that crate is a display leaf and depending on it from safety would
+    /// be backwards. The duplication is what this test makes safe.
+    #[test]
+    fn no_auto_allowed_action_modifies_files() {
+        const WRITING_TOOLS: &[&str] = &[
+            "write",
+            "edit",
+            "multiedit",
+            "patch",
+            "apply_patch",
+            "ast_edit",
+            "bash",
+        ];
+        for name in WRITING_TOOLS {
+            assert!(
+                !AUTO_ALLOWED.contains(name),
+                "{name} can modify files and must never be auto-allowed"
+            );
+        }
+    }
+
     #[test]
     fn test_classify_case_insensitive() {
         with_temp_home(|| {

@@ -37,10 +37,23 @@ pub fn canonical_tool_name(name: &str) -> &str {
 /// are replayed and re-rendered, so a transcript recorded before the removal
 /// must still display its diffs rather than degrade to a bare tool name. The
 /// same applies to every other display-side match on the name below.
+///
+/// # `ast_edit` was missing, and the doc comment above predicted it
+///
+/// This list is one of several across the workspace that enumerate the writing tools, and
+/// they had drifted. Measured: `jcode-telemetry-core` (four sites), `jcode-usage-types`, and
+/// the registry all included `ast_edit`; this one did not. So a structural rewrite touching
+/// twenty files rendered in the TUI with **no `+`/`-` counts at all**, through five call
+/// sites, because a name comparison fell through to its default arm and nothing anywhere
+/// said so.
+///
+/// The rule for adding a tool that writes files: it goes in *this* list too, and
+/// `every_writing_tool_is_recognised_by_the_display_layer` in this module's tests is what
+/// enforces it rather than a reader remembering.
 pub fn is_edit_tool_name(name: &str) -> bool {
     matches!(
         canonical_tool_name(name),
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
+        "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "ast_edit"
     )
 }
 
@@ -212,6 +225,81 @@ mod tests {
         assert_eq!(canonical_tool_name("ApplyPatch"), "apply_patch");
         assert!(is_edit_tool_name("MultiEdit"));
         assert!(!is_edit_tool_name("read"));
+    }
+
+    /// **Every tool that writes files must be recognised here.**
+    ///
+    /// This list is one of several across the workspace enumerating the writing tools, and
+    /// they had drifted: `ast_edit` was in the telemetry classifier (four sites), in
+    /// `jcode-usage-types`, and in the registry, but not here. The consequence was a
+    /// structural rewrite of twenty files rendering with no `+`/`-` counts, through five
+    /// call sites, because the name fell through to a default arm.
+    ///
+    /// The doc comment on `is_edit_tool_name` already warned that display-side matches on
+    /// the name need maintaining. A warning is not a mechanism, which is the point of this
+    /// test.
+    ///
+    /// # Why the list is duplicated here rather than imported
+    ///
+    /// This crate is a leaf: depending on `jcode-telemetry-core` or the tool registry to
+    /// borrow their list would invert the dependency and cost the display layer their
+    /// compile time. So the names are repeated, and this test is what makes the repetition
+    /// safe -- it fails when the two disagree, which is the only failure mode duplication
+    /// has.
+    ///
+    /// Adding a writing tool means adding it in both places, and this is where you find out
+    /// if you did not.
+    #[test]
+    fn every_writing_tool_is_recognised_by_the_display_layer() {
+        // Mirrors the classifier in `jcode-telemetry-core::record_tool_call` and
+        // `jcode-usage-types`. Kept in sync by this assertion rather than by a shared
+        // constant, for the dependency reason above.
+        const WRITING_TOOLS: &[&str] = &[
+            "write",
+            "edit",
+            "multiedit",
+            "patch",
+            "apply_patch",
+            "ast_edit",
+        ];
+
+        for name in WRITING_TOOLS {
+            assert!(
+                is_edit_tool_name(name),
+                "{name} writes files but the display layer does not know it, so its diffs \
+                 will not render and its +/- counts will be zero"
+            );
+        }
+
+        // And the read-only counterparts stay out, or every search renders a diff header.
+        for name in ["read", "grep", "glob", "ls", "ast_grep", "bash"] {
+            assert!(
+                !is_edit_tool_name(name),
+                "{name} does not write files and must not be treated as an edit"
+            );
+        }
+    }
+
+    /// The canonical-name mapping is applied before the comparison.
+    ///
+    /// Providers send `ApplyPatch` and `MultiEdit`; the list is lower-case with underscores.
+    /// Comparing the raw name would miss every capitalised spelling, which is what
+    /// `canonical_tool_name` exists to prevent and what this pins.
+    #[test]
+    fn writing_tools_are_recognised_under_their_provider_spellings() {
+        for (sent, canonical) in [
+            ("Write", "write"),
+            ("Edit", "edit"),
+            ("MultiEdit", "multiedit"),
+            ("Patch", "patch"),
+            ("ApplyPatch", "apply_patch"),
+        ] {
+            assert_eq!(canonical_tool_name(sent), canonical);
+            assert!(
+                is_edit_tool_name(sent),
+                "{sent} is how a provider spells {canonical} and must still be an edit"
+            );
+        }
     }
 
     #[test]

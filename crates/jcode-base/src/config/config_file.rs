@@ -59,7 +59,9 @@ fn merge_changed_keys(target: &mut toml::Value, baseline: &toml::Value, desired:
             continue;
         }
 
-        let target_table = target.as_table_mut().expect("target coerced to table above");
+        let target_table = target
+            .as_table_mut()
+            .expect("target coerced to table above");
         match (desired_value.as_table(), baseline_value) {
             (Some(_), _) => {
                 let baseline_child = baseline_value
