@@ -299,6 +299,10 @@ pub(crate) fn normalize_uri(uri: &str) -> String {
 /// Matches Node's `path.normalize`, which is what omp keys its URI map by. A leading
 /// `..` is kept rather than discarded: it cannot be resolved without knowing what it
 /// is relative to, and dropping it would make `../a` and `a` the same file.
+pub(crate) fn normalize_path_lexically(path: &str) -> String {
+    lexically_normalize(path)
+}
+
 fn lexically_normalize(path: &str) -> String {
     let absolute = path.starts_with('/');
     let mut segments: Vec<&str> = Vec::new();

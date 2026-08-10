@@ -94,3 +94,77 @@ fn a_workspace_folder_encodes_the_uri_but_not_the_name() {
     assert_eq!(folder["uri"], "file:///tmp/my%20project");
     assert_eq!(folder["name"], "my project");
 }
+
+/// **A relative root must not become a URI authority.**
+///
+/// `pathToFileURL` resolves against the working directory first. This did not, so
+/// `path_to_uri(".")` produced `file://.` -- and in a `file:` URI everything between `//`
+/// and the next `/` is the *authority*. A server parsing that sees a host named `.` and an
+/// empty path.
+///
+/// Not hypothetical: this crate's own integration helper passes `root: "."`, so every
+/// `tests/client.rs` case had been handshaking with `rootUri: "file://."`. Nothing
+/// complained because the fake server does not resolve imports, which is exactly how a real
+/// server's "cannot find crate" would have been blamed on the server.
+///
+/// Found by an adversarial reviewer on the fifth pass.
+#[test]
+fn a_relative_root_is_absolutised_like_path_resolve() {
+    let cwd = std::env::current_dir().expect("a working directory");
+    let expected_prefix = format!("file://{}", cwd.display());
+
+    let dot = path_to_uri(std::path::Path::new("."));
+    assert_eq!(
+        dot, expected_prefix,
+        "a relative root must resolve against the working directory"
+    );
+    assert!(
+        !dot.starts_with("file://."),
+        "`.` became a URI authority: {dot}"
+    );
+
+    let nested = path_to_uri(std::path::Path::new("relative/x"));
+    assert_eq!(nested, format!("{expected_prefix}/relative/x"));
+
+    // An absolute path is untouched by the absolutising step.
+    assert_eq!(path_to_uri(std::path::Path::new("/abs/x")), "file:///abs/x");
+}
+
+/// Interior `.` and `..` segments are resolved rather than passed through.
+///
+/// `path.resolve` collapses them, and a server comparing URIs by string would otherwise see
+/// `/a/./b` and `/a/b` as different files. Shares the lexical normaliser with
+/// `freshness::equivalent_uris`, so the two cannot disagree about what a path means.
+#[test]
+fn redundant_segments_are_collapsed_in_the_uri() {
+    assert_eq!(path_to_uri(std::path::Path::new("/a/./b")), "file:///a/b");
+    assert_eq!(
+        path_to_uri(std::path::Path::new("/a/c/../b")),
+        "file:///a/b"
+    );
+    assert_eq!(path_to_uri(std::path::Path::new("/a//b")), "file:///a/b");
+}
+
+/// Symlinks are **not** resolved, which is deliberate and differs from `canonicalize`.
+///
+/// A server told a symlink-resolved root reports diagnostics against paths the caller never
+/// mentioned, and the caller then cannot match them to the file it asked about. `path.resolve`
+/// does not resolve symlinks either, so following it is both simpler and right.
+#[test]
+fn the_uri_keeps_the_path_as_spelled_rather_than_resolving_symlinks() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("real");
+    std::fs::create_dir(&target).expect("mkdir");
+    let link = temp.path().join("link");
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link).expect("symlink");
+    #[cfg(not(unix))]
+    return;
+
+    let uri = path_to_uri(&link);
+    assert!(
+        uri.ends_with("/link"),
+        "the symlink was resolved to its target: {uri}"
+    );
+}

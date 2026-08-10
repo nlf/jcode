@@ -883,9 +883,40 @@ fn lookup_section(settings: &Value, section: &str) -> Value {
 ///
 /// The deferral was reasonable for the case named and wrong for the case it was in.
 /// Reported by an adversarial reviewer as unreached.
+///
+/// # Absolutised first, because a relative path produces a URI authority
+///
+/// `pathToFileURL` calls `path.resolve` before encoding. This did not, so
+/// `path_to_uri(".")` produced `file://.` — and in a `file:` URI the text between `//`
+/// and the next `/` is the **authority**, not a path. A server parsing that sees a host
+/// named `.` and an empty path, which is not the project root by any reading.
+///
+/// It was reachable from our own test helper, whose `start()` passes `root: "."`, so every
+/// integration test had been handshaking with `rootUri: "file://."` and no server complained
+/// because the fake one does not resolve imports. Found by an adversarial reviewer on the
+/// fifth pass.
+///
+/// `canonicalize` is deliberately *not* used: it resolves symlinks, and a server told a
+/// resolved root will report diagnostics against paths the caller never mentioned. Joining
+/// onto the current directory is what `path.resolve` does, and matching it is the point.
 fn path_to_uri(path: &std::path::Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        // A failure here means the process has no working directory, which is not a
+        // condition this can recover from; the un-absolutised path is still better than a
+        // panic during a handshake.
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    // `.` and `..` segments survive `join`, and a server comparing URIs by string would see
+    // `/a/./b` as different from `/a/b`. Normalised lexically, which is what `path.resolve`
+    // does and what `freshness::equivalent_uris` already agrees with.
+    let normalised = crate::freshness::normalize_path_lexically(&absolute.to_string_lossy());
+
     let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().as_bytes() {
+    for byte in normalised.as_bytes() {
         match byte {
             // Unreserved, plus the path characters that carry meaning we want to keep.
             b'A'..=b'Z'
