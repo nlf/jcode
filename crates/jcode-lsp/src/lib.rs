@@ -21,6 +21,7 @@ pub mod client;
 pub mod config;
 pub mod correlation;
 pub mod display;
+pub mod format;
 pub mod framing;
 pub mod freshness;
 pub mod jsonrpc;
@@ -32,6 +33,9 @@ pub use client::{Capabilities, Client, DEFAULT_REQUEST_TIMEOUT, PublishedDiagnos
 pub use config::{Available, Config, ServerConfig, Unavailable};
 pub use correlation::{Pendings, RequestFailure, ServerRequest, SharedPendings};
 pub use display::{block, expand_tabs, inline, truncate};
+pub use format::{
+    format_diagnostic, severity_name, sort_diagnostics, strip_noise, summarize, summarize_formatted,
+};
 pub use framing::{Framed, FramingError, MAX_BODY_BYTES, MessageFramer, encode};
 pub use freshness::{
     Decision, Freshness, FreshnessRequest, FreshnessWait, Observation, equivalent_uris,

@@ -501,3 +501,102 @@ fn multi_line_diagnostics_are_not_merged_by_a_shared_tail() {
         "a distinct multi-line diagnostic was suppressed: {second:?}"
     );
 }
+
+/// **The identity of a diagnostic that was actually formatted, not one I typed.**
+///
+/// Every other test in this file uses a hand-written string like
+/// `"src/a.ts:12:5 [error] pyright: Broken import (E1)"`. Those were transcribed from omp's
+/// format string by eye, so the whole module rested on my having read a template correctly:
+/// a mistake there would have produced a ledger that deduplicated nothing in production while
+/// passing every test here.
+///
+/// `crate::format` exists partly to close that gap. This generates the input from a real
+/// `Diagnostic` and asserts the identity comes out as expected, so the two modules are pinned
+/// against each other rather than against my reading.
+#[test]
+fn identity_of_a_real_formatted_diagnostic() {
+    let diagnostic = serde_json::json!({
+        "range": {"start": {"line": 11, "character": 4}, "end": {"line": 11, "character": 5}},
+        "message": "cannot find value `x`",
+        "severity": 1,
+        "source": "rustc",
+        "code": "E0425"
+    });
+
+    let formatted = crate::format::format_diagnostic(&diagnostic, "src/main.rs");
+    // Confirms the assumption the rest of this file makes about the shape.
+    assert_eq!(
+        formatted,
+        "src/main.rs:12:5 [error] [rustc] cannot find value `x` (E0425)"
+    );
+
+    assert_eq!(
+        identity(&formatted),
+        "[error] [rustc] cannot find value `x` (E0425)",
+        "the location is stripped and everything that identifies the problem is kept"
+    );
+}
+
+/// The same diagnostic at a different position dedups; a different one does not.
+///
+/// The property the ledger exists for, now driven end to end from `Diagnostic` values through
+/// the real formatter rather than from strings chosen to make it work.
+#[test]
+fn a_real_diagnostic_moving_position_is_deduplicated() {
+    let at = |line: i64| {
+        serde_json::json!({
+            "range": {"start": {"line": line, "character": 4}, "end": {"line": line, "character": 5}},
+            "message": "cannot find value `x`",
+            "severity": 1,
+            "source": "rustc",
+            "code": "E0425"
+        })
+    };
+
+    let mut ledger = Ledger::new();
+    let first = crate::format::format_diagnostic(&at(11), "src/main.rs");
+    assert_eq!(ledger.reduce("src/main.rs", &[first]).messages.len(), 1);
+
+    // Same problem, twenty lines down after an edit above it.
+    let moved = crate::format::format_diagnostic(&at(31), "src/main.rs");
+    assert!(
+        ledger.reduce("src/main.rs", &[moved]).messages.is_empty(),
+        "the same problem at a new position must not be reported twice"
+    );
+
+    // A different severity is a different diagnostic: the server reclassified it.
+    let mut promoted = at(31);
+    promoted["severity"] = serde_json::json!(2);
+    let promoted = crate::format::format_diagnostic(&promoted, "src/main.rs");
+    assert_eq!(
+        ledger.reduce("src/main.rs", &[promoted]).messages.len(),
+        1,
+        "a warning is not the same diagnostic as an error"
+    );
+}
+
+/// A formatted multi-line diagnostic keeps its later lines in the identity.
+///
+/// Ties the newline bound in `strip_location_prefix` to what the formatter actually emits:
+/// rustc notes arrive as extra lines in the message, and the formatter preserves them, so the
+/// identity has to treat them as content.
+#[test]
+fn a_formatted_multi_line_diagnostic_keeps_its_notes_in_the_identity() {
+    let diagnostic = serde_json::json!({
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+        "message": "mismatched types\nnote: expected `u32`, found `String`",
+        "severity": 1,
+        "source": "rustc"
+    });
+    let formatted = crate::format::format_diagnostic(&diagnostic, "a.rs");
+    let identity = identity(&formatted);
+
+    assert!(
+        identity.contains("note: expected"),
+        "the note is part of what makes this diagnostic distinct: {identity:?}"
+    );
+    assert!(
+        !identity.starts_with("a.rs"),
+        "the leading location must still be stripped: {identity:?}"
+    );
+}
