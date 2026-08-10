@@ -279,11 +279,15 @@ pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[To
 const LEGACY_TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "[automated todo completion gate - not a user message] Your end-to-end ownership is not high enough to finish this goal.";
 
 /// Model-facing continuation for private completion-confidence checks.
-pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "[automated follow-up - not a user message] Do more validation on the work below. Keep the todo up to date; do not reply or wait for the user.";
-
+///
+/// Asks for validation of work already done, so it carries less scope-invention
+/// risk than the ownership nudge. It still drops the flat "do not reply or wait
+/// for the user": a check the user has paused, or one whose remaining step is
+/// their judgement, must not be pushed forward either.
+pub const TODO_COMPLETION_CONTINUATION_MESSAGE: &str = "[automated check, not a user message] Do more validation on the work below, without asking first. Keep the todo up to date as you go. If the work is waiting on the user, say what they have to decide and stop rather than finding other work.";
 /// Model-facing continuation requesting an independent recheck without saying
-/// why the private evaluator selected it.
-pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "[automated follow-up - not a user message] Independently recheck the work below. Keep the todo up to date; do not reply or wait for the user.";
+/// why the private evaluator selected it. Same conditional shape as the others.
+pub const TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE: &str = "[automated check, not a user message] Independently recheck the work below, without asking first. Keep the todo up to date as you go. If the work is waiting on the user, say what they have to decide and stop rather than finding other work.";
 
 /// A completed todo is considered spike-finished when its final recorded
 /// confidence step jumps this many levels or more (e.g. speculative straight
@@ -2244,32 +2248,48 @@ mod tests {
         );
     }
 
-    /// The continuation must not tell the model to keep working regardless of
-    /// what the user said. It is a scheduler heuristic, not user authority.
+    /// No continuation may tell the model to keep working regardless of what
+    /// the user said. These are scheduler heuristics, not user authority.
+    ///
+    /// Covers all three rather than just the ownership nudge: the first fix
+    /// reworded one and left two siblings carrying the same phrasing, which is
+    /// the recurring "fixed one of several duplicates" trap in this codebase.
     #[test]
-    fn the_ownership_continuation_does_not_claim_user_authority() {
-        let message = TODO_OWNERSHIP_CONTINUATION_MESSAGE;
+    fn no_continuation_claims_user_authority() {
+        for (name, message) in [
+            ("ownership", TODO_OWNERSHIP_CONTINUATION_MESSAGE),
+            ("completion", TODO_COMPLETION_CONTINUATION_MESSAGE),
+            ("confidence_spike", TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE),
+        ] {
+            assert!(
+                !message.contains("do not reply or wait for the user"),
+                "{name}: the unconditional do-not-wait instruction is what pushed \
+                 toward inventing scope: {message}"
+            );
+            assert!(
+                message.contains("waiting on the user"),
+                "{name}: must name the blocked-on-the-user case: {message}"
+            );
+            assert!(
+                message.contains("not a user message"),
+                "{name}: must identify itself as automated: {message}"
+            );
+            assert!(
+                !message.contains("awaiting_acceptance"),
+                "{name}: must not name the state that clears the gate, or it \
+                 invites setting the field instead of doing the work: {message}"
+            );
+        }
+    }
+
+    /// The ownership nudge additionally has to say not to fill the gap with
+    /// invented work, since it is the one that fires on incomplete goals.
+    #[test]
+    fn the_ownership_continuation_forbids_invented_work() {
         assert!(
-            !message.contains("do not reply or wait for the user"),
-            "the unconditional do-not-wait instruction is what pushed toward \
-             inventing scope: {message}"
-        );
-        assert!(
-            message.contains("waiting on the user"),
-            "it must name the blocked-on-the-user case: {message}"
-        );
-        assert!(
-            message.contains("do not invent new work"),
-            "it must say not to fill the gap with invented scope: {message}"
-        );
-        assert!(
-            !message.contains("awaiting_acceptance"),
-            "must not name the state that clears the gate, or it invites setting \
-             the field instead of doing the work: {message}"
-        );
-        assert!(
-            message.contains("not a user message"),
-            "it must still identify itself as automated: {message}"
+            TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("do not invent new work"),
+            "it must say not to fill the gap with invented scope: {}",
+            TODO_OWNERSHIP_CONTINUATION_MESSAGE
         );
     }
 
