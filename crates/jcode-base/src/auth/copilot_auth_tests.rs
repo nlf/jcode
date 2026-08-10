@@ -205,6 +205,14 @@ fn save_github_token_creates_config_dir() -> Result<()> {
     let prev_jcode_home = std::env::var_os("JCODE_HOME");
     let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
 
+    // This test exists to exercise the XDG fallback, which only applies when
+    // JCODE_HOME is unset. But `save_github_token` also records the token as a
+    // trusted auth source, and that writes the config file. With JCODE_HOME
+    // removed and nothing else redirecting HOME, the write lands on the
+    // developer's real ~/.jcode/config.toml. Point HOME at the temp dir so the
+    // fallback is still genuinely unset-JCODE_HOME, without the save escaping.
+    let prev_home = std::env::var_os("HOME");
+    crate::env::set_var("HOME", dir.path());
     crate::env::remove_var("JCODE_HOME");
     crate::env::set_var(
         "XDG_CONFIG_HOME",
@@ -232,6 +240,12 @@ fn save_github_token_creates_config_dir() -> Result<()> {
         crate::env::set_var("XDG_CONFIG_HOME", prev);
     } else {
         crate::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    if let Some(prev) = prev_home {
+        crate::env::set_var("HOME", prev);
+    } else {
+        crate::env::remove_var("HOME");
     }
     Ok(())
 }
