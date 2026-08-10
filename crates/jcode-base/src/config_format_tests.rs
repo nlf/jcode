@@ -7,6 +7,33 @@
 //! setting used to strip every comment, alphabetize the keys, and silently drop
 //! anything `Config` does not model, because the merge round-tripped through
 //! `toml::Value` and re-serialized the whole document.
+//!
+//! Every requirement of `Config::save`, and where it is checked:
+//!
+//! | requirement | check | fails against old? |
+//! |---|---|---|
+//! | comments on untouched keys survive | `a_comment_on_an_untouched_setting_survives_a_save` | yes |
+//! | comments on the *changed* key survive | `a_comment_on_the_changed_setting_survives_a_save` | yes |
+//! | key order is preserved | `key_order_survives_a_save` | yes |
+//! | unmodelled keys survive | `a_key_the_struct_does_not_model_survives_a_save` | yes |
+//! | a no-op save changes no bytes | `a_save_that_changes_nothing_leaves_the_file_byte_identical` | yes |
+//! | repeated saves stay stable | `a_second_save_does_not_write_the_whole_struct_out` | yes |
+//! | array-of-tables is not flattened | `an_array_of_tables_survives_a_save_unchanged` | yes |
+//! | the real template round-trips | `the_shipped_template_survives_a_save_with_its_comments` | yes |
+//! | a new key can be added | `a_new_setting_lands_in_a_section_that_did_not_exist` | no (guard) |
+//! | a removal clears the file text | `a_removal_deletes_the_key_from_the_file_text` | no (guard) |
+//! | a corrupt file is still saveable | `a_corrupt_config_file_can_still_be_saved_over` | no (guard) |
+//! | a first save creates the file | `a_save_with_no_existing_file_creates_one` | no (guard) |
+//!
+//! The merge semantics these sit on top of are covered next door, and must
+//! keep passing: `saving_one_setting_does_not_revert_a_concurrent_edit` and
+//! `save_still_applies_a_deliberate_removal` in `config_color_tests.rs`.
+//!
+//! "fails against old" means the test was run against the pre-`toml_edit`
+//! implementation and observed to fail. The four marked no are regression
+//! guards: they pass either way, because the old code also satisfied them, and
+//! they exist so a future change cannot quietly break them. They are not
+//! evidence that this change did anything.
 
 use super::Config;
 
@@ -326,6 +353,111 @@ id = \"another-model\"
         assert!(
             reloaded.providers.contains_key("my-gateway"),
             "the profile must still parse after a save"
+        );
+    });
+}
+
+/// A config file that does not parse must still be saveable.
+///
+/// Claimed in `save`'s comment but never checked. The writer parses the
+/// existing text and falls back to an empty document on failure, so a save
+/// against a corrupt file has to still land the caller's change rather than
+/// erroring or silently doing nothing. The user loses the unparseable content,
+/// which is unavoidable, but does not lose the ability to fix their settings.
+#[test]
+fn a_corrupt_config_file_can_still_be_saved_over() {
+    with_seeded_config("this is not valid toml at all [[[\n", |path| {
+        let mut cfg = Config::load();
+        cfg.display.centered = true;
+        cfg.save().expect("a corrupt file must not make save fail");
+
+        let after = std::fs::read_to_string(path).expect("read back");
+        assert!(
+            after.contains("centered = true"),
+            "the caller's change must land even over a corrupt file:\n{after}"
+        );
+
+        Config::invalidate_cache();
+        assert!(
+            crate::config::config().display.centered,
+            "and it must read back"
+        );
+    });
+}
+
+/// Saving when no config file exists yet must create one.
+///
+/// The `read_to_string(...).unwrap_or_default()` path. A first-run save has no
+/// file to patch, so the change set has to populate an empty document.
+///
+/// This test was flaky when first written, and the flake was a real defect
+/// rather than a test problem. `LOADED_SNAPSHOT` is a process global, and
+/// `load_from_file_strict` used to return early for a missing file without
+/// touching it, leaving whatever a previously-loaded config had recorded. The
+/// baseline decides what counts as a change, so a stale one made a genuine
+/// setting look untouched and the save dropped it. In a test binary the
+/// previous config is another test's; in production it would be the config
+/// from before a `JCODE_HOME` switch or a deleted file. `load_from_file_strict`
+/// now clears the snapshot in both the missing and unparseable cases.
+#[test]
+fn a_save_with_no_existing_file_creates_one() {
+    let _guard = crate::storage::lock_test_env();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    crate::env::set_var("JCODE_HOME", dir.path());
+    Config::invalidate_cache();
+
+    let path = Config::path().expect("config path");
+    assert!(!path.exists(), "precondition: no config file yet");
+
+    let mut cfg = Config::load();
+    cfg.display.centered = true;
+    cfg.save().expect("save with no existing file");
+
+    assert!(path.exists(), "a save must create the file");
+    let written = std::fs::read_to_string(&path).expect("read back");
+    assert!(
+        written.contains("centered = true"),
+        "the change must be in the new file:\n{written}"
+    );
+
+    match prev_home {
+        Some(prev) => crate::env::set_var("JCODE_HOME", prev),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    Config::invalidate_cache();
+}
+
+/// A removal must delete the key from the file's text, not just the value.
+///
+/// `save_still_applies_a_deliberate_removal` checks the *semantics* (the
+/// setting is gone after a reload). This checks the *file*: the writer's
+/// `ConfigChange::Remove` arm has to actually remove the line, or a cleared
+/// setting would linger in the text while reading back as absent.
+#[test]
+fn a_removal_deletes_the_key_from_the_file_text() {
+    let seed = "\
+[display]
+centered = false
+
+[display.colors]
+error = \"#fb4934\"
+ai = \"#b8bb26\"
+";
+    with_seeded_config(seed, |path| {
+        let mut cfg = Config::load();
+        assert_eq!(cfg.display.colors.len(), 2, "precondition");
+        cfg.display.colors.remove("error");
+        cfg.save().expect("save");
+
+        let after = std::fs::read_to_string(path).expect("read back");
+        assert!(
+            !after.contains("#fb4934"),
+            "the removed key must be gone from the text:\n{after}"
+        );
+        assert!(
+            after.contains("#b8bb26"),
+            "its sibling must remain:\n{after}"
         );
     });
 }

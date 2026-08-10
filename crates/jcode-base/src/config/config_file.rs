@@ -17,6 +17,18 @@ fn record_loaded_snapshot(config: &Config) {
     }
 }
 
+/// Forget the recorded state, so the next save has no baseline to diff against.
+///
+/// Used when the file is absent or unparseable. `save_baseline` then falls back
+/// to an empty table, in which every field the caller holds reads as a
+/// deliberate change, which is the correct reading: there is nothing on disk
+/// that those values could have come from.
+fn clear_loaded_snapshot() {
+    if let Ok(mut slot) = LOADED_SNAPSHOT.write() {
+        *slot = None;
+    }
+}
+
 /// The baseline to diff a save against: what we loaded, or failing that, the
 /// current file. Falling back to the file keeps a never-loaded config from
 /// treating every default as an intentional change.
@@ -268,12 +280,21 @@ impl Config {
             return Ok(None);
         };
         if !path.exists() {
+            // No file means no recorded state. Clearing rather than leaving the
+            // previous snapshot matters because the baseline decides what
+            // counts as a change: a stale one from a different config would
+            // make a genuine setting look untouched, and a save would drop it.
+            clear_loaded_snapshot();
             return Ok(None);
         }
 
         let content = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("Failed to read config file {}: {}", path.display(), e))?;
         let mut config = toml::from_str::<Self>(&content).map_err(|e| {
+            // An unreadable file records nothing, for the same reason as a
+            // missing one: a baseline that describes some other file is worse
+            // than no baseline, because it silently suppresses real changes.
+            clear_loaded_snapshot();
             anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
         })?;
         config.display.apply_legacy_compat();
