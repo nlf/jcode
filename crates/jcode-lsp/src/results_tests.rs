@@ -273,3 +273,98 @@ fn blank_hover_parts_are_dropped() {
         "first\nsecond"
     );
 }
+
+/// **One place reported twice under two path spellings is listed once.**
+///
+/// Found by running against real clangd, not by a test I wrote. On macOS `/tmp` is a symlink to
+/// `/private/tmp`, so a project rooted at `/tmp/x` gets answers under both spellings — and a
+/// `references` query about a symbol used exactly once printed "Found 2 reference(s)".
+///
+/// The count is what makes it more than cosmetic: a reader told there are two call sites goes
+/// looking for the second one. Deduplicating on the rendered line means the count and the list are
+/// derived from the same thing and cannot disagree.
+#[test]
+fn one_place_under_two_spellings_is_listed_once() {
+    let locations = Locations(vec![
+        Location {
+            uri: "file:///project/a.rs".to_string(),
+            line: 5,
+            character: 17,
+        },
+        // The same position, spelled with a redundant segment. `equivalent_uris` handles this one;
+        // the symlink case cannot be reproduced portably, and both arrive here as the same rendered
+        // line, which is the property being tested.
+        Location {
+            uri: "file:///project/./a.rs".to_string(),
+            line: 5,
+            character: 17,
+        },
+    ]);
+
+    let rendered = render_locations(&locations, "reference", &root()).expect("some");
+    assert_eq!(
+        rendered, "Found 1 reference(s):\n  a.rs:6:18",
+        "the same place was listed twice, and the count followed it"
+    );
+}
+
+/// Genuinely distinct places are still listed separately.
+///
+/// The dedupe must not collapse two call sites on the same line at different columns, which is
+/// ordinary in `foo(foo(x))`.
+#[test]
+fn distinct_places_are_all_listed() {
+    let locations = Locations(vec![
+        Location {
+            uri: "file:///project/a.rs".to_string(),
+            line: 5,
+            character: 4,
+        },
+        Location {
+            uri: "file:///project/a.rs".to_string(),
+            line: 5,
+            character: 12,
+        },
+        Location {
+            uri: "file:///project/b.rs".to_string(),
+            line: 5,
+            character: 4,
+        },
+    ]);
+    let rendered = render_locations(&locations, "reference", &root()).expect("some");
+    assert!(rendered.starts_with("Found 3 reference(s):"), "{rendered}");
+}
+
+/// **A symlinked project root still yields relative paths.**
+///
+/// Also found against real clangd. A server answers with *its* idea of the path, which may differ
+/// from ours by a symlink — so a file inside the project rendered as a full absolute path on every
+/// line, which is mostly noise and obscures the part that matters.
+///
+/// Only the *root* is canonicalized, and only for display. Resolving it when building URIs would
+/// make a server report diagnostics against paths the caller never mentioned.
+#[test]
+#[cfg(unix)]
+fn a_symlinked_root_still_yields_relative_paths() {
+    let real = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(real.path().join("src")).expect("mkdir");
+    std::fs::write(real.path().join("src/main.rs"), "fn main() {}\n").expect("write");
+
+    // A symlink pointing at the real directory, used as the root the caller knows.
+    let link_parent = tempfile::tempdir().expect("tempdir");
+    let link = link_parent.path().join("project-link");
+    std::os::unix::fs::symlink(real.path(), &link).expect("symlink");
+
+    // The server answers with the resolved path, as clangd does.
+    let answered = Location {
+        uri: format!("file://{}/src/main.rs", real.path().display()),
+        line: 0,
+        character: 0,
+    };
+
+    let shown = format_location(&answered, &link);
+    assert_eq!(
+        shown, "src/main.rs:1:1",
+        "a file inside the project rendered as an absolute path because the root is a symlink"
+    );
+}

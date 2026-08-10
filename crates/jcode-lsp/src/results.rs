@@ -118,9 +118,21 @@ fn location_of(entry: &Value) -> Option<Location> {
 /// absolute one is mostly noise repeated on every line, and omp does the same.
 pub fn format_location(location: &Location, root: &std::path::Path) -> String {
     let path = uri_to_path(&location.uri);
-    let shown = path
-        .strip_prefix(root)
-        .map(|relative| relative.to_path_buf())
+    // The root is tried as given and then resolved, because a server answers with *its* idea of the
+    // path and that may differ from ours by a symlink. On macOS `/tmp` is `/private/tmp`, so a
+    // project rooted at `/tmp/x` receives answers under `/private/tmp/x` and every line renders
+    // absolute. Measured against clangd, which printed the full path for a file in the very project
+    // it had been given.
+    //
+    // `canonicalize` is used **only** here, on the root, and only to shorten a path for display. It
+    // is deliberately not used when building URIs: a server told a symlink-resolved root reports
+    // diagnostics against paths the caller never mentioned and cannot match up.
+    let shown = strip_root(&path, root)
+        .or_else(|| {
+            root.canonicalize()
+                .ok()
+                .and_then(|resolved| strip_root(&path, &resolved))
+        })
         .unwrap_or(path);
     format!(
         "{}:{}:{}",
@@ -128,6 +140,13 @@ pub fn format_location(location: &Location, root: &std::path::Path) -> String {
         location.line + 1,
         location.character + 1
     )
+}
+
+/// The path relative to `root`, if it is inside it.
+fn strip_root(path: &std::path::Path, root: &std::path::Path) -> Option<std::path::PathBuf> {
+    path.strip_prefix(root)
+        .ok()
+        .map(std::path::Path::to_path_buf)
 }
 
 /// A path from a `file://` URI, tolerating a lax server that sent a bare path.
@@ -180,10 +199,34 @@ pub fn render_locations(
     if locations.is_empty() {
         return None;
     }
-    let mut out = format!("Found {} {noun}(s):", locations.len());
+
+    // **Deduplicated on the rendered line, not on the URI.**
+    //
+    // A server can report one place twice under two spellings of its path, and this is measured
+    // rather than theoretical: on macOS `/tmp` is a symlink to `/private/tmp`, so clangd answered a
+    // `references` query about a symbol used once with "Found 2 reference(s)" -- the same position
+    // under `/tmp/...` and under `/private/tmp/...`.
+    //
+    // Deduplicating in `from_result` was the first attempt and it did not work: `equivalent_uris`
+    // is lexical by design, so it cannot see that two paths differ only by a symlink, and teaching
+    // it to would mean touching the filesystem inside a function freshness relies on being pure.
+    //
+    // Here the paths have already been resolved for display, so identical lines are identical
+    // places. It is also the more honest place to do it: the count is taken from the list that is
+    // printed, so the two cannot disagree -- and disagreeing is the actual defect, since
+    // "2 references" sends a reader hunting a second call site that does not exist.
+    let mut lines: Vec<String> = Vec::with_capacity(locations.len());
     for location in &locations.0 {
+        let line = format_location(location, root);
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+
+    let mut out = format!("Found {} {noun}(s):", lines.len());
+    for line in lines {
         out.push_str("\n  ");
-        out.push_str(&format_location(location, root));
+        out.push_str(&line);
     }
     Some(out)
 }

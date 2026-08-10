@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 230 lib tests plus 82
+**Tests written exceed cases ported**, deliberately. 233 lib tests plus 82
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -137,6 +137,35 @@ right" have not been checked against each other.
   as written; the ten-sender transport test proved frames do not interleave, which is
   weaker than answers reaching the right caller. Mutation-verified with a constant request
   id, which crosses answers between workers.
+
+## What a real server found that 312 tests did not
+
+`tests/live_server.rs` runs the actions against an installed language server (clangd here) rather
+than the fixture. It is `#[ignore]`d, because which server exists differs per machine.
+
+**Its first run found two defects.** Both are invisible to a fixture, because a fixture echoes back
+the paths it was handed:
+
+| defect | how it showed |
+|---|---|
+| one place reported twice under two path spellings | `references` for a symbol used *once* printed "Found 2 reference(s)": macOS `/tmp` is a symlink to `/private/tmp`, and clangd answered under both |
+| locations rendered absolute inside the project | the server answers with the resolved root; ours was the symlink, so `strip_prefix` never matched |
+
+Fixed by deduplicating on the *rendered* line (so the count and the list are derived from the same
+thing and cannot disagree) and by trying the canonicalized root when the literal one does not match.
+The first attempt at the dedupe was in `Locations::from_result` using `equivalent_uris`, and it did
+not work: that function is lexical by design and cannot see through a symlink.
+
+There is also an accidental piece of evidence worth keeping. On the same machine `rust-analyzer` on
+`PATH` was a rustup shim with no real binary behind it, and the client reported:
+
+```text
+Closed { detail: "rust-analyzer: the language server closed its stdout
+         (stderr: ... error: infinite recursion detected)" }
+```
+
+Which is precisely what `stderr_tail` exists for: a server that dies at startup explains itself
+nowhere else.
 
 ## The function that was wrong three times
 
