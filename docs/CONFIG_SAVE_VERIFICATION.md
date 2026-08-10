@@ -142,6 +142,47 @@ the workflow's own comments record this having happened at least three times
 (#660, #651, the warning budget). Raising that is out of scope here; ignoring it
 after tripping over it would be worse.
 
+## Every changed file, and what covers it
+
+Eleven files changed. A file with no check behind it is where an unverified
+change hides, so each is listed rather than only the interesting ones.
+
+| file | what changed | covered by |
+|---|---|---|
+| `crates/jcode-base/src/config/config_file.rs` | the fix itself | 13 tests + 7 mutations, all in the tables above |
+| `crates/jcode-base/src/config_format_tests.rs` | the 13 tests | run in CI by the new cohort; each verified to fail against the pre-fix code or recorded as a guard |
+| `crates/jcode-base/tests/config_save_preserves_user_file.rs` | the differential integration test | named explicitly in CI; measured old 667/504 -> 200/0 vs new 667/504 -> 668/504 |
+| `crates/jcode-base/src/config.rs` | wires in the new test module | if it were missing, the 13 tests would not exist; `--list` confirms all 13 present |
+| `crates/jcode-base/Cargo.toml` | adds `toml_edit = "0.20"` | `cargo tree -i toml_edit` shows one shared version, no new crate |
+| `Cargo.lock` | records that edge | the diff is one line, an edge not a `[[package]]` |
+| `crates/jcode-base/src/auth/copilot_auth_tests.rs` | stops the test writing the real config | md5 in both directions: untouched with the fix, writes without it |
+| `scripts/mutation_sweep_config_save.py` | the mutation harness | self-tested: an uncatchable mutation gives exit 1 |
+| `scripts/swallowed_error_budget.json` | records 2 accepted patterns | parsed both JSONs: file set identical, exactly one file +2 |
+| `.github/workflows/ci.yml` | makes the tests execute | both wrapper commands run locally; YAML parsed; step found in `build` |
+| `docs/CONFIG_SAVE_VERIFICATION.md` | this file | `scripts/check_config_save_doc.py` |
+
+That last row matters most. This document is itself a claim, and a stale
+verification doc is worse than none: it launders an unchecked change into a
+documented one. `scripts/check_config_save_doc.py` fails if the doc cites a
+test that does not exist, omits a test that does, omits a mutation the sweep
+runs, or omits a file the change touched. It found 7 unmentioned files when
+first run, which is why this table exists.
+
+Its four detectors are each verified to fire, since a checker that always
+passes is the same trap as a sweep that always reports zero:
+
+| probe | observed |
+|---|---|
+| rename a cited test to one that does not exist | drift reported, exit 1 |
+| add a test the doc does not mention | drift reported, exit 1 |
+| remove a changed file from the table | drift reported, exit 1 |
+| add a sweep mutation the doc omits | drift reported, exit 1 |
+
+The first probe initially **passed**, because the set expression I wrote
+(`cited & (declared | real) ^ (cited & real)`) was nonsense that happened to
+evaluate to empty. Writing a checker is no protection against not checking the
+checker.
+
 ## Method notes worth keeping
 
 - **A live check that passes against the unfixed build is not evidence.** I
