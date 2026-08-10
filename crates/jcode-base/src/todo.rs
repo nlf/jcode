@@ -373,6 +373,40 @@ fn assessed_values_recorded(observation: &GateObservation, goals: &[TodoGoal]) -
     }
 }
 
+/// Assessments a goal must have recorded before "stalled" is a fair reading.
+///
+/// Two is the first count at which "it did not change" is even meaningful.
+const STALLED_ASSESSMENT_REPEATS: usize = 2;
+
+/// Whether a goal's recorded assessments for this gate are all the same value.
+///
+/// The count alone is not enough: a goal that climbed unmapped -> partial is
+/// answering the gate, it just has not cleared it yet, and telling it the
+/// assessment "has not changed" is false. Only a history that genuinely never
+/// moved earns the escalation.
+fn repeated_assessment_never_moved(observation: &GateObservation, goals: &[TodoGoal]) -> bool {
+    let Some(goal) = goals
+        .iter()
+        .find(|goal| normalized_group(goal.group.as_deref()) == observation.group)
+    else {
+        return false;
+    };
+    fn all_same<T: PartialEq>(history: &[T]) -> bool {
+        history.windows(2).all(|pair| pair[0] == pair[1])
+    }
+    match observation.kind {
+        GateObservationKind::IntentUnderstanding => false,
+        GateObservationKind::ClosedFeedbackLoop => all_same(&goal.closed_feedback_loop_history),
+        GateObservationKind::FeedbackLoopRelevance => {
+            all_same(&goal.feedback_loop_relevance_history)
+        }
+        GateObservationKind::FeedbackLoopCoverage => all_same(&goal.feedback_loop_coverage_history),
+        GateObservationKind::FeedbackLoopTraceability => {
+            all_same(&goal.feedback_loop_traceability_history)
+        }
+    }
+}
+
 /// Whether the state behind this observation has since reached its bar.
 ///
 /// This no longer suppresses the observation: a loop that closed only after
@@ -438,11 +472,18 @@ pub fn build_gate_digest(
     )> = Vec::new();
     for observation in observations {
         let cleared = observation_score_later_cleared(observation, plan, goals);
-        // One recorded value means the goal has carried the same assessment for
-        // its whole life while this gate kept firing; zero means it never
-        // carried one at all. Either way another round of the same advice will
-        // not move it.
-        let stalled = assessed_values_recorded(observation, goals) <= 1;
+        // "Stalled" means the goal has been assessed repeatedly and the answer
+        // never moved, so repeating the advice will not move it either.
+        //
+        // Not `<= 1`: a history of one entry is a *first* assessment, which is
+        // the commonest healthy case and has had no chance to change yet. That
+        // off-by-one shipped and immediately fired on a goal written once,
+        // telling it "this has been raised before" the first time it was ever
+        // raised. A gate that cries wolf on the healthy path is worse than the
+        // silence it replaced, because the next agent learns to discount it.
+        let assessed = assessed_values_recorded(observation, goals);
+        let stalled = assessed >= STALLED_ASSESSMENT_REPEATS
+            && repeated_assessment_never_moved(observation, goals);
         let unset = observation.state.is_none();
         match points
             .iter_mut()
@@ -1313,6 +1354,68 @@ mod tests {
         );
     }
 
+    /// A goal assessed once must never be told the point was raised before.
+    ///
+    /// This is the regression the first version shipped with. `assessed <= 1`
+    /// treated a single recorded value as "never moved", so the escalation
+    /// fired on a goal's *first* assessment -- the commonest healthy case --
+    /// and claimed it had been raised before when it had not. Caught in
+    /// production by the message appearing on a goal written once; the original
+    /// tests missed it because they used an empty history for the stalled case
+    /// and a two-entry history for the moving one, so length 1 was never
+    /// exercised.
+    #[test]
+    fn a_first_assessment_is_not_called_stalled() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopRelevance,
+            group: Some("release".to_string()),
+            state: Some("representative".to_string()),
+        }];
+        let first_time = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_relevance: Some(FeedbackLoopRelevance::Representative),
+            // Exactly what a goal written once looks like on disk.
+            feedback_loop_relevance_history: vec![FeedbackLoopRelevance::Representative],
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &first_time)
+            .expect("the gate still fires on a representative loop");
+        assert!(
+            !digest.contains("has been raised before"),
+            "a first assessment has had no chance to change: {digest}"
+        );
+    }
+
+    /// An assessment that is climbing is not stalled either.
+    ///
+    /// Repetition alone is not the signal: a goal moving unmapped -> partial is
+    /// answering the gate and simply has not cleared it yet.
+    #[test]
+    fn a_climbing_assessment_is_not_called_stalled() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopTraceability,
+            group: Some("release".to_string()),
+            state: Some("partial".to_string()),
+        }];
+        let climbing = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: Some(FeedbackLoopTraceability::Partial),
+            feedback_loop_traceability_history: vec![
+                FeedbackLoopTraceability::Unmapped,
+                FeedbackLoopTraceability::Partial,
+            ],
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &climbing)
+            .expect("gate still fires");
+        assert!(
+            !digest.contains("has been raised before"),
+            "a climbing assessment is answering the gate: {digest}"
+        );
+    }
+
     /// A field that is set, but frozen at the same value while the gate keeps
     /// firing, gets the escalation.
     ///
@@ -1330,9 +1433,12 @@ mod tests {
             group: Some("release".to_string()),
             difficulty: Some(Difficulty::Involved),
             feedback_loop_traceability: Some(FeedbackLoopTraceability::Unmapped),
-            // One recorded value: the goal has answered once and never revised
-            // it, while the gate has gone on firing.
-            feedback_loop_traceability_history: vec![FeedbackLoopTraceability::Unmapped],
+            // Assessed twice, unchanged both times: the gate has been raised,
+            // answered the same way, and raised again.
+            feedback_loop_traceability_history: vec![
+                FeedbackLoopTraceability::Unmapped,
+                FeedbackLoopTraceability::Unmapped,
+            ],
             ..Default::default()
         }];
         let digest = build_gate_digest(&observations, &TodoPlan::default(), &frozen)
