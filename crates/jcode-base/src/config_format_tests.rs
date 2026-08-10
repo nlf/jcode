@@ -270,6 +270,66 @@ fn the_shipped_template_survives_a_save_with_its_comments() {
     });
 }
 
+/// An array-of-tables section must survive, and stay an array of tables.
+///
+/// `jcode provider add` writes `[[providers.<name>.models]]`, so this shape is
+/// in real users' files. It is the one case where the value conversion could
+/// plausibly do damage: `to_edit_value` renders a table as an *inline* table,
+/// so a change that rewrote the containing key would turn a readable
+/// `[[section]]` block into one long `{ ... }` line, or worse, restructure it.
+/// The change set only ever addresses leaves, which should mean the array is
+/// never rewritten at all, but "should mean" is why this test exists.
+#[test]
+fn an_array_of_tables_survives_a_save_unchanged() {
+    let seed = "\
+[display]
+centered = false
+
+[providers.my-gateway]
+type = \"openai-compatible\"
+base_url = \"https://llm.example.com/v1\"
+
+# The models list, as `provider add` writes it.
+[[providers.my-gateway.models]]
+id = \"some-model\"
+
+[[providers.my-gateway.models]]
+id = \"another-model\"
+";
+    with_seeded_config(seed, |path| {
+        let mut cfg = Config::load();
+        cfg.display.centered = true;
+        cfg.save().expect("save");
+
+        let after = std::fs::read_to_string(path).expect("read back");
+        assert!(
+            after.contains("[[providers.my-gateway.models]]"),
+            "the array-of-tables header must survive as-is:\n{after}"
+        );
+        assert_eq!(
+            after.matches("[[providers.my-gateway.models]]").count(),
+            2,
+            "both entries must survive:\n{after}"
+        );
+        assert!(
+            !after.contains("models = ["),
+            "the array must not be rewritten as an inline array:\n{after}"
+        );
+        assert!(
+            after.contains("# The models list, as `provider add` writes it."),
+            "and its comment survives too:\n{after}"
+        );
+
+        // It must still load as the same provider profile.
+        Config::invalidate_cache();
+        let reloaded = crate::config::config();
+        assert!(
+            reloaded.providers.contains_key("my-gateway"),
+            "the profile must still parse after a save"
+        );
+    });
+}
+
 /// A new setting must still be writable into a file that lacks its section.
 ///
 /// The counterweight to everything above: preserving the file must not come at
