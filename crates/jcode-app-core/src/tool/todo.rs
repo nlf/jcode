@@ -447,6 +447,33 @@ fn goal_changes(before: &[TodoGoal], after: &[TodoGoal]) -> Vec<TodoGoalChange> 
     changes
 }
 
+/// The gated assessment fields a goal left unset, by name.
+///
+/// These four gate turn-end completion, and each treats "not set" as failing.
+/// That is the right default -- an unassessed loop is not a passing one -- but
+/// it makes omission indistinguishable from a deliberate worst-case answer in
+/// the digest, so the writer never learns which one they gave.
+///
+/// Only reports fields that are still unset *after* the field-level merge, so
+/// an assessment-only write that revises one field does not get warned about
+/// the others it inherited.
+fn unset_assessment_fields(goal: &TodoGoal) -> Vec<&'static str> {
+    let mut unset = Vec::new();
+    if goal.closed_feedback_loop.is_none() {
+        unset.push("closed_feedback_loop");
+    }
+    if goal.feedback_loop_relevance.is_none() {
+        unset.push("feedback_loop_relevance");
+    }
+    if goal.feedback_loop_coverage.is_none() {
+        unset.push("feedback_loop_coverage");
+    }
+    if goal.feedback_loop_traceability.is_none() {
+        unset.push("feedback_loop_traceability");
+    }
+    unset
+}
+
 /// Record the points this write would previously have interrupted on, and
 /// return the rare continuation that is still worth sending immediately.
 ///
@@ -543,6 +570,29 @@ fn record_reframe_observations(
                     .feedback_loop_traceability
                     .map(|state| state.as_str().to_string()),
             });
+        }
+
+        // Unset is not the same as badly assessed, and only the writer of this
+        // call can tell them apart. A goal that never carried the field at all
+        // is reported immediately, because the deferred turn-end digest renders
+        // it identically to an honest `unmapped`: the agent then reads "map your
+        // requirements to checks", does more verification work, writes another
+        // goal that again omits the field, and gets the same sentence forever.
+        // That loop is not hypothetical; it ran for nine turns before the field
+        // was noticed to be blank.
+        //
+        // Immediate rather than deferred because this is a property of this
+        // write, not a score that will rise as the work proceeds, and the fix
+        // takes one field on the next call.
+        for field in unset_assessment_fields(goal) {
+            immediate.push(format!(
+                "todo: goal \"{}\" did not set `{}`, so it is treated as failing \
+                 that completion gate and will be raised at turn end. Set it from \
+                 evidence you actually have; guessing the best value to silence \
+                 the gate is the failure it exists to catch.",
+                goal.group.as_deref().unwrap_or("ungrouped"),
+                field
+            ));
         }
     }
     (observations, immediate)
@@ -775,7 +825,6 @@ impl Tool for TodoTool {
                     "description": "Goal-level assessments, one per todo group (null = ungrouped). Omitted groups are retained.",
                     "items": {
                         "type": "object",
-                        "required": ["closed_feedback_loop", "feedback_loop", "feedback_loop_relevance", "feedback_loop_coverage", "feedback_loop_traceability"],
                         "properties": {
                             "group": {
                                 "type": "string",
@@ -1039,29 +1088,19 @@ mod tests {
             assert!(relevance_description.contains(required_concept));
         }
 
-        let goal_required = props["goals"]["items"]["required"]
-            .as_array()
-            .expect("goals should advertise required fields");
+        // The goal item deliberately advertises no `required` list. JSON-schema
+        // `required` is not enforced here -- a goal write omitting these fields
+        // is accepted, and the field-level merge then inherits or leaves them
+        // unset -- so listing them taught agents to read the schema as
+        // advisory. The obligation is delivered where it is actionable instead:
+        // `record_reframe_observations` warns on the write that omitted a
+        // field, and `build_gate_digest` names an unset field as unset. Neither
+        // costs always-on prompt tokens, which is why this is not simply spelled
+        // out in the description ($.properties.goals is already near the
+        // 25-token parameter cap).
         assert!(
-            goal_required
-                .iter()
-                .any(|value| value == "closed_feedback_loop")
-        );
-        assert!(goal_required.iter().any(|value| value == "feedback_loop"));
-        assert!(
-            goal_required
-                .iter()
-                .any(|value| value == "feedback_loop_relevance")
-        );
-        assert!(
-            goal_required
-                .iter()
-                .any(|value| value == "feedback_loop_coverage")
-        );
-        assert!(
-            goal_required
-                .iter()
-                .any(|value| value == "feedback_loop_traceability")
+            props["goals"]["items"].get("required").is_none(),
+            "goal items must not advertise a required list the tool does not enforce"
         );
 
         let alignment_description = plan_props["understands_user_intent"]
@@ -2015,6 +2054,56 @@ mod tests {
         let (again, nudges) = record_reframe_observations(&plan, &goals, &todos, &[]);
         assert_eq!(again, observations);
         assert!(nudges.is_empty());
+    }
+
+    /// An omitted assessment field is flagged on the write that omitted it.
+    ///
+    /// The turn-end digest also reports it, but only after the turn: by then
+    /// the agent has spent the turn acting on advice meant for weak work rather
+    /// than for a blank field. This warning arrives attached to the call that
+    /// caused it, where the fix is one field on the next write.
+    #[test]
+    fn an_omitted_assessment_field_is_flagged_immediately() {
+        let todos = vec![open_todo(Some("release"))];
+        let partial = TodoGoal {
+            group: Some("release".to_string()),
+            closed_feedback_loop: Some(crate::todo::FeedbackLoopState::Closed),
+            feedback_loop_relevance: Some(crate::todo::FeedbackLoopRelevance::AcceptanceAligned),
+            feedback_loop_coverage: Some(crate::todo::FeedbackLoopCoverage::MainPaths),
+            // The field this whole change exists for, left unset.
+            feedback_loop_traceability: None,
+            ..Default::default()
+        };
+        let (_, nudges) = record_reframe_observations(&aligned_plan(), &[partial], &todos, &[]);
+
+        let warning = nudges
+            .iter()
+            .find(|nudge| nudge.contains("feedback_loop_traceability"))
+            .expect("an unset assessment field must be reported on this write");
+        assert!(
+            warning.contains("did not set"),
+            "the warning must say the field was not set: {warning}"
+        );
+        assert!(
+            warning.contains("guessing the best value"),
+            "the warning must warn against clearing the gate by guessing: {warning}"
+        );
+    }
+
+    /// A goal that assessed every field gets no such warning.
+    ///
+    /// Otherwise the warning fires on every healthy write and is learned as
+    /// noise, which is how the deferred digest ended up deferred.
+    #[test]
+    fn a_fully_assessed_goal_is_not_warned() {
+        let todos = vec![open_todo(Some("release"))];
+        let complete = goal(Some("release"), crate::todo::FeedbackLoopState::Closed);
+        let (_, nudges) = record_reframe_observations(&aligned_plan(), &[complete], &todos, &[]);
+
+        assert!(
+            !nudges.iter().any(|nudge| nudge.contains("did not set")),
+            "a fully assessed goal must not be warned: {nudges:?}"
+        );
     }
 
     #[test]

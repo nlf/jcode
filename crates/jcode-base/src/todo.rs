@@ -67,6 +67,24 @@ pub fn feedback_loop_coverage_passes(goal: &TodoGoal) -> bool {
         .is_some_and(|state| state >= required_feedback_loop_coverage(goal.difficulty))
 }
 
+/// Phrase a gate line as "you never answered" or "your answer is not enough".
+///
+/// Both fail the gate, but they call for opposite responses: an unset field
+/// needs one assessment, while a set-but-low one needs more work. Rendering
+/// them identically sends an agent that omitted the field off to do more
+/// verification, after which it writes another goal that again omits the field
+/// and reads the same sentence. Naming the field is what breaks that loop.
+fn unset_or(is_unset: bool, field: &str, advice: &'static str) -> String {
+    if is_unset {
+        format!(
+            "`{field}` was never set, so this gate counts as failed. Assess it from \
+             the evidence you have rather than choosing the value that clears the gate."
+        )
+    } else {
+        advice.to_string()
+    }
+}
+
 pub fn required_feedback_loop_traceability(
     difficulty: Option<Difficulty>,
 ) -> FeedbackLoopTraceability {
@@ -200,20 +218,35 @@ pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[To
         }
         if !feedback_loop_relevance_passes(goal) {
             message.push_str(&format!(
-                "\n- Goal \"{}\": validate the result through its public interfaces and acceptance behavior, including its integration boundaries.",
-                label
+                "\n- Goal \"{}\": {}",
+                label,
+                unset_or(
+                    goal.feedback_loop_relevance.is_none(),
+                    "feedback_loop_relevance",
+                    "validate the result through its public interfaces and acceptance behavior, including its integration boundaries.",
+                )
             ));
         }
         if !feedback_loop_coverage_passes(goal) {
             message.push_str(&format!(
-                "\n- Goal \"{}\": exercise the main workflows, edge cases, packaging, and likely failure modes.",
-                label
+                "\n- Goal \"{}\": {}",
+                label,
+                unset_or(
+                    goal.feedback_loop_coverage.is_none(),
+                    "feedback_loop_coverage",
+                    "exercise the main workflows, edge cases, packaging, and likely failure modes.",
+                )
             ));
         }
         if !feedback_loop_traceability_passes(goal) {
             message.push_str(&format!(
-                "\n- Goal \"{}\": map every explicit requirement and changed public output to a concrete check and report its observed result.",
-                label
+                "\n- Goal \"{}\": {}",
+                label,
+                unset_or(
+                    goal.feedback_loop_traceability.is_none(),
+                    "feedback_loop_traceability",
+                    "map every explicit requirement and changed public output to a concrete check and report its observed result.",
+                )
             ));
         }
         if matches!(
@@ -270,6 +303,22 @@ pub enum GateObservationKind {
     FeedbackLoopTraceability,
 }
 
+impl GateObservationKind {
+    /// The goal field an agent sets to answer this gate, when there is one.
+    ///
+    /// `IntentUnderstanding` is plan-level rather than goal-level, so it has no
+    /// per-goal field to name and keeps its own wording.
+    pub fn assessment_field(self) -> Option<&'static str> {
+        match self {
+            GateObservationKind::IntentUnderstanding => None,
+            GateObservationKind::ClosedFeedbackLoop => Some("closed_feedback_loop"),
+            GateObservationKind::FeedbackLoopRelevance => Some("feedback_loop_relevance"),
+            GateObservationKind::FeedbackLoopCoverage => Some("feedback_loop_coverage"),
+            GateObservationKind::FeedbackLoopTraceability => Some("feedback_loop_traceability"),
+        }
+    }
+}
+
 /// A point during the turn that would previously have interrupted the model
 /// with a quality-gate continuation.
 ///
@@ -298,6 +347,31 @@ pub struct GateObservation {
 /// turn end the work is done, so the useful action is verification, not
 /// replanning. Names categories without disclosing scores or thresholds.
 pub const TODO_GATE_DIGEST_PREFIX: &str = "[automated todo quality review - not a user message] Before you treat this turn as finished, double-check the weak points it surfaced. Do not reply conversationally or wait for the user.";
+
+/// How many distinct values a goal has ever recorded for this gate's field.
+///
+/// The per-turn `count` only sees one turn. A gate that fires turn after turn
+/// while its field never moves is a different situation: either the agent
+/// cannot tell what the gate wants, or -- the case this was written for -- the
+/// field is unset and every turn's reply is the same sentence about doing more
+/// verification, which is not what an unset field needs.
+fn assessed_values_recorded(observation: &GateObservation, goals: &[TodoGoal]) -> usize {
+    let Some(goal) = goals
+        .iter()
+        .find(|goal| normalized_group(goal.group.as_deref()) == observation.group)
+    else {
+        return 0;
+    };
+    match observation.kind {
+        GateObservationKind::IntentUnderstanding => 0,
+        GateObservationKind::ClosedFeedbackLoop => goal.closed_feedback_loop_history.len(),
+        GateObservationKind::FeedbackLoopRelevance => goal.feedback_loop_relevance_history.len(),
+        GateObservationKind::FeedbackLoopCoverage => goal.feedback_loop_coverage_history.len(),
+        GateObservationKind::FeedbackLoopTraceability => {
+            goal.feedback_loop_traceability_history.len()
+        }
+    }
+}
 
 /// Whether the state behind this observation has since reached its bar.
 ///
@@ -353,16 +427,37 @@ pub fn build_gate_digest(
     plan: &TodoPlan,
     goals: &[TodoGoal],
 ) -> Option<String> {
-    // (kind, group, times flagged, score later cleared)
-    let mut points: Vec<(GateObservationKind, Option<String>, usize, bool)> = Vec::new();
+    // (kind, group, times flagged, score later cleared, assessment stalled, unset)
+    let mut points: Vec<(
+        GateObservationKind,
+        Option<String>,
+        usize,
+        bool,
+        bool,
+        bool,
+    )> = Vec::new();
     for observation in observations {
         let cleared = observation_score_later_cleared(observation, plan, goals);
+        // One recorded value means the goal has carried the same assessment for
+        // its whole life while this gate kept firing; zero means it never
+        // carried one at all. Either way another round of the same advice will
+        // not move it.
+        let stalled = assessed_values_recorded(observation, goals) <= 1;
+        let unset = observation.state.is_none();
         match points
             .iter_mut()
-            .find(|(kind, group, _, _)| *kind == observation.kind && *group == observation.group)
-        {
-            Some((_, _, count, _)) => *count += 1,
-            None => points.push((observation.kind, observation.group.clone(), 1, cleared)),
+            .find(|(kind, group, _, _, _, _)| {
+                *kind == observation.kind && *group == observation.group
+            }) {
+            Some((_, _, count, _, _, _)) => *count += 1,
+            None => points.push((
+                observation.kind,
+                observation.group.clone(),
+                1,
+                cleared,
+                stalled,
+                unset,
+            )),
         }
     }
     if points.is_empty() {
@@ -370,7 +465,24 @@ pub fn build_gate_digest(
     }
 
     let mut message = String::from(TODO_GATE_DIGEST_PREFIX);
-    for (kind, group, count, cleared) in &points {
+    for (kind, group, count, cleared, stalled_assessment, unset) in &points {
+        let label = group
+            .as_deref()
+            .map(|group| format!(" for \"{}\"", group))
+            .unwrap_or_default();
+        // An unset field is reported as unset whatever the gate. Every branch
+        // below explains how to improve the work, which is the wrong
+        // instruction for a goal that never recorded an assessment at all: the
+        // agent does more work, omits the field again, and reads the same
+        // sentence next turn.
+        if *unset && let Some(field) = kind.assessment_field() {
+            message.push_str(&format!(
+                "\n- `{field}`{label} was never set, so this gate counts as failed. \
+                 Assess it from the evidence you have rather than choosing the value \
+                 that clears the gate."
+            ));
+            continue;
+        }
         let detail = match (kind, cleared) {
             (GateObservationKind::IntentUnderstanding, false) => {
                 "your understanding of what the user actually wants never became solid. Re-read the request, confirm the work you did matches it, and state any interpretation you had to guess at.".to_string()
@@ -464,7 +576,19 @@ pub fn build_gate_digest(
         } else {
             String::new()
         };
-        message.push_str(&format!("\n- {}{}", detail, repeats));
+        // A gate that has fired while its field never moved across turns is not
+        // asking for more work; it is evidence the agent is not reading the
+        // gate. Say so, because the alternative -- repeating the same sentence
+        // and hoping -- is what turns one blank field into a nine-turn loop of
+        // increasingly marginal verification.
+        let stalled = if *stalled_assessment {
+            " This has been raised before and the assessment has not changed since. \
+             Check whether the field is set at all before doing more work: an unset \
+             field fails this gate no matter how much verification you add."
+        } else {
+            ""
+        };
+        message.push_str(&format!("\n- {}{}{}", detail, repeats, stalled));
     }
     message.push_str(
         "\nAddress the points above, then update the todo tool with the assessments that reflect what you verified.",
@@ -1077,6 +1201,150 @@ mod tests {
             "the goal for \"closed late\" was worked on before its feedback loop was closed"
         ));
         assert!(digest.contains("the goal for \"never closed\" never closed its feedback loop"));
+    }
+
+    /// An unset gate field must be reported as unset, not as weak work.
+    ///
+    /// This is the regression that cost nine turns: `feedback_loop_traceability`
+    /// was never set, the digest said "map every requirement to a check", and
+    /// the reply was more verification rather than one field. Both readings fail
+    /// the gate, but only one of them is fixable by doing more work.
+    #[test]
+    fn an_unset_gate_field_says_it_was_never_set() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopTraceability,
+            group: Some("release".to_string()),
+            state: None,
+        }];
+        let goals = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: None,
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &goals)
+            .expect("an unset field still fails the gate");
+        assert!(
+            digest.contains("`feedback_loop_traceability` for \"release\" was never set"),
+            "an unset field must be named as unset: {digest}"
+        );
+        assert!(
+            !digest.contains("aggregate test counts do not establish this mapping"),
+            "an unset field must not be described as insufficiently traced work: {digest}"
+        );
+    }
+
+    /// A set-but-failing field keeps the advice about the work itself.
+    ///
+    /// The counterweight: distinguishing unset must not swallow the real
+    /// message for an agent that did answer and answered low.
+    #[test]
+    fn a_set_but_failing_gate_field_still_advises_on_the_work() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopTraceability,
+            group: Some("release".to_string()),
+            state: Some("unmapped".to_string()),
+        }];
+        let goals = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: Some(FeedbackLoopTraceability::Unmapped),
+            feedback_loop_traceability_history: vec![
+                FeedbackLoopTraceability::Unmapped,
+                FeedbackLoopTraceability::Partial,
+            ],
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &goals)
+            .expect("a low assessment still fails the gate");
+        assert!(
+            digest.contains("aggregate test counts do not establish this mapping"),
+            "a set field keeps the advice about the work: {digest}"
+        );
+        assert!(
+            !digest.contains("was never set"),
+            "a set field must not be reported as unset: {digest}"
+        );
+    }
+
+    /// A gate that keeps firing while its field never moves says so.
+    ///
+    /// Without this the digest is identical on turn one and turn nine, which
+    /// reads as "keep going" when the actual problem is that the assessment is
+    /// not being made at all.
+    #[test]
+    fn a_gate_whose_assessment_never_moves_is_called_out() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopTraceability,
+            group: Some("release".to_string()),
+            state: None,
+        }];
+        let stalled = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: None,
+            feedback_loop_traceability_history: Vec::new(),
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &stalled)
+            .expect("gate still fires");
+        assert!(
+            digest.contains("was never set"),
+            "an unset field is reported as unset rather than as stalled work: {digest}"
+        );
+
+        // A goal whose assessment is genuinely moving does not get the nudge,
+        // or it would fire on every ordinary climb and mean nothing.
+        let moving = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: Some(FeedbackLoopTraceability::Partial),
+            feedback_loop_traceability_history: vec![
+                FeedbackLoopTraceability::Unmapped,
+                FeedbackLoopTraceability::Partial,
+            ],
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &moving)
+            .expect("gate still fires");
+        assert!(
+            !digest.contains("has been raised before"),
+            "a moving assessment must not be called stalled: {digest}"
+        );
+    }
+
+    /// A field that is set, but frozen at the same value while the gate keeps
+    /// firing, gets the escalation.
+    ///
+    /// The unset case is reported as unset and never reaches this branch, so
+    /// without a set-but-frozen case the escalation text is unreachable by any
+    /// test. Confirmed by deleting the branch and watching only this fail.
+    #[test]
+    fn a_set_but_frozen_assessment_is_escalated() {
+        let observations = vec![GateObservation {
+            kind: GateObservationKind::FeedbackLoopTraceability,
+            group: Some("release".to_string()),
+            state: Some("unmapped".to_string()),
+        }];
+        let frozen = vec![TodoGoal {
+            group: Some("release".to_string()),
+            difficulty: Some(Difficulty::Involved),
+            feedback_loop_traceability: Some(FeedbackLoopTraceability::Unmapped),
+            // One recorded value: the goal has answered once and never revised
+            // it, while the gate has gone on firing.
+            feedback_loop_traceability_history: vec![FeedbackLoopTraceability::Unmapped],
+            ..Default::default()
+        }];
+        let digest = build_gate_digest(&observations, &TodoPlan::default(), &frozen)
+            .expect("gate still fires");
+        assert!(
+            digest.contains("has been raised before and the assessment has not changed"),
+            "a frozen assessment must be escalated: {digest}"
+        );
+        assert!(
+            digest.contains("Check whether the field is set at all"),
+            "the escalation must point at the field, not at more work: {digest}"
+        );
     }
 
     #[test]
