@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 207 lib tests plus 63
+**Tests written exceed cases ported**, deliberately. 207 lib tests plus 73
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -114,7 +114,9 @@ right" have not been checked against each other.
   server. `a_timed_out_publish_is_still_in_the_callers_hand` pins that the split is enough:
   the caller holds the observation it passed in, so the diagnostics were never unavailable,
   only unsanctioned.
-- `idle_timeout` is parsed and consumed by nothing, pending Q1.
+- ~~`idle_timeout` is parsed and consumed by nothing~~ — consumed by `registry`, which also
+  settles Q1: keyed per (project root, server name), with the timeout **on by default**, inverting
+  omp because our daemon is long-lived where theirs is a process that exits.
 - ~~`warmupTimeoutMs` and `capabilities` silently dropped by serde~~ — checked, real,
   now parsed. Neither is *consumed* yet (startup readiness and the rust-analyzer
   extensions are later work), but a field present in the data and absent from the struct
