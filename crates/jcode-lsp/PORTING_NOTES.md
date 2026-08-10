@@ -138,6 +138,17 @@ right" have not been checked against each other.
   weaker than answers reaching the right caller. Mutation-verified with a constant request
   id, which crosses answers between workers.
 
+## Defect count, re-derived
+
+I reported "17 defects fixed" across the review rounds. Recounted from the commits, it is **27
+defects in 19 fix commits** — several commits carry more than one, and I had been counting commits.
+
+Corrected rather than left, because the number is the only part of that claim a reader can check
+quickly, and an undercount is still a wrong measurement. The independent recheck also re-derived the
+enumeration total: 130 is right, and `test/lsp-mux.test.ts` really does hold 9 cases behind
+`it.skipIf`, which is the trap this file warned about and which I promptly fell into again by
+counting only `test/tools/` and getting 111.
+
 ## What a real server found that 312 tests did not
 
 `tests/live_server.rs` runs the actions against an installed language server (clangd here) rather
