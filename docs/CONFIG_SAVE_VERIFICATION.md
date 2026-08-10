@@ -51,6 +51,22 @@ with no check behind it.
 **0 surviving mutations.** Two rows here were holes when first measured, and
 both were real defects rather than missing tests. See "What this found".
 
+The harness is itself checked in both directions, because a sweep that always
+reports zero is worse than no sweep:
+
+| harness claim | check | observed |
+|---|---|---|
+| a survivor is reported and fails the run | added a comment-only mutation nothing can catch | `*** HOLE`, script exit **1** |
+| a mutation that does not compile is not a silent pass | added a syntactically invalid mutation | counted as a hole, not skipped |
+| the source is restored even on a failing run | `git status` after a run that exited 1 | tree clean |
+| it runs from any directory | ran it from `/tmp` | 0 holes, exit 0 |
+| the backup cannot be committed | `git check-ignore` on the backup path | ignored via `/target` |
+
+One measurement trap worth recording: `python3 sweep.py | grep ...; echo $?`
+reports **grep's** exit status, not the script's, and printed a reassuring
+`EXIT=0` for a run that had genuinely failed. Redirect to a file and check `$?`
+directly.
+
 ## Non-behavior claims
 
 | claim | check | observed |
@@ -98,4 +114,10 @@ Three defects, two of which no failing test would have surfaced:
 - **`OK: queued` is not a result.** Two live attempts used commands that do not
   exist (`/centered`, `/colors set border`); both were accepted and did
   nothing. Check the effect, never the acknowledgement.
+- **`$?` after a pipe is the last command's status.** `sweep.py | grep x; echo
+  $?` printed `EXIT=0` for a failing run.
 - **A test whose name implies coverage it lacks is worse than a missing test.**
+
+The through-line: every one of these produced a *confident, wrong* reading that
+looked like success. None was caught by thinking harder about the code; each
+needed a second measurement designed to disagree with the first.

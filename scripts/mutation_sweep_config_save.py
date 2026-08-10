@@ -11,12 +11,22 @@ is worth re-running after any change to config_file.rs:
   python3 scripts/mutation_sweep_config_save.py
 
 Exits non-zero if any mutation survives. Restores the source file afterwards,
-including on failure.
+including on failure, and works from any directory.
+
+Self-tested: adding a mutation nothing can catch (a comment-only edit) makes it
+report a hole and exit 1, so a "0 holes" result is a measurement rather than a
+vacuous pass.
 """
 import subprocess, shutil, sys, re
+from pathlib import Path
 
-SRC = "crates/jcode-base/src/config/config_file.rs"
-BACKUP = "/tmp/mutation-orig.rs"
+# Resolve against the script's own location, so the sweep can be run from
+# anywhere rather than only the repo root.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC = REPO_ROOT / "crates/jcode-base/src/config/config_file.rs"
+# Not /tmp: AGENTS.md notes it may be RAM-backed, and this holds the only copy
+# of the original file while mutations are applied.
+BACKUP = REPO_ROOT / "target" / "mutation-sweep-config-save.orig.rs"
 
 MUTATIONS = [
     ("set_preserving_decor: drop decor preservation",
@@ -57,7 +67,7 @@ def run_tests():
     out = subprocess.run(
         ["cargo", "test", "-p", "jcode-base", "--lib", "format_tests", "--",
          "--test-threads=1"],
-        capture_output=True, text=True)
+        capture_output=True, text=True, cwd=REPO_ROOT)
     text = out.stdout + out.stderr
     if "error[E" in text or "error: could not compile" in text:
         return None
@@ -66,8 +76,9 @@ def run_tests():
 
 
 def main():
+    BACKUP.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(SRC, BACKUP)
-    original = open(SRC).read()
+    original = SRC.read_text()
     holes = []
     try:
         for name, find, replace in MUTATIONS:
@@ -75,10 +86,11 @@ def main():
                 print(f"SKIP (anchor not found): {name}")
                 holes.append(name + "  [anchor missing]")
                 continue
-            open(SRC, "w").write(original.replace(find, replace, 1))
+            SRC.write_text(original.replace(find, replace, 1))
             caught = run_tests()
             if caught is None:
-                print(f"SKIP (did not compile): {name}")
+                print(f"*** HOLE (did not compile): {name}")
+                holes.append(name + "  [did not compile]")
             elif caught:
                 short = [c.rsplit("::", 1)[1] for c in caught]
                 print(f"CAUGHT  {name}\n        by: {', '.join(short[:3])}"
@@ -87,7 +99,7 @@ def main():
                 print(f"*** HOLE  {name}: no test failed")
                 holes.append(name)
     finally:
-        open(SRC, "w").write(original)
+        SRC.write_text(original)
     print()
     print("holes:", len(holes))
     for h in holes:
