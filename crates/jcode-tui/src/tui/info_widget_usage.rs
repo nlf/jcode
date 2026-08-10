@@ -59,12 +59,23 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
             let mut lines = Vec::new();
             let label = info.provider.label();
             if !label.is_empty() {
-                lines.push(Line::from(vec![Span::styled(
+                let mut header = vec![Span::styled(
                     format!("{} limits", label),
                     Style::default()
                         .fg(rgb(140, 140, 150))
                         .add_modifier(ratatui::style::Modifier::DIM),
-                )]));
+                )];
+                // Mark last-known-good values so a stale number is never
+                // mistaken for a live one.
+                if info.stale {
+                    header.push(Span::styled(
+                        " (stale)",
+                        Style::default()
+                            .fg(rgb(200, 160, 90))
+                            .add_modifier(ratatui::style::Modifier::DIM),
+                    ));
+                }
+                lines.push(Line::from(header));
             }
             if let Some(primary_label) = info.primary_limit_label.as_deref() {
                 lines.push(render_labeled_bar(

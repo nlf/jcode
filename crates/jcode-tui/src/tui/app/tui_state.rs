@@ -395,6 +395,7 @@ impl App {
             cache_write_tokens: self.streaming.streaming_cache_creation_tokens,
             output_tps,
             available: true,
+            stale: false,
         };
 
         match route.provider {
@@ -415,6 +416,7 @@ impl App {
                 cache_write_tokens: None,
                 output_tps,
                 available: display_input_tokens > 0 || display_output_tokens > 0,
+                stale: false,
             }),
             WidgetProviderKind::Anthropic => {
                 match auth_method {
@@ -426,6 +428,11 @@ impl App {
                 }
 
                 let usage = crate::usage::get_sync();
+                // A failed refresh must not blank the widget when we still
+                // hold real numbers from an earlier fetch. Show them marked
+                // stale; only hide when there is genuinely nothing to show.
+                let has_error = usage.last_error.is_some();
+                let usable = usage.has_usable_data();
                 Some(crate::tui::info_widget::UsageInfo {
                     provider: crate::tui::info_widget::UsageProvider::Anthropic,
                     primary_limit_label: Some("5-hour".to_string()),
@@ -442,7 +449,8 @@ impl App {
                     cache_read_tokens: None,
                     cache_write_tokens: None,
                     output_tps,
-                    available: usage.last_error.is_none(),
+                    available: !has_error || usable,
+                    stale: has_error && usable,
                 })
             }
             WidgetProviderKind::OpenAI => {
@@ -495,6 +503,9 @@ impl App {
                     cache_write_tokens: None,
                     output_tps,
                     available: openai_usage.has_limits(),
+                    // OpenAI windows carry their own presence signal; mark
+                    // them stale when a refresh failed but limits survive.
+                    stale: openai_usage.last_error.is_some() && openai_usage.has_limits(),
                 })
             }
             WidgetProviderKind::Gemini => None,

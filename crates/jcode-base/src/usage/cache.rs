@@ -25,11 +25,31 @@ fn openai_usage_cache() -> &'static std::sync::Mutex<HashMap<String, OpenAIUsage
     OPENAI_ACCOUNT_USAGE_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// Cache key for an Anthropic account.
+///
+/// Callers supply a label when they have one and omit it otherwise. Deriving a
+/// *different* key for the same account in those two cases meant a single
+/// process fetched twice per refresh, which on its own exceeds this endpoint's
+/// roughly one-request-per-minute budget and produced self-inflicted 429s. So
+/// when no label is supplied we resolve the active one rather than falling
+/// straight through to a token-derived key; the token form remains only as a
+/// last resort for the genuinely label-less case (e.g. probing a specific
+/// token that is not the active account).
 pub(super) fn anthropic_usage_cache_key(access_token: &str, account_label: Option<&str>) -> String {
-    if let Some(label) = account_label
+    let resolved_label = account_label
         .map(str::trim)
         .filter(|label| !label.is_empty())
-    {
+        .map(str::to_string)
+        .or_else(|| {
+            // Only adopt the active label when it really is this token's
+            // account; otherwise two different tokens would collide.
+            crate::auth::claude::load_credentials()
+                .ok()
+                .filter(|creds| creds.access_token == access_token)
+                .and_then(|_| crate::auth::claude::active_account_label())
+        });
+
+    if let Some(label) = resolved_label {
         return format!("label:{}", label);
     }
 
@@ -59,12 +79,25 @@ pub(super) fn openai_usage_cache_key(access_token: &str, account_label: Option<&
 
 pub(super) fn cached_anthropic_usage(cache_key: &str) -> Option<UsageData> {
     let cache = anthropic_usage_cache();
-    let map = cache.lock().ok()?;
-    let cached = map.get(cache_key)?.clone();
-    (!cached.is_stale()).then_some(cached)
+    let mut map = cache.lock().ok()?;
+
+    if let Some(cached) = map.get(cache_key)
+        && !cached.is_stale()
+    {
+        return Some(cached.clone());
+    }
+
+    // Nothing usable in this process. Another process may have fetched
+    // recently, or may be serving a 429 backoff we are obliged to respect, so
+    // consult the shared on-disk snapshot before deciding to hit the network.
+    let shared = super::persist::load_entry(cache_key)?;
+    let fresh = !shared.is_stale();
+    map.insert(cache_key.to_string(), shared.clone());
+    fresh.then_some(shared)
 }
 
 pub(super) fn store_anthropic_usage(cache_key: String, data: UsageData) {
+    super::persist::store_entry(&cache_key, &data);
     if let Ok(mut map) = anthropic_usage_cache().lock() {
         map.insert(cache_key, data);
     }
@@ -231,6 +264,7 @@ pub(super) fn usage_data_from_provider_report(report: &ProviderUsage) -> UsageDa
         extra_usage_enabled: extra_usage_enabled.unwrap_or(false),
         fetched_at: Some(Instant::now()),
         last_error: None,
+        retry_after: None,
     }
 }
 

@@ -6,7 +6,21 @@ static REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 pub(super) async fn get_usage() -> Arc<RwLock<UsageData>> {
     USAGE
-        .get_or_init(|| async { Arc::new(RwLock::new(UsageData::default())) })
+        .get_or_init(|| async {
+            // Seed from the cross-process snapshot so a newly started process
+            // inherits both recent numbers and any active 429 backoff, rather
+            // than starting blank and immediately re-fetching.
+            let seed = auth::claude::load_credentials()
+                .ok()
+                .map(|creds| {
+                    let label = auth::claude::active_account_label()
+                        .unwrap_or_else(auth::claude::primary_account_label);
+                    anthropic_usage_cache_key(&creds.access_token, Some(&label))
+                })
+                .and_then(|key| super::persist::load_entry(&key))
+                .unwrap_or_default();
+            Arc::new(RwLock::new(seed))
+        })
         .await
         .clone()
 }
@@ -40,9 +54,17 @@ async fn refresh_usage(usage: Arc<RwLock<UsageData>>) {
         }
         Err(e) => {
             let err_msg = e.to_string();
+            let retry_after = e
+                .downcast_ref::<super::UsageFetchError>()
+                .and_then(|fetch_err| fetch_err.retry_after);
             let mut data = usage.write().await;
             let is_new_error = data.last_error.as_deref() != Some(&err_msg);
+
+            // Keep the last successful numbers so the widget can keep showing
+            // them, marked stale, instead of blanking on a transient 429.
+            // Only the error metadata is overwritten.
             data.last_error = Some(err_msg.clone());
+            data.retry_after = retry_after;
             data.fetched_at = Some(Instant::now());
             if is_new_error {
                 crate::logging::error(&format!("Usage fetch error: {}", err_msg));

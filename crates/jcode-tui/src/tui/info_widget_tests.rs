@@ -1,8 +1,8 @@
 use super::{
-    BackgroundInfo, CacheHitInfo, GitInfo, CacheMissAttribution, GraphEdge, GraphNode, InfoWidgetData,
-    Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState, PipelineState,
-    StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind, calculate_placements,
-    calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
+    BackgroundInfo, CacheHitInfo, CacheMissAttribution, GitInfo, GraphEdge, GraphNode,
+    InfoWidgetData, Margins, MemoryActivity, MemoryEvent, MemoryEventKind, MemoryInfo, MemoryState,
+    PipelineState, StepStatus, SwarmInfo, UsageInfo, UsageProvider, WidgetKind,
+    calculate_placements, calculate_widget_height, effective_prompt_tokens, occasional_status_tip,
     render_kv_cache_widget, render_memory_compact, render_memory_widget, render_model_widget,
     render_todos_compact, render_todos_expanded, render_todos_widget, render_usage_compact,
     render_usage_widget, swarm_plan_todos, truncate_smart,
@@ -629,6 +629,81 @@ fn cost_based_usage_widgets_show_price_and_tokens() {
     let compact_text = lines_text(&render_usage_compact(&usage, 40));
     assert!(compact_text.contains("$0.0123"));
     assert!(compact_text.contains("12.3K in + 678 out"));
+}
+
+/// A failed refresh must not blank the widget when real numbers are still
+/// held. Before this, any `last_error` set `available: false` and the whole
+/// widget vanished, which is what made a transient 429 look like the feature
+/// was broken for 15 minutes at a time.
+#[test]
+fn stale_usage_still_renders_with_a_marker() {
+    let usage = UsageInfo {
+        provider: UsageProvider::Anthropic,
+        primary_limit_label: Some("5-hour".to_string()),
+        five_hour: 0.42,
+        secondary_limit_label: Some("Weekly".to_string()),
+        seven_day: 0.13,
+        available: true,
+        stale: true,
+        ..Default::default()
+    };
+    let data = InfoWidgetData {
+        usage_info: Some(usage.clone()),
+        ..Default::default()
+    };
+
+    assert!(
+        data.has_data_for(WidgetKind::UsageLimits),
+        "stale-but-usable data must keep the widget on screen"
+    );
+
+    let text = lines_text(&render_usage_widget(&data, Rect::new(0, 0, 40, 6)));
+    assert!(text.contains("stale"), "stale data must be labeled: {text}");
+    // The bars render remaining headroom, so 42% used shows as 58% left.
+    assert!(
+        text.contains("58% left"),
+        "last-known values must still show: {text}"
+    );
+}
+
+#[test]
+fn fresh_usage_is_not_marked_stale() {
+    let usage = UsageInfo {
+        provider: UsageProvider::Anthropic,
+        primary_limit_label: Some("5-hour".to_string()),
+        five_hour: 0.42,
+        available: true,
+        stale: false,
+        ..Default::default()
+    };
+    let data = InfoWidgetData {
+        usage_info: Some(usage),
+        ..Default::default()
+    };
+
+    let text = lines_text(&render_usage_widget(&data, Rect::new(0, 0, 40, 6)));
+    assert!(
+        !text.contains("stale"),
+        "fresh data must not be labeled stale: {text}"
+    );
+    assert!(text.contains("58% left"));
+}
+
+#[test]
+fn unavailable_usage_still_renders_nothing() {
+    // The hide path must survive: when there is genuinely nothing to show
+    // (no prior fetch ever succeeded), an empty widget is still correct.
+    let data = InfoWidgetData {
+        usage_info: Some(UsageInfo {
+            provider: UsageProvider::Anthropic,
+            available: false,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    assert!(!data.has_data_for(WidgetKind::UsageLimits));
+    assert!(render_usage_widget(&data, Rect::new(0, 0, 40, 6)).is_empty());
 }
 
 fn node(kind: &str, label: &str, degree: usize) -> GraphNode {

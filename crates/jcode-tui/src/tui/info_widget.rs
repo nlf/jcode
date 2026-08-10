@@ -422,6 +422,11 @@ pub struct UsageInfo {
     pub output_tps: Option<f32>,
     /// Whether data was successfully fetched / available to show
     pub available: bool,
+    /// Whether the numbers shown are last-known-good rather than fresh: the
+    /// most recent refresh failed (429, network, auth) but earlier values are
+    /// still worth showing. Rendered with a marker rather than hidden, because
+    /// a stale percentage is far more useful than an empty widget.
+    pub stale: bool,
 }
 
 /// Session-level KV cache telemetry for providers that report cache usage.

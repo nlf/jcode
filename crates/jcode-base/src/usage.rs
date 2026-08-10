@@ -9,6 +9,7 @@ mod cache;
 mod display;
 mod model;
 mod openai_helpers;
+mod persist;
 mod provider_fetch;
 pub use accessors::*;
 use api_keys::enqueue_api_key_usage_tasks;
@@ -44,6 +45,82 @@ const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(900);
 
 /// Minimum interval between /usage command fetches (per provider).
 const PROVIDER_USAGE_CACHE_TTL: Duration = Duration::from_secs(120);
+
+/// Upper bound on a server-directed retry delay. A malformed or hostile
+/// `retry-after` should not park the widget for hours.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(3600);
+
+/// Floor for a server-directed retry delay.
+///
+/// Anthropic's usage endpoint answers a 429 with a literal `Retry-After: 0`
+/// (verified against the live endpoint), which taken at face value means
+/// "retry immediately" and would turn every widget repaint into another
+/// request, making the rate limiting worse rather than better. Any
+/// non-positive or very small instruction is therefore floored: we still
+/// honor a genuine, longer delay, but never interpret one as permission to
+/// hammer the endpoint.
+const MIN_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// A usage fetch that failed, carrying the server's retry instruction when it
+/// supplied one. Attached to the `anyhow` error so callers that only log the
+/// message are unaffected, while `refresh_usage` can downcast and preserve the
+/// backoff on the cached snapshot.
+#[derive(Debug, Clone)]
+pub(super) struct UsageFetchError {
+    pub(super) message: String,
+    pub(super) retry_after: Option<Duration>,
+}
+
+impl std::fmt::Display for UsageFetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for UsageFetchError {}
+
+/// Extract the server's own retry instruction from a 429 response.
+///
+/// Anthropic sends `retry-after` (delta seconds or an HTTP date) and, on some
+/// routes, `anthropic-ratelimit-unified-reset` (unix seconds). Preferring these
+/// over a hardcoded backoff means we wait exactly as long as we were told.
+/// Returns `None` when no header is present or parseable, leaving the caller to
+/// fall back to `RATE_LIMIT_BACKOFF`.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let clamp = |secs: i64| -> Option<Duration> {
+        // Clamp into [MIN, MAX]. A `Retry-After: 0` from this endpoint is a
+        // real observed response and must not become a hot retry loop.
+        let requested = Duration::from_secs(secs.max(0) as u64);
+        Some(requested.clamp(MIN_RETRY_AFTER, MAX_RETRY_AFTER))
+    };
+
+    if let Some(value) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
+        let value = value.trim();
+        // Delta-seconds form, which is what Anthropic sends in practice.
+        if let Ok(secs) = value.parse::<i64>() {
+            return clamp(secs);
+        }
+        // HTTP-date form, per RFC 9110.
+        if let Ok(when) = chrono::DateTime::parse_from_rfc2822(value) {
+            let delta = when.timestamp() - chrono::Utc::now().timestamp();
+            return clamp(delta);
+        }
+    }
+
+    // Unix-epoch reset timestamps used by the ratelimit header family.
+    for name in [
+        "anthropic-ratelimit-unified-reset",
+        "anthropic-ratelimit-requests-reset",
+    ] {
+        if let Some(value) = headers.get(name).and_then(|v| v.to_str().ok())
+            && let Ok(reset_at) = value.trim().parse::<i64>()
+        {
+            return clamp(reset_at - chrono::Utc::now().timestamp());
+        }
+    }
+
+    None
+}
 
 /// Cached provider usage reports (used by /usage command).
 /// Keyed by provider display name.
@@ -87,10 +164,24 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
 
     if !response.status().is_success() {
         let status = response.status();
+        // Read the retry instruction before `.text()` consumes the response.
+        let retry_after = parse_retry_after(response.headers());
         let error_text = response.text().await.unwrap_or_default();
-        let err = anthropic_usage_error(format!("Usage API error ({}): {}", status, error_text));
+        let mut err =
+            anthropic_usage_error(format!("Usage API error ({}): {}", status, error_text));
+        err.retry_after = retry_after;
+        if let Some(delay) = retry_after {
+            crate::logging::info(&format!(
+                "Usage API {} - server asked to retry after {}s",
+                status,
+                delay.as_secs()
+            ));
+        }
         store_anthropic_usage(cache_key, err.clone());
-        anyhow::bail!(err.last_error.unwrap_or_else(|| "Usage API error".into()));
+        return Err(anyhow::Error::new(UsageFetchError {
+            message: err.last_error.unwrap_or_else(|| "Usage API error".into()),
+            retry_after,
+        }));
     }
 
     let data: UsageResponse = response
@@ -138,6 +229,7 @@ async fn fetch_anthropic_usage_data(access_token: String, cache_key: String) -> 
             .unwrap_or(false),
         fetched_at: Some(Instant::now()),
         last_error: None,
+        retry_after: None,
     };
 
     store_anthropic_usage(cache_key, usage.clone());

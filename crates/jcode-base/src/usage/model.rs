@@ -1,7 +1,7 @@
 use super::display::{format_reset_time, usage_reset_passed};
 use super::{CACHE_DURATION, ERROR_BACKOFF, RATE_LIMIT_BACKOFF};
 use serde::Deserialize;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(super) fn mask_email(email: &str) -> String {
     let trimmed = email.trim();
@@ -66,6 +66,11 @@ pub struct UsageData {
     pub fetched_at: Option<Instant>,
     /// Last error (if any)
     pub last_error: Option<String>,
+    /// Server-directed retry delay from a 429 (`retry-after` /
+    /// `anthropic-ratelimit-unified-reset`). When present this replaces the
+    /// blind `RATE_LIMIT_BACKOFF` guess, so we wait exactly as long as the
+    /// server asked rather than a hardcoded 15 minutes.
+    pub retry_after: Option<Duration>,
 }
 
 impl UsageData {
@@ -101,7 +106,10 @@ impl UsageData {
         match self.fetched_at {
             Some(t) => {
                 let ttl = if self.is_rate_limited() {
-                    RATE_LIMIT_BACKOFF
+                    // Prefer the server's own instruction over the blind
+                    // constant: a 429 that says "retry in 30s" should not
+                    // blank the widget for a hardcoded 15 minutes.
+                    self.retry_after.unwrap_or(RATE_LIMIT_BACKOFF)
                 } else if self.last_error.is_some() {
                     ERROR_BACKOFF
                 } else {
@@ -111,6 +119,18 @@ impl UsageData {
             }
             None => true,
         }
+    }
+
+    /// Whether this snapshot carries real usage numbers from a successful
+    /// fetch at some point, even if the most recent refresh failed. Used to
+    /// keep showing last-known-good values instead of hiding the widget.
+    pub fn has_usable_data(&self) -> bool {
+        self.fetched_at.is_some()
+            && (self.five_hour_resets_at.is_some()
+                || self.seven_day_resets_at.is_some()
+                || self.five_hour > 0.0
+                || self.seven_day > 0.0
+                || !self.model_scoped.is_empty())
     }
 
     /// Check if the last error was a rate limit (429)

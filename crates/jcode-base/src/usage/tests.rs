@@ -800,3 +800,141 @@ fn anthropic_model_scoped_exhaustion_matches_display_name_to_catalog_id() {
     };
     assert!(!below_limit.model_scoped_exhausted("claude-fable-5"));
 }
+
+// ─── 429 retry-after parsing ────────────────────────────────────────────────
+//
+// Anthropic tells us when to come back. Before this, a 429 fell through to a
+// blind 900s constant, so the widget could stay blank far longer than the
+// server ever asked for.
+
+fn headers_with(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    for (name, value) in pairs {
+        headers.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).expect("valid header name"),
+            value.parse().expect("valid header value"),
+        );
+    }
+    headers
+}
+
+#[test]
+fn retry_after_delta_seconds_is_used() {
+    let headers = headers_with(&[("retry-after", "300")]);
+    assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(300)));
+}
+
+#[test]
+fn retry_after_is_clamped_to_a_sane_maximum() {
+    let headers = headers_with(&[("retry-after", "999999")]);
+    assert_eq!(parse_retry_after(&headers), Some(MAX_RETRY_AFTER));
+}
+
+/// Verified against the live endpoint: Anthropic answers a usage 429 with a
+/// literal `Retry-After: 0`. Taken at face value that means "retry now", which
+/// would turn every repaint into another request and make the rate limiting
+/// strictly worse. It must be floored instead.
+#[test]
+fn retry_after_zero_is_floored_rather_than_causing_a_hot_loop() {
+    assert_eq!(
+        parse_retry_after(&headers_with(&[("retry-after", "0")])),
+        Some(MIN_RETRY_AFTER)
+    );
+    assert_eq!(
+        parse_retry_after(&headers_with(&[("retry-after", "-5")])),
+        Some(MIN_RETRY_AFTER)
+    );
+    assert_eq!(
+        parse_retry_after(&headers_with(&[("retry-after", "3")])),
+        Some(MIN_RETRY_AFTER),
+        "a very short delay is still floored"
+    );
+}
+
+#[test]
+fn unified_reset_header_is_used_when_retry_after_is_absent() {
+    let reset_at = chrono::Utc::now().timestamp() + 120;
+    let headers = headers_with(&[("anthropic-ratelimit-unified-reset", &reset_at.to_string())]);
+
+    let parsed = parse_retry_after(&headers).expect("reset header parsed");
+    assert!(
+        parsed >= Duration::from_secs(115) && parsed <= Duration::from_secs(120),
+        "expected ~120s, got {:?}",
+        parsed
+    );
+}
+
+#[test]
+fn retry_after_wins_over_the_reset_header() {
+    let reset_at = chrono::Utc::now().timestamp() + 600;
+    let headers = headers_with(&[
+        ("retry-after", "120"),
+        ("anthropic-ratelimit-unified-reset", &reset_at.to_string()),
+    ]);
+    assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(120)));
+}
+
+#[test]
+fn missing_or_garbage_headers_fall_back_to_the_constant() {
+    assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
+    assert_eq!(
+        parse_retry_after(&headers_with(&[("retry-after", "soon-ish")])),
+        None,
+        "an unparseable value must fall back rather than guess"
+    );
+}
+
+#[test]
+fn server_directed_backoff_shortens_the_stale_window() {
+    // The behavioral payoff: with a 120s instruction the entry becomes
+    // eligible to retry after 120s, not the 900s the blind constant imposed.
+    let rate_limited = UsageData {
+        five_hour: 0.5,
+        fetched_at: Some(Instant::now() - Duration::from_secs(300)),
+        last_error: Some("Usage API error (429 Too Many Requests)".to_string()),
+        retry_after: Some(Duration::from_secs(120)),
+        ..Default::default()
+    };
+    assert!(
+        rate_limited.is_stale(),
+        "300s elapsed against a 120s instruction must be stale and eligible to retry"
+    );
+
+    let without_header = UsageData {
+        retry_after: None,
+        ..rate_limited.clone()
+    };
+    assert!(
+        !without_header.is_stale(),
+        "with no instruction the 900s constant still applies at 300s elapsed"
+    );
+}
+
+#[test]
+fn has_usable_data_distinguishes_a_failed_fetch_from_an_empty_one() {
+    // Drives the widget's show-stale-vs-hide decision.
+    let never_fetched = UsageData::default();
+    assert!(!never_fetched.has_usable_data());
+
+    let fetched_but_empty = UsageData {
+        fetched_at: Some(Instant::now()),
+        last_error: Some("Usage API error (429)".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        !fetched_but_empty.has_usable_data(),
+        "an error with no prior numbers has nothing worth showing"
+    );
+
+    let stale_but_real = UsageData {
+        five_hour: 0.42,
+        five_hour_resets_at: Some((chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339()),
+        fetched_at: Some(Instant::now()),
+        last_error: Some("Usage API error (429)".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        stale_but_real.has_usable_data(),
+        "real numbers behind a failed refresh must stay visible"
+    );
+}
