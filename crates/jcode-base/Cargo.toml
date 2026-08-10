@@ -34,6 +34,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
 toml = "0.8"
+# Format-preserving TOML, so saving one setting does not strip the user's
+# comments and reorder their file. Pinned to the version `toml` already pulls
+# in, so this adds no new crate to the build.
+toml_edit = "0.20"
 
 # File operations
 

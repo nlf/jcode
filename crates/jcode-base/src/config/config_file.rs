@@ -31,26 +31,46 @@ fn save_baseline() -> toml::Value {
         .unwrap_or_else(|| toml::Value::Table(toml::map::Map::new()))
 }
 
-/// Apply to `target` only the keys where `desired` differs from `baseline`.
+/// One key's fate in a save: the caller set it, or the caller removed it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ConfigChange {
+    Set(toml::Value),
+    Remove,
+}
+
+/// A single change, addressed by its path from the document root.
+pub(crate) type ChangeEntry = (Vec<String>, ConfigChange);
+
+/// The keys where `desired` differs from `baseline`, as a flat change set.
 ///
-/// Three-way merge: `baseline` is what this process loaded, `desired` is what
-/// it wants, and `target` starts as the current on-disk state. A key the caller
-/// never touched keeps whatever the file says, so concurrent edits survive.
-/// Tables recurse; anything else is replaced wholesale, since a partial merge
-/// of an array has no meaning here.
-fn merge_changed_keys(target: &mut toml::Value, baseline: &toml::Value, desired: &toml::Value) {
+/// Three-way merge, decision half: `baseline` is what this process loaded and
+/// `desired` is what it wants. A key matching the baseline was never touched by
+/// this caller and so produces no change, which is what lets a concurrent edit
+/// to that key survive. Tables recurse; anything else is replaced wholesale,
+/// since a partial merge of an array has no meaning here.
+///
+/// Returning a change set rather than a merged document is what allows the
+/// application half to patch the user's file in place, preserving comments and
+/// key order for everything untouched.
+pub(crate) fn changed_keys(baseline: &toml::Value, desired: &toml::Value) -> Vec<ChangeEntry> {
+    let mut changes = Vec::new();
+    collect_changed_keys(&mut Vec::new(), baseline, desired, &mut changes);
+    changes
+}
+
+fn collect_changed_keys(
+    prefix: &mut Vec<String>,
+    baseline: &toml::Value,
+    desired: &toml::Value,
+    out: &mut Vec<ChangeEntry>,
+) {
     let (Some(desired_table), Some(baseline_table)) = (desired.as_table(), baseline.as_table())
     else {
         if desired != baseline {
-            *target = desired.clone();
+            out.push((prefix.clone(), ConfigChange::Set(desired.clone())));
         }
         return;
     };
-
-    if !target.is_table() {
-        *target = toml::Value::Table(toml::map::Map::new());
-    }
-    let empty = toml::map::Map::new();
 
     for (key, desired_value) in desired_table {
         let baseline_value = baseline_table.get(key);
@@ -59,33 +79,151 @@ fn merge_changed_keys(target: &mut toml::Value, baseline: &toml::Value, desired:
             continue;
         }
 
-        let target_table = target
-            .as_table_mut()
-            .expect("target coerced to table above");
-        match (desired_value.as_table(), baseline_value) {
-            (Some(_), _) => {
-                let baseline_child = baseline_value
-                    .cloned()
-                    .unwrap_or_else(|| toml::Value::Table(empty.clone()));
-                let mut child = target_table
-                    .get(key)
-                    .cloned()
-                    .unwrap_or_else(|| toml::Value::Table(empty.clone()));
-                merge_changed_keys(&mut child, &baseline_child, desired_value);
-                target_table.insert(key.clone(), child);
+        prefix.push(key.clone());
+        match (
+            desired_value.as_table(),
+            baseline_value.and_then(|value| value.as_table()),
+        ) {
+            // Both sides are tables, so recurse and change only the leaves that
+            // actually differ. Replacing the whole table here would clobber
+            // sibling keys a concurrent edit had added.
+            (Some(_), Some(_)) => {
+                let baseline_child = baseline_value.expect("matched as a table above");
+                collect_changed_keys(prefix, baseline_child, desired_value, out);
             }
-            _ => {
-                target_table.insert(key.clone(), desired_value.clone());
+            // A table with no table baseline is wholly new to this caller.
+            // Recursing against an empty baseline emits its leaves one by one,
+            // which lets the writer build the section without flattening it.
+            (Some(_), None) => {
+                let empty = toml::Value::Table(toml::map::Map::new());
+                collect_changed_keys(prefix, &empty, desired_value, out);
             }
+            _ => out.push((prefix.clone(), ConfigChange::Set(desired_value.clone()))),
         }
+        prefix.pop();
     }
 
     // A key the caller removed relative to its baseline is a deletion.
     for key in baseline_table.keys() {
-        if !desired_table.contains_key(key)
-            && let Some(table) = target.as_table_mut()
-        {
-            table.remove(key);
+        if !desired_table.contains_key(key) {
+            prefix.push(key.clone());
+            out.push((prefix.clone(), ConfigChange::Remove));
+            prefix.pop();
+        }
+    }
+}
+
+/// Apply a change set to a parsed document, in place.
+///
+/// Only the addressed keys are touched. Everything else in the document keeps
+/// the bytes it was parsed from, which is the whole point: comments, blank
+/// lines, key order, and keys `Config` does not model all survive because they
+/// are never rewritten.
+pub(crate) fn apply_changes(doc: &mut toml_edit::Document, changes: &[ChangeEntry]) {
+    for (path, change) in changes {
+        let Some((leaf, parents)) = path.split_last() else {
+            continue;
+        };
+
+        match change {
+            ConfigChange::Set(value) => {
+                let Some(table) = descend_or_create(doc, parents) else {
+                    continue;
+                };
+                set_preserving_decor(table, leaf, value);
+            }
+            ConfigChange::Remove => {
+                // Only descend; a removal has no reason to create the tables it
+                // would then remove from.
+                if let Some(table) = descend(doc, parents) {
+                    table.remove(leaf);
+                }
+            }
+        }
+    }
+}
+
+/// Walk to the table at `path`, creating any missing tables on the way.
+///
+/// Missing tables are created as explicit `[section]` headers, matching the
+/// shape of the shipped config template rather than dotted keys.
+fn descend_or_create<'a>(
+    doc: &'a mut toml_edit::Document,
+    path: &[String],
+) -> Option<&'a mut toml_edit::Table> {
+    let mut table = doc.as_table_mut();
+    for key in path {
+        let entry = table
+            .entry(key)
+            .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+        table = entry.as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// Walk to the table at `path` if it already exists.
+fn descend<'a>(
+    doc: &'a mut toml_edit::Document,
+    path: &[String],
+) -> Option<&'a mut toml_edit::Table> {
+    let mut table = doc.as_table_mut();
+    for key in path {
+        table = table.get_mut(key)?.as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// Write one key, keeping the formatting that surrounds it.
+///
+/// Replacing an existing key with a fresh item would discard its decor, which
+/// is where `toml_edit` keeps the comment above it and the spacing around the
+/// `=`. So assign into the existing value when there is one, and only insert a
+/// whole new item when the key is genuinely new.
+fn set_preserving_decor(table: &mut toml_edit::Table, key: &str, value: &toml::Value) {
+    let new_value = to_edit_value(value);
+
+    if let Some(existing) = table.get_mut(key) {
+        // A table replaced by a non-table (or vice versa) cannot keep its
+        // decor, so fall through to a plain assignment in that case.
+        if let Some(slot) = existing.as_value_mut() {
+            let decor = slot.decor().clone();
+            *slot = new_value;
+            *slot.decor_mut() = decor;
+            return;
+        }
+        *existing = toml_edit::Item::Value(new_value);
+        return;
+    }
+
+    table.insert(key, toml_edit::Item::Value(new_value));
+}
+
+/// Convert a `toml::Value` into the `toml_edit` representation.
+///
+/// The two crates model the same data with different types; `toml_edit` adds
+/// formatting. Nested tables become inline tables here, which only happens for
+/// a value written as a leaf, since [`changed_keys`] emits table *leaves*
+/// individually rather than whole tables.
+fn to_edit_value(value: &toml::Value) -> toml_edit::Value {
+    match value {
+        toml::Value::String(text) => toml_edit::Value::from(text.as_str()),
+        toml::Value::Integer(number) => toml_edit::Value::from(*number),
+        toml::Value::Float(number) => toml_edit::Value::from(*number),
+        toml::Value::Boolean(flag) => toml_edit::Value::from(*flag),
+        toml::Value::Datetime(stamp) => toml_edit::Value::from(stamp.to_string()),
+        toml::Value::Array(items) => {
+            let mut array = toml_edit::Array::new();
+            for item in items {
+                array.push(to_edit_value(item));
+            }
+            toml_edit::Value::Array(array)
+        }
+        toml::Value::Table(map) => {
+            let mut inline = toml_edit::InlineTable::new();
+            for (key, item) in map {
+                inline.insert(key, to_edit_value(item));
+            }
+            toml_edit::Value::InlineTable(inline)
         }
     }
 }
@@ -139,8 +277,12 @@ impl Config {
             anyhow::anyhow!("Failed to parse config file {}: {}", path.display(), e)
         })?;
         config.display.apply_legacy_compat();
-        config.repair_frozen_sponsors_optout(&content);
+        // Snapshot before the repair, not after. The baseline is what the file
+        // said; the repair is a change this process is making to it, and a save
+        // must therefore write the removal out. Recording after would make the
+        // repair invisible to the merge, leaving the frozen section on disk.
         record_loaded_snapshot(&config);
+        config.repair_frozen_sponsors_optout(&content);
         Ok(Some(config))
     }
 
@@ -183,7 +325,8 @@ impl Config {
         );
     }
 
-    /// Save config to file, preserving concurrent edits to untouched settings.
+    /// Save config to file, preserving concurrent edits to untouched settings
+    /// and the formatting of the user's file.
     ///
     /// A whole-struct serialize would write back every field this process last
     /// loaded, so a save for one unrelated setting silently reverts anything
@@ -193,7 +336,10 @@ impl Config {
     /// has eaten hand-written `[display.colors]` palettes.
     ///
     /// So diff against the config as this process loaded it and apply only the
-    /// keys that actually changed, on top of whatever is on disk now.
+    /// keys that actually changed, as edits to the file's own text. Patching
+    /// the text rather than re-serializing a merged value is what additionally
+    /// keeps comments, key order, and keys this struct does not model: a key
+    /// nobody changed is never rewritten at all.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
 
@@ -209,18 +355,26 @@ impl Config {
         // and must not be forced back over a concurrent edit.
         let baseline = save_baseline();
 
-        // Start from what is on disk right now, so a concurrent edit is the
-        // thing being merged into rather than the thing being overwritten.
-        let mut merged = Self::load_from_file()
-            .and_then(|cfg| toml::Value::try_from(&cfg).ok())
-            .unwrap_or_else(|| baseline.clone());
-        merge_changed_keys(&mut merged, &baseline, &desired);
+        let changes = changed_keys(&baseline, &desired);
 
-        let content = toml::to_string_pretty(&merged)?;
-        std::fs::write(&path, content)?;
-        if let Ok(mut slot) = LOADED_SNAPSHOT.write() {
-            *slot = Some(merged);
-        }
+        // Patch the file's own text, so untouched keys keep their comments and
+        // position. An unreadable or unparseable file yields an empty document,
+        // which the changes then populate: a corrupt config still saves.
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut doc = existing
+            .parse::<toml_edit::Document>()
+            .unwrap_or_else(|_| toml_edit::Document::new());
+        apply_changes(&mut doc, &changes);
+
+        std::fs::write(&path, doc.to_string())?;
+
+        // Re-snapshot from `self`, not from the text just written. The baseline
+        // is always a serialized `Config`, in which a key absent from the file
+        // still appears at its default. Parsing the text back would instead
+        // record those keys as missing, so the very next save would see every
+        // defaulted key as a change and write the whole struct out, undoing the
+        // preservation this function exists for.
+        record_loaded_snapshot(self);
         Self::invalidate_cache();
         Ok(())
     }
