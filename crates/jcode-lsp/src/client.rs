@@ -927,7 +927,7 @@ fn lookup_section(settings: &Value, section: &str) -> Value {
 /// `canonicalize` is deliberately *not* used: it resolves symlinks, and a server told a
 /// resolved root will report diagnostics against paths the caller never mentioned. Joining
 /// onto the current directory is what `path.resolve` does, and matching it is the point.
-fn path_to_uri(path: &std::path::Path) -> String {
+pub(crate) fn path_to_uri(path: &std::path::Path) -> String {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

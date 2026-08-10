@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 207 lib tests plus 73
+**Tests written exceed cases ported**, deliberately. 230 lib tests plus 82
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what

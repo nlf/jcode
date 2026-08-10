@@ -17,6 +17,7 @@
 //! `correlation`, `client`, `freshness`, `ledger` and `position` are done and
 //! tested.
 
+pub mod actions;
 pub mod client;
 pub mod config;
 pub mod correlation;

@@ -54,6 +54,14 @@ use serde_json::{Value, json};
 struct Observed {
     initialize_count: u32,
     process_id: Option<i64>,
+    /// The `position` of the most recent request that carried one.
+    ///
+    /// So a test can assert the *resolved column* reached the server, rather than trusting the
+    /// client's own account of what it sent. The symbol-to-column resolution is the whole reason the
+    /// tool takes a symbol, and a wrong column produces a plausible answer to a different question.
+    last_position: Value,
+    /// The `context` of the most recent request that carried one, for `includeDeclaration`.
+    last_context: Value,
     /// Per-URI count of `didOpen`. A second open for one URI is a client bug:
     /// the document is already tracked, and re-opening resets the server's
     /// version expectations.
@@ -84,6 +92,8 @@ struct Server {
     hang_on: Option<String>,
     exit_on: Option<String>,
     stop_reading_on: Option<String>,
+    /// Canned results by method name, from `FAKE_LSP_ANSWER`.
+    answers: Value,
 }
 
 impl Server {
@@ -99,6 +109,9 @@ impl Server {
             hang_on: value("FAKE_LSP_HANG_ON"),
             exit_on: value("FAKE_LSP_EXIT_ON"),
             stop_reading_on: value("FAKE_LSP_STOP_READING_ON"),
+            answers: value("FAKE_LSP_ANSWER")
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .unwrap_or(Value::Null),
         }
     }
 
@@ -127,6 +140,11 @@ impl Server {
             let _ = stdout.write_all(&framed);
             let _ = stdout.flush();
         }
+    }
+
+    /// A canned result for this method, if one was configured.
+    fn canned(&self, method: &str) -> Option<Value> {
+        self.answers.get(method).cloned()
     }
 
     fn respond(&self, id: &Value, result: Value) {
@@ -207,6 +225,19 @@ impl Server {
             return;
         }
 
+        // Record the position and context of any request carrying them, before dispatch. A test
+        // asserting "the resolved column reached the server" has to read it from here: the client's
+        // own account of what it sent would be assuming the thing under test.
+        {
+            let mut observed = self.lock();
+            if let Some(position) = params.get("position") {
+                observed.last_position = position.clone();
+            }
+            if let Some(context) = params.get("context") {
+                observed.last_context = context.clone();
+            }
+        }
+
         match method {
             "initialize" => {
                 let mut observed = self.lock();
@@ -233,6 +264,8 @@ impl Server {
                         "didClose": observed.did_close,
                         "notifications": observed.notifications,
                         "openDocuments": observed.documents.len(),
+                        "lastPosition": observed.last_position.clone(),
+                        "lastContext": observed.last_context.clone(),
                     }),
                 );
             }
@@ -335,7 +368,15 @@ impl Server {
             // spec's code. A client that treats "method not found" as a
             // transport failure tears down a healthy server; several of omp's
             // regressions are about exactly that distinction.
-            _ => self.respond_error(id, -32601, &format!("Method not found: {method}")),
+            // Canned answers for real LSP methods, so the action layer can be driven end to end.
+            //
+            // `FAKE_LSP_ANSWER` carries a JSON object mapping method name to result, e.g.
+            // `{"textDocument/definition": [...]}`. A method not in the map still gets -32601, so
+            // "the server does not implement this" remains testable.
+            _ => match self.canned(method) {
+                Some(result) => self.respond(id, result),
+                None => self.respond_error(id, -32601, &format!("Method not found: {method}")),
+            },
         }
     }
 

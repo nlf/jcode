@@ -55,7 +55,12 @@ impl Locations {
             single => vec![single],
         };
 
-        Self(entries.iter().filter_map(|entry| location_of(entry)).collect())
+        Self(
+            entries
+                .iter()
+                .filter_map(|entry| location_of(entry))
+                .collect(),
+        )
     }
 
     pub fn is_empty(&self) -> bool {
