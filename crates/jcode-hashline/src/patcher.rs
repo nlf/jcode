@@ -56,8 +56,20 @@ pub enum RejectReason {
         revealed: Vec<(usize, String)>,
         truncated: bool,
     },
+    /// The patch was well-formed but could not be applied to this file, most
+    /// often an anchor naming a line past the end.
+    Unapplicable { detail: String },
     /// The patch applied cleanly but changed nothing.
     NoOp,
+}
+
+/// Wrap an applier error as a rejection.
+///
+/// The applier reports things like a line number past the end of the file.
+/// Those used to be reported as unseen lines, which named the wrong problem and
+/// told the model to re-read when what it needed was to fix the anchor.
+fn unapplicable(detail: String) -> RejectReason {
+    RejectReason::Unapplicable { detail }
 }
 
 impl RejectReason {
@@ -113,6 +125,10 @@ impl RejectReason {
                 }
                 message
             }
+            Self::Unapplicable { detail } => format!(
+                "Edit rejected for {path}: {detail} Check the line numbers against \
+                 your last read of this file."
+            ),
             Self::NoOp => format!(
                 "Edit produced no change to {path}. The body is byte-identical to what \
                  is already there; re-read the file before issuing another edit."
@@ -157,6 +173,43 @@ pub fn prepare(
     if let Some(expected) = expected_tag
         && expected != actual_tag
     {
+        // The file drifted. Before refusing, try to place the edit anyway.
+        //
+        // Two escapes, in order of how much they assume. An edit that only
+        // appends or prepends does not depend on a line number at all, so drift
+        // cannot have moved its target and it applies with a warning. Anything
+        // anchored has to earn it: recovery proves every anchor still names an
+        // unchanged line before replaying.
+        if !crate::recovery::has_anchor_scoped_op(ops) {
+            let applied = apply_ops(current_text, ops).map_err(unapplicable)?;
+            if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
+                return Err(RejectReason::NoOp);
+            }
+            return Ok(Prepared {
+                path: path.to_string(),
+                before: current_text.to_string(),
+                new_tag: compute_file_hash(&applied.text),
+                after: applied.text,
+                move_dest: applied.move_dest,
+                removed: applied.removed,
+                warnings: vec![crate::recovery::HEADTAIL_DRIFT_WARNING.to_string()],
+            });
+        }
+
+        if let Some(recovered) =
+            crate::recovery::try_recover(store, path, current_text, expected, ops)
+        {
+            return Ok(Prepared {
+                path: path.to_string(),
+                before: current_text.to_string(),
+                new_tag: compute_file_hash(&recovered.text),
+                after: recovered.text,
+                move_dest: recovered.move_dest,
+                removed: recovered.removed,
+                warnings: recovered.warnings,
+            });
+        }
+
         // A tag we minted means the file drifted; one we never minted means the
         // model invented it or carried it from another session.
         let recognized = store.by_hash(path, expected).is_some();
@@ -181,11 +234,7 @@ pub fn prepare(
         assert_seen_lines(store, path, expected, current_text, ops)?;
     }
 
-    let applied = apply_ops(current_text, ops).map_err(|error| RejectReason::UnseenLines {
-        lines: Vec::new(),
-        revealed: vec![(0, error)],
-        truncated: false,
-    })?;
+    let applied = apply_ops(current_text, ops).map_err(unapplicable)?;
 
     if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
         return Err(RejectReason::NoOp);

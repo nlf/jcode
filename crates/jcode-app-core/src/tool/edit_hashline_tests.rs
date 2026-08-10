@@ -64,20 +64,25 @@ async fn a_hashline_edit_applies_against_the_tag_read_minted() {
     );
 }
 
-/// A stale tag is the failure hashline exists to catch: the file changed since
-/// the read, so the line numbers the model is anchoring to may mean something
-/// else entirely. It must refuse rather than apply.
+/// A stale tag means the file changed since the read, so the line numbers the
+/// model is anchoring to may mean something else entirely. When the line it
+/// targeted is still there, recovery relocates the edit onto it and says so.
+///
+/// This test used to assert refusal, which was correct before recovery existed
+/// and is now the wrong half of the behaviour. The refusal case it was really
+/// protecting is the test below.
 #[tokio::test]
-async fn an_edit_against_a_stale_tag_is_refused_and_writes_nothing() {
+async fn an_edit_against_a_stale_tag_is_relocated_onto_its_real_target() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("f.txt");
     std::fs::write(&path, "one\ntwo\n").expect("write");
     let tag = read_tag(temp.path(), "hl-stale", "f.txt").await;
 
     // The file changes underneath, as a concurrent process would change it.
+    // Line 1 is untouched, so the edit still has a provable target.
     std::fs::write(&path, "one\ntwo\nthree\n").expect("rewrite");
 
-    let error = EditTool::new()
+    let output = EditTool::new()
         .execute(
             json!({
                 "file_path": "f.txt",
@@ -86,7 +91,44 @@ async fn an_edit_against_a_stale_tag_is_refused_and_writes_nothing() {
             ctx(temp.path().to_path_buf(), "hl-stale"),
         )
         .await
-        .expect_err("a stale tag must be refused");
+        .expect("line 1 is unchanged, so the edit can be placed");
+
+    // The model is told the tag was stale, so it does not carry on believing
+    // its view of the file is current.
+    assert!(
+        output.output.contains("Recovered from a stale file hash"),
+        "a recovered edit must say so: {}",
+        output.output
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "ONE\ntwo\nthree\n",
+        "the edit lands on its target and the concurrent change survives"
+    );
+}
+
+/// The refusal that hashline exists for: the model's target is the very thing
+/// that changed, so there is nowhere safe to put the edit.
+#[tokio::test]
+async fn an_edit_whose_target_changed_is_refused_and_writes_nothing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("f.txt");
+    std::fs::write(&path, "one\ntwo\n").expect("write");
+    let tag = read_tag(temp.path(), "hl-stale-target", "f.txt").await;
+
+    // A concurrent process rewrites the exact line the model is replacing.
+    std::fs::write(&path, "REPLACED\ntwo\n").expect("rewrite");
+
+    let error = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "f.txt",
+                "input": format!("[f.txt#{tag}]\nPUT 1.=1:\n+ONE"),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-stale-target"),
+        )
+        .await
+        .expect_err("the target no longer exists, so this must be refused");
 
     assert!(
         error.to_string().to_lowercase().contains("read"),
@@ -94,7 +136,7 @@ async fn an_edit_against_a_stale_tag_is_refused_and_writes_nothing() {
     );
     assert_eq!(
         std::fs::read_to_string(&path).expect("read back"),
-        "one\ntwo\nthree\n",
+        "REPLACED\ntwo\n",
         "a refused edit must not write"
     );
 }

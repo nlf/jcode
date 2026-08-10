@@ -13,6 +13,7 @@ pub mod input;
 pub mod parser;
 pub mod patcher;
 pub mod prefixes;
+pub mod recovery;
 pub mod snapshots;
 
 pub use apply::{apply_ops, ApplyResult};
@@ -26,5 +27,9 @@ pub use patcher::{preflight, prepare, Prepared, PreflightError, RejectReason, Se
 pub use prefixes::{
     is_read_metadata_line, parse_payload_text, strip_hashline_prefixes, strip_new_line_prefixes,
     strip_one_leading_hashline_prefix,
+};
+pub use recovery::{
+    has_anchor_scoped_op, try_recover, Recovered, HEADTAIL_DRIFT_WARNING,
+    RECOVERY_EXTERNAL_WARNING, RECOVERY_LINE_REMAP_WARNING, RECOVERY_SESSION_CHAIN_WARNING,
 };
 pub use snapshots::{Snapshot, SnapshotStore, SnapshotStoreOptions};

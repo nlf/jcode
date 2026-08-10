@@ -103,22 +103,58 @@ fn a_second_edit_chains_off_the_first_without_a_re_read() {
 }
 
 /// The guarantee that distinguishes hashline from a line-number editor: an edit
-/// authored against a stale view is refused rather than landing at the wrong
-/// place. This is the multi-agent case that motivated the whole port.
+/// authored against a stale view never lands at the wrong place. This is the
+/// multi-agent case that motivated the whole port.
+///
+/// Note what "never lands wrong" turned out to mean once recovery arrived. It
+/// is not "refuse whenever the file moved": here the line the model targeted
+/// still exists, merely one row lower, so the edit is placed on it and the
+/// other agent's insertion survives. Refusal is the fallback for when that
+/// cannot be proven, not the goal in itself.
 #[test]
-fn an_edit_authored_against_a_stale_view_is_refused() {
+fn an_edit_authored_against_a_stale_view_lands_on_its_real_target() {
     let store = SnapshotStore::new();
     let (tag, _) = simulated_read(&store, "main.rs", SOURCE);
 
-    // Something else rewrites the file: another agent, a formatter, the user.
+    // Something else inserts a line above: another agent, a formatter, the
+    // user. The model's target moves from line 2 to line 3.
     let drifted = "fn main() {\n    let y = 2;\n    let x = 1;\n    println!(\"{x}\");\n}\n";
+
+    let recovered = run_patch(
+        &store,
+        drifted,
+        &format!("[main.rs#{tag}]\nPUT 2.=2:\n+    let x = 42;"),
+    )
+    .expect("the target line is unchanged, so the anchor can be relocated");
+
+    // The model's edit landed on the line it meant, and the concurrent
+    // insertion is still there.
+    assert_eq!(
+        recovered,
+        "fn main() {\n    let y = 2;\n    let x = 42;\n    println!(\"{x}\");\n}\n"
+    );
+}
+
+/// The other half: when the targeted line is the one that changed, there is no
+/// safe place to put the edit and it is refused.
+///
+/// This is the case that must never silently succeed. The model authored a
+/// replacement for content that no longer exists, so applying it anywhere would
+/// discard whatever replaced it.
+#[test]
+fn an_edit_whose_target_line_itself_changed_is_refused() {
+    let store = SnapshotStore::new();
+    let (tag, _) = simulated_read(&store, "main.rs", SOURCE);
+
+    // The very line the model is replacing was rewritten underneath it.
+    let drifted = "fn main() {\n    let x = 99;\n    println!(\"{x}\");\n}\n";
 
     let error = run_patch(
         &store,
         drifted,
         &format!("[main.rs#{tag}]\nPUT 2.=2:\n+    let x = 42;"),
     )
-    .expect_err("the file moved under the model");
+    .expect_err("the target moved under the model");
 
     assert!(matches!(error, RejectReason::StaleTag { .. }), "{error:?}");
 }
