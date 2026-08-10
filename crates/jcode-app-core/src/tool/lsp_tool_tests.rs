@@ -222,3 +222,131 @@ fn the_schema_says_which_action_needs_no_line() {
         "the exception must be documented on the property: {line}"
     );
 }
+
+/// **The project root is the one containing the file, not the session's directory.**
+///
+/// A language server's model is scoped to a root, and root markers live at the project root. So
+/// detecting from the session directory finds nothing whenever the file is somewhere else — which is
+/// the ordinary case, since a session is rooted wherever it started.
+///
+/// Found by running the tool through the real binary. Asking about `/tmp/lsp-accept/main.c` from a
+/// session rooted in the jcode checkout answered:
+///
+/// ```text
+/// No language server handles /tmp/lsp-accept/main.c in this project. Nothing here matches its
+/// file type, so grep or ast_grep is the tool for it.
+/// ```
+///
+/// Both a failure and a wrong explanation: clangd handles `.c` and was installed. Every library test
+/// passed the project as the root directly, so none could see it. That is the difference between
+/// testing a function and testing a tool, and it is why this test exists.
+#[test]
+fn the_project_root_is_found_from_the_file_not_the_session() {
+    let session = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+
+    // A C project, somewhere other than the session directory.
+    std::fs::create_dir_all(elsewhere.path().join("src")).expect("mkdir");
+    std::fs::write(elsewhere.path().join("compile_commands.json"), "[]").expect("write");
+    let file = elsewhere.path().join("src/main.c");
+    std::fs::write(&file, "int main(void) { return 0; }\n").expect("write");
+
+    let defaults = jcode_lsp::config::defaults();
+    let resolved = project_root_for(&file, session.path(), &defaults);
+
+    assert_eq!(
+        resolved,
+        elsewhere.path(),
+        "the root must be the project holding the file, not the session directory"
+    );
+}
+
+/// A file with no project falls back to the session directory.
+///
+/// The only sensible guess, and it preserves the previous behaviour for a file inside the session's
+/// own project.
+#[test]
+fn a_file_with_no_project_falls_back_to_the_session_root() {
+    let session = tempfile::tempdir().expect("tempdir");
+    let orphan = tempfile::tempdir().expect("tempdir");
+    let file = orphan.path().join("lonely.c");
+    std::fs::write(&file, "int main(void) { return 0; }\n").expect("write");
+
+    let defaults = jcode_lsp::config::defaults();
+    assert_eq!(
+        project_root_for(&file, session.path(), &defaults),
+        session.path(),
+        "with no marker anywhere, the session directory is the only guess available"
+    );
+}
+
+/// **Only the markers of servers handling this file are considered.**
+///
+/// Using every server's markers would stop at the first ancestor with a `.git` or a `package.json`,
+/// which for a Rust file in a monorepo is the wrong tree: rust-analyzer needs the crate root, and
+/// given the repository root it resolves imports against the wrong workspace.
+#[test]
+fn an_unrelated_marker_does_not_capture_the_root() {
+    let session = tempfile::tempdir().expect("tempdir");
+    let repo = tempfile::tempdir().expect("tempdir");
+
+    // The discriminating shape: an unrelated marker **below** the real one, so a bottom-up walk
+    // reaches it first. My first version put `package.json` above `Cargo.toml`, which passes either
+    // way -- the walk finds the crate root before it ever sees the outer directory. Caught by
+    // mutating the filter away and watching the test still pass.
+    //
+    // Here `src/` carries a `package.json` and the crate root carries `Cargo.toml`. Only filtering
+    // markers to servers that handle `.rs` reaches the crate.
+    std::fs::write(repo.path().join("Cargo.toml"), "[package]\n").expect("write");
+    let src = repo.path().join("src");
+    std::fs::create_dir_all(&src).expect("mkdir");
+    std::fs::write(src.join("package.json"), "{}").expect("write");
+    let file = src.join("lib.rs");
+    std::fs::write(&file, "pub fn f() {}\n").expect("write");
+
+    let defaults = jcode_lsp::config::defaults();
+    assert_eq!(
+        project_root_for(&file, session.path(), &defaults),
+        repo.path(),
+        "a .rs file must root at its crate, not at a package.json that happens to sit beside it"
+    );
+}
+
+/// **`execute` uses the file's project, verified through `execute` itself.**
+///
+/// The three tests above call `project_root_for` directly, and a mutation replacing `execute`'s call
+/// to it with the session root survived all of them: they proved the helper works and said nothing
+/// about whether anything uses it. Exactly the gap that let the original bug ship.
+///
+/// This one goes through the public entry point with a session rooted somewhere else, and asserts on
+/// what a caller receives. It needs no language server installed: the assertion is that the tool does
+/// *not* say "nothing here matches its file type", which is what it said when the root was wrong.
+#[tokio::test]
+async fn execute_resolves_the_root_from_the_file_not_the_session() {
+    let session = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+
+    // A C project, somewhere other than the session directory.
+    std::fs::write(elsewhere.path().join("compile_commands.json"), "[]").expect("write");
+    let file = elsewhere.path().join("main.c");
+    std::fs::write(&file, "int main(void) { return 0; }\n").expect("write");
+
+    let output = tool()
+        .execute(
+            json!({"action": "symbols", "file": file.to_string_lossy()}),
+            ctx(session.path()),
+        )
+        .await;
+
+    // Three outcomes are all acceptable and all prove the root was resolved: a real answer, or a
+    // "not installed" message naming clangd, or a start failure. What must not appear is the
+    // wrong-extension message, which is what a session-rooted detect produced.
+    let text = match &output {
+        Ok(output) => output.output.clone(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        !text.contains("Nothing here matches its file type"),
+        "the root was taken from the session rather than from the file: {text}"
+    );
+}

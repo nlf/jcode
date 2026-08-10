@@ -152,14 +152,28 @@ impl Tool for LspTool {
             .ok_or_else(|| anyhow::anyhow!("lsp requires 'file'"))?;
         let file = ctx.resolve_path(std::path::Path::new(file));
 
-        let root = ctx
+        let session_root = ctx
             .working_dir
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from("."));
 
+        // **The root is the project containing the file, not the session's directory.**
+        //
+        // A language server's whole model is scoped to a root, and root markers live at the project
+        // root -- so detecting from the session directory finds nothing whenever the file is
+        // somewhere else. Caught by running the tool through the real binary rather than the library:
+        // asking about `/tmp/lsp-accept/main.c` from a session rooted in the jcode checkout reported
+        // "No language server handles main.c in this project", which is both a failure and a wrong
+        // explanation -- clangd handles `.c` and was installed.
+        //
+        // The library tests all passed the project as the root directly, so none of them could see
+        // this. It is the difference between testing a function and testing a tool.
+        let defaults = config::defaults();
+        let root = project_root_for(&file, &session_root, &defaults);
+
         // Which servers apply here, and which of them is installed. `detect` walks the filesystem
         // and spawns nothing.
-        let (available, unavailable) = config::detect(&config::defaults(), &root, None);
+        let (available, unavailable) = config::detect(&defaults, &root, None);
         let candidates = config::servers_for_file(&available, &file);
         let Some(server) = candidates.first() else {
             return Ok(ToolOutput::new(no_server_message(
@@ -195,6 +209,59 @@ impl Tool for LspTool {
             Err(error) => Err(anyhow::anyhow!("{error}")),
         }
     }
+}
+
+/// The project root for a file: the nearest ancestor carrying a root marker.
+///
+/// Falls back to the session directory when nothing matches, which keeps the previous behaviour for
+/// a file inside the session's own project and is the only sensible guess otherwise.
+///
+/// Only the markers of servers that handle *this* file are considered. Using every marker would stop
+/// at the first ancestor with a `.git` or a `package.json`, which for a Rust file in a monorepo is
+/// the wrong tree — the crate root is what `rust-analyzer` needs.
+fn project_root_for(
+    file: &std::path::Path,
+    session_root: &std::path::Path,
+    defaults: &config::Config,
+) -> std::path::PathBuf {
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let dotted = format!(".{extension}");
+    let basename = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let markers: Vec<String> = defaults
+        .servers
+        .values()
+        .filter(|server| {
+            server.file_types.iter().any(|file_type| {
+                let declared = file_type.to_ascii_lowercase();
+                let bare = declared.strip_prefix('.').unwrap_or(&declared).to_string();
+                (!extension.is_empty() && (declared == dotted || bare == extension))
+                    || declared == basename
+                    || bare == basename
+            })
+        })
+        .flat_map(|server| server.root_markers.iter().cloned())
+        .collect();
+
+    if !markers.is_empty() {
+        let mut directory = file.parent();
+        while let Some(candidate) = directory {
+            if config::has_root_markers(candidate, &markers) {
+                return candidate.to_path_buf();
+            }
+            directory = candidate.parent();
+        }
+    }
+
+    session_root.to_path_buf()
 }
 
 /// Why no server handled this file, in terms the reader can act on.
