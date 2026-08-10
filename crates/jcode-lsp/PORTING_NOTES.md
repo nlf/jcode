@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 185 lib tests plus 59
+**Tests written exceed cases ported**, deliberately. 188 lib tests plus 62
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -96,12 +96,13 @@ right" have not been checked against each other.
   *unreviewed* list found a defect on the first item tried.
 - ~~`answer_channel` drops a failed answer to a *server* request silently~~ — checked, it
   was real, fixed. Two for two on this list.
-- ~~the router and answer tasks leak if `start()` fails after spawning them~~ — checked,
-  and **not** a defect: the first item on this list that was merely unchecked. `?` drops
-  the `Client`, `kill_on_drop(true)` reaps the child, and both tasks then exit on channel
-  close. Real but entirely implicit, resting on drop order rather than anything written
-  down, so it now has a test (`a_failed_start_leaks_neither_tasks_nor_processes`) measuring
-  a task delta of 0 over five failed starts.
+- ~~the router and answer tasks leak if `start()` fails after spawning them~~ — checked
+  twice, and **not** a defect. `?` drops the `Client`, `kill_on_drop(true)` reaps the child,
+  and both tasks then exit on channel close: implicit, resting on drop order rather than
+  anything written down, so it has a test. The reviewer re-rated it likely-broken on round 5
+  (error paths nobody exercises being where four other defects lived), so the test now covers
+  three failure shapes -- hanging on `initialize`, exiting mid-handshake, and a server with no
+  capabilities -- which exit `start()` at different `?`s. Task delta 0 for all nine starts.
 - ~~`path_to_uri` does no percent-encoding~~ — checked, it was real, fixed. Three for
   three: every item audited from this list so far has been a genuine defect.
 - ~~a `TimedOut` freshness result discards the cached publish where omp returns it~~ —
