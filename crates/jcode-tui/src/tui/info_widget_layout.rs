@@ -22,9 +22,16 @@ const MIN_WIDGET_HEIGHT: u16 = 5;
 /// usage, memory activity, and compaction could never appear standalone.
 const MIN_COLUMN_WIDGET_HEIGHT: u16 = 3;
 /// Preferred width of the bare widget gutter when no side panel content is
-/// present to widen the column. Wide enough to clear [`MIN_WIDGET_WIDTH`] plus
-/// the borders the widgets draw for themselves.
-pub(crate) const COLUMN_GUTTER_WIDTH: u16 = 30;
+/// present to widen the column.
+///
+/// Matches [`MAX_WIDGET_WIDTH`], the widest a widget is ever allowed to be, so
+/// a widget in the column is never narrower than the same widget placed in the
+/// transcript margin. The 30 this used to be was chosen to clear
+/// [`MIN_WIDGET_WIDTH`] plus borders, which made the reserved column the
+/// *narrowest* place a widget could land, which is the opposite of the intent. The
+/// margin cap exists to stop a widget eating the transcript's breathing room,
+/// and that argument does not apply to space the column has already reserved.
+pub(crate) const COLUMN_GUTTER_WIDTH: u16 = MAX_WIDGET_WIDTH;
 /// Rows the column reserves for the separator between the widget stack and the
 /// side panel content below it.
 pub(crate) const COLUMN_SEPARATOR_HEIGHT: u16 = 1;

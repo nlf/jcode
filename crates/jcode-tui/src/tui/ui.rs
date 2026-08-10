@@ -3187,8 +3187,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         };
         let max_diff = chat_area.width.saturating_sub(MIN_CHAT_WIDTH);
         if max_diff >= MIN_DIFF_WIDTH {
-            // Widgets alone only justify a narrow gutter. Panel content widens
-            // the shared column to the usual ratio.
+            // Widgets alone justify only the gutter width, not the full panel
+            // ratio. Panel content widens the shared column to the usual ratio.
             let diff_width = if has_right_side_pane_content {
                 (((chat_area.width as u32 * effective_ratio) / 100) as u16)
                     .max(MIN_DIFF_WIDTH)
