@@ -551,3 +551,90 @@ async fn a_write_that_blocks_partway_reports_a_partial_frame() {
         "the transport was not poisoned, so a later write would corrupt the stream: {after:?}"
     );
 }
+
+/// **A writer that queues behind a blocked write must not write onto its half-frame.**
+///
+/// The poison check ran once, at entry, *before* acquiring the stdin mutex. A writer that
+/// passed it and then queued behind a blocked write was holding stale information: by the time
+/// it got the lock, the writer ahead had timed out and poisoned the stream.
+///
+/// Measured before the fix, with A blocking mid-frame and C arriving 50ms later:
+///
+/// ```text
+/// A = Err(Blocked { after: 300ms, partial: true })
+/// C = Err(Blocked { after: 5s,    partial: false })   after 5.0015s
+/// ```
+///
+/// Two harms. C's bytes land on A's half-frame, so a server that is merely slow rather than
+/// dead -- a GC pause, a workspace scan -- eventually parses garbage. And C's caller is told
+/// "blocked, not partial" one call before the entry check tells it "partial" on the retry: two
+/// contradictory diagnoses of one connection, which is worse for triage than either alone.
+///
+/// After the fix C fails in ~250ms with `partial: true`, which is the same answer the entry
+/// check would have given had it been asked a moment later.
+///
+/// Found by an adversarial reviewer on the sixth pass, in the function rewritten to fix the
+/// fifth pass's finding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_queued_writer_does_not_append_to_a_poisoned_stream() {
+    let (transport, _rx) = spawn(&[("FAKE_LSP_STOP_READING_ON", "test/wedge")]);
+    send_request(&transport, 1, "test/wedge", json!({})).await;
+    // Let the server stop draining stdin.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let writer = transport.writer();
+    // Nearly fill the pipe, so writer A blocks *inside* its frame rather than before it. Seven
+    // 8 KiB writes is what it takes here; a failure just means the pipe filled sooner, which is
+    // still a valid starting state for what follows.
+    for _ in 0..7 {
+        if writer
+            .send(&vec![b'x'; 8 * 1024], Duration::from_millis(200))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    // A blocks mid-frame holding the lock, times out, and poisons the transport.
+    let ahead = {
+        let writer = writer.clone();
+        tokio::spawn(async move {
+            writer
+                .send(&vec![b'a'; 32 * 1024], Duration::from_millis(300))
+                .await
+        })
+    };
+
+    // C arrives while A holds the lock, so its entry check sees an unpoisoned transport. Its
+    // deadline is deliberately long: the assertion is that it does *not* pay it.
+    let queued = {
+        let writer = writer.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let started = std::time::Instant::now();
+            let outcome = writer.send(b"{\"queued\":1}", Duration::from_secs(5)).await;
+            (outcome, started.elapsed())
+        })
+    };
+
+    let ahead = ahead.await.expect("writer A panicked");
+    let (queued, took) = queued.await.expect("writer C panicked");
+
+    assert!(
+        matches!(ahead, Err(WriteError::Blocked { partial: true, .. })),
+        "the first writer should have blocked partway and poisoned the stream; got {ahead:?}"
+    );
+
+    let failure = queued.expect_err("a poisoned transport must refuse the queued write");
+    assert!(
+        failure.desynchronised(),
+        "the queued writer was told the stream was fine and wrote onto a half-frame: \
+         {failure:?}"
+    );
+    assert!(
+        took < Duration::from_secs(2),
+        "the queued writer paid its own deadline instead of being refused immediately; \
+         took {took:?}"
+    );
+}

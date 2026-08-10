@@ -175,6 +175,11 @@ impl Writer {
 /// silently. omp gets the same protection differently: their `LspDrainAbortError`
 /// path tears the client down on an aborted drain, with a comment saying an abort
 /// that raced an in-flight drain is the only case that leaves the sink pending.
+/// Marker for the post-lock poison check, mapped back to the entry-refusal shape below.
+///
+/// Never reaches a caller: [`write_framed`] translates it.
+const POISONED_WHILE_QUEUED: &str = "jcode-lsp: transport poisoned while this write queued";
+
 async fn write_framed(
     stdin: &Arc<Mutex<Option<ChildStdin>>>,
     poisoned: &Arc<AtomicBool>,
@@ -198,9 +203,40 @@ async fn write_framed(
 
     let write = {
         let written = Arc::clone(&written);
-        let framed = framed.clone();
+        // `framed` is moved rather than cloned: nothing else touches it after this point. It
+        // was a clone, which copied the whole frame on every write for no reason -- a reviewer
+        // spotted it while checking the rest of the function. Harmless at 100-byte requests and
+        // not at a 20,000-section configuration answer.
         async move {
             let mut guard = stdin.lock().await;
+            // **Re-checked after acquiring the lock, not only at entry.**
+            //
+            // The entry check happens before the mutex, so a writer that passes it and then
+            // queues behind a blocked write is holding stale information: by the time it gets
+            // the lock, the writer ahead of it may have timed out and poisoned the stream.
+            //
+            // Measured, with a writer A blocking mid-frame and a writer C arriving 50ms later:
+            // C passed the entry check, waited for the lock, and then wrote its frame onto A's
+            // half-frame -- paying its own full 5-second deadline and reporting
+            // `Blocked { partial: false }`, with no mention of desynchronisation, against a
+            // transport that was already poisoned. Two harms: C's bytes land on a half-frame,
+            // so a server that is merely slow rather than dead parses garbage; and C's caller
+            // is told "blocked, not partial" one call before being told "partial" by the entry
+            // check on its retry -- two contradictory diagnoses of the same connection.
+            //
+            // `Blocked` with a zero duration rather than an error, matching the entry refusal,
+            // because from the caller's side this *is* the entry refusal: it simply learned the
+            // truth a moment later than it asked.
+            //
+            // Found by an adversarial reviewer on the sixth pass, in a function rewritten to
+            // fix the fifth pass's finding.
+            if poisoned.load(Ordering::SeqCst) {
+                // `Other` with a marker message, recognised below. A dedicated error type for
+                // the write future would be cleaner, but the future's whole point is to be a
+                // plain `io` operation the timeout can wrap; a sentinel that never escapes this
+                // function is the smaller change.
+                return Err(std::io::Error::other(POISONED_WHILE_QUEUED));
+            }
             let Some(pipe) = guard.as_mut() else {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::BrokenPipe,
@@ -244,6 +280,17 @@ async fn write_framed(
 
     match tokio::time::timeout(deadline, write).await {
         Ok(Ok(())) => Ok(()),
+        // The post-lock poison check. Reported exactly as the entry check would have, since
+        // that is what it is: the same refusal, learned after waiting for the lock.
+        Ok(Err(source))
+            if source.kind() == std::io::ErrorKind::Other
+                && source.to_string() == POISONED_WHILE_QUEUED =>
+        {
+            Err(WriteError::Blocked {
+                after: Duration::ZERO,
+                partial: true,
+            })
+        }
         Ok(Err(source)) => Err(WriteError::Closed { source }),
         Err(_) => {
             // The lock is **released** here, not held.
