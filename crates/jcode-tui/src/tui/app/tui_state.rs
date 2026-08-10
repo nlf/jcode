@@ -13,6 +13,20 @@ const REMOTE_STARTUP_HEADER_DEBOUNCE: Duration = Duration::from_millis(400);
 /// grace period.
 const REMOTE_LOADING_HEADER_GRACE: Duration = Duration::from_secs(3);
 
+/// Whether usage numbers should render as last-known-good rather than live.
+///
+/// Stale means exactly one thing: the most recent refresh failed, but earlier
+/// numbers survived and are still worth showing. An error with nothing behind
+/// it is not stale, it is simply absent, and the widget hides instead.
+///
+/// This is a named function rather than an inline `&&` because it is the rule
+/// both the Anthropic and OpenAI branches have to agree on, and inline copies
+/// of it were provably untested: mutating the OpenAI copy to `true` broke no
+/// test in the entire 2261-test suite.
+pub(super) fn usage_is_stale(refresh_failed: bool, has_prior_numbers: bool) -> bool {
+    refresh_failed && has_prior_numbers
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WidgetProviderKind {
     Anthropic,
@@ -450,7 +464,7 @@ impl App {
                     cache_write_tokens: None,
                     output_tps,
                     available: !has_error || usable,
-                    stale: has_error && usable,
+                    stale: usage_is_stale(has_error, usable),
                 })
             }
             WidgetProviderKind::OpenAI => {
@@ -503,9 +517,10 @@ impl App {
                     cache_write_tokens: None,
                     output_tps,
                     available: openai_usage.has_limits(),
-                    // OpenAI windows carry their own presence signal; mark
-                    // them stale when a refresh failed but limits survive.
-                    stale: openai_usage.last_error.is_some() && openai_usage.has_limits(),
+                    stale: usage_is_stale(
+                        openai_usage.last_error.is_some(),
+                        openai_usage.has_limits(),
+                    ),
                 })
             }
             WidgetProviderKind::Gemini => None,
@@ -2335,6 +2350,7 @@ mod swarm_panel_key_tests {
 #[cfg(test)]
 mod inline_swarm_subtree_tests {
     use super::filter_inline_swarm_subtree;
+    use super::usage_is_stale;
     use crate::protocol::SwarmMemberStatus;
 
     fn member(id: &str, parent: Option<&str>) -> SwarmMemberStatus {
@@ -2433,6 +2449,32 @@ mod inline_swarm_subtree_tests {
         assert_eq!(
             ids(filter_inline_swarm_subtree(&members, "me")),
             vec!["child"]
+        );
+    }
+
+    /// The stale rule shared by the Anthropic and OpenAI usage branches.
+    ///
+    /// Worth pinning directly. While each branch carried its own inline `&&`,
+    /// the OpenAI copy could be mutated to a constant `true` without a single
+    /// one of the suite's 2261 tests noticing. A rule no test can distinguish
+    /// from its own negation is untested, however many tests run nearby.
+    #[test]
+    fn usage_is_stale_only_when_a_failed_refresh_has_prior_numbers_behind_it() {
+        assert!(
+            usage_is_stale(true, true),
+            "a failed refresh over real numbers is the stale case"
+        );
+        assert!(
+            !usage_is_stale(false, true),
+            "a healthy fetch is fresh, never stale"
+        );
+        assert!(
+            !usage_is_stale(true, false),
+            "an error with nothing behind it is absent, not stale: the widget hides"
+        );
+        assert!(
+            !usage_is_stale(false, false),
+            "no error and no data is not stale either"
         );
     }
 }

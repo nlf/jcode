@@ -472,7 +472,6 @@ mod tests {
                 raw.contains("token-hash:"),
                 "token keys should persist as a hash: {raw}"
             );
-
             // The hash must still round-trip, or the shared cache silently
             // stops working for token-keyed lookups.
             assert!(
@@ -491,6 +490,46 @@ mod tests {
                 raw.contains("label:claude-1"),
                 "non-sensitive label keys stay readable for debugging: {raw}"
             );
+        });
+    }
+
+    /// The cache is written with `write_json_secret`, which is what keeps it
+    /// owner-only. Nothing asserted that, so a future switch back to
+    /// `write_json_fast` (which is otherwise a reasonable-looking change for a
+    /// non-durable cache) would silently widen the permissions. Pin it, and
+    /// pin the `.bak` sibling that the atomic write leaves behind, which is
+    /// easy to forget precisely because no code names it.
+    #[cfg(unix)]
+    #[test]
+    fn cache_file_and_its_backup_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        with_temp_home(|| {
+            let path = usage_cache_path().expect("path");
+
+            // Write twice: the second write is what creates the .bak sibling.
+            store_entry("label:claude-1", &sample_usage());
+            store_entry("label:claude-1", &sample_usage());
+
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "usage cache must be owner-only, got {mode:o}");
+
+            let bak = path.with_extension("bak");
+            if bak.exists() {
+                let bak_mode = std::fs::metadata(&bak)
+                    .expect("bak metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(
+                    bak_mode, 0o600,
+                    "the backup sibling must be owner-only too, got {bak_mode:o}"
+                );
+            }
         });
     }
 }
