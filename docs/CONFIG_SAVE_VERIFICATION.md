@@ -117,6 +117,30 @@ as integration binaries, so it would never have run anywhere.
 | the cohort really includes these tests | `--list` on the CI filter | 17 `format_tests` + `color_tests` present |
 | the integration test runs in CI | named explicitly; ran the wrapper locally | 1 passed, exit 0 |
 | the workflow is still valid | parsed the YAML, located the step | present in the `build` job |
+| the step is cheap enough to keep | timed both, harness prebuilt | 0.07s and 0.03s of test time; ~8s and ~2s wall including cargo |
+
+### The larger gap this sits inside
+
+Worth stating plainly, because fixing my corner should not be mistaken for
+fixing the problem. Counted after the step above landed:
+
+| | count |
+|---|---|
+| `jcode-base` lib tests that exist | 1301 |
+| run in CI by the `secret_input` cohort | 2 |
+| run in CI by the new `config::` cohort | 101 |
+| **still compiled but never executed** | **1198** |
+
+This is a deliberate design — CI compiles everything (`--lib --bins --no-run`)
+and then runs a handful of named cohorts, presumably for runtime cost — and the
+same shape holds across the workspace: `jcode-app-core` contributes one
+`retention_readiness` cohort, `jcode-tui` runs its lib tests on Linux only.
+
+So the pattern is understood and my step follows it correctly. But 1198
+unexecuted tests in one crate means any of them can rot into a false green, and
+the workflow's own comments record this having happened at least three times
+(#660, #651, the warning budget). Raising that is out of scope here; ignoring it
+after tripping over it would be worse.
 
 ## Method notes worth keeping
 
