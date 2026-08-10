@@ -600,3 +600,58 @@ fn a_formatted_multi_line_diagnostic_keeps_its_notes_in_the_identity() {
         "the leading location must still be stripped: {identity:?}"
     );
 }
+
+/// **A warning that quotes an error is still a warning.**
+///
+/// `is_error` was `message.contains("[error]")`, so a diagnostic citing another diagnostic --
+/// "[warning] cast produces [error] string" -- set the errored flag. TypeScript and rustc both
+/// emit that shape, so it was ordinary input, and the flag drives whether a caller reports a file
+/// as broken.
+///
+/// The doc comment on the old version explained that the brackets defend against the *word*
+/// "error" appearing in a message. True, and silent about the marker itself appearing, which is
+/// the case that mattered. Now shares `format::first_severity_marker` with the formatter so the
+/// two cannot drift apart again.
+///
+/// Found by an adversarial reviewer on the seventh pass, in the same family as their
+/// `summarize_formatted` finding.
+#[test]
+fn a_warning_quoting_an_error_does_not_set_the_error_flag() {
+    let mut ledger = Ledger::new();
+    let reduced = ledger.reduce(
+        "src/a.ts",
+        &["src/a.ts:1:1 [warning] cast produces [error] string".to_string()],
+    );
+
+    assert_eq!(
+        reduced.messages.len(),
+        1,
+        "the diagnostic must still be reported"
+    );
+    assert!(
+        !reduced.errored,
+        "a warning that mentions an error is not an error: {reduced:?}"
+    );
+}
+
+/// A real error still sets the flag, so the fix did not simply disable it.
+#[test]
+fn a_real_error_still_sets_the_error_flag() {
+    let mut ledger = Ledger::new();
+    let reduced = ledger.reduce("src/a.ts", &["src/a.ts:1:1 [error] boom".to_string()]);
+    assert!(reduced.errored);
+
+    // Mixed: one warning quoting an error, one genuine error. The genuine one decides.
+    let mut ledger = Ledger::new();
+    let reduced = ledger.reduce(
+        "src/b.ts",
+        &[
+            "src/b.ts:1:1 [warning] mentions [error] here".to_string(),
+            "src/b.ts:9:1 [error] genuinely broken".to_string(),
+        ],
+    );
+    assert!(
+        reduced.errored,
+        "a genuine error alongside a quoting warning must still set the flag"
+    );
+}

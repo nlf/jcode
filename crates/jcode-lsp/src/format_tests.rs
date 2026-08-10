@@ -298,3 +298,66 @@ fn a_malformed_diagnostic_still_formats() {
         "a.rs:1:1 [error] whole file"
     );
 }
+
+/// **The first severity marker by position wins, not the worst one present.**
+///
+/// omp matches `/\[(error|warning|info|hint)\]/i`, which finds the earliest marker. My first
+/// version looped over the four names and took the first found *anywhere*, which orders by
+/// severity instead of position.
+///
+/// Expectations printed by omp's `summarizeDiagnosticMessages` in node:
+///
+/// ```text
+/// "[warning] cast produces [error] string"  ->  1 warning(s), errored = false
+/// "[hint] see [warning] above"              ->  1 hint(s),    errored = false
+/// ```
+///
+/// Mine said "1 error(s), errored = true" for the first. A diagnostic quoting another diagnostic
+/// is ordinary in TypeScript and rustc output, so this reported warnings as errors on real input
+/// -- and `errored` carries that all the way to the caller.
+///
+/// Found by an adversarial reviewer on the seventh pass. It is the same transcribed-by-eye mistake
+/// the formatter port existed to eliminate, made inside the port: faithful to the format string,
+/// unfaithful to the regex beside it.
+#[test]
+fn the_first_marker_by_position_decides_the_severity() {
+    let cases: &[(&str, &str, bool)] = &[
+        (
+            "src/a.ts:1:1 [warning] cast produces [error] string",
+            "1 warning(s)",
+            false,
+        ),
+        (
+            "src/a.ts:1:1 [hint] see [warning] above",
+            "1 hint(s)",
+            false,
+        ),
+        ("src/a.ts:1:1 [error] plain", "1 error(s)", true),
+    ];
+    for (message, summary, errored) in cases {
+        assert_eq!(
+            summarize_formatted(&[message.to_string()]),
+            (summary.to_string(), *errored),
+            "for {message:?}, which omp's regex summarises as {summary:?}"
+        );
+    }
+}
+
+/// A bracketed word that is not a severity does not stop the scan.
+///
+/// The path may contain brackets, and a message may say `[note]` or `[deprecated]`. Stopping at the
+/// first `[` would find nothing and report "no issues" over a real error, which is the worst
+/// direction for this function to fail.
+#[test]
+fn a_non_severity_bracket_does_not_end_the_search() {
+    let (summary, errored) =
+        summarize_formatted(&["a.ts:1:1 [note] [deprecated] [error] boom".to_string()]);
+    assert_eq!(summary, "1 error(s)");
+    assert!(errored);
+
+    // And a message with no marker at all is counted nowhere rather than guessed at.
+    assert_eq!(
+        summarize_formatted(&["a.ts:1:1 something unformatted".to_string()]),
+        ("no issues".to_string(), false)
+    );
+}

@@ -188,16 +188,51 @@ pub fn summarize(diagnostics: &[Value]) -> String {
 pub fn summarize_formatted(messages: &[String]) -> (String, bool) {
     let mut counts = [0usize; 4];
     for message in messages {
-        // The first `[...]` marker that names a severity. Scanned rather than regexed, and
-        // deliberately not anchored: the path precedes it.
-        for (index, name) in ["error", "warning", "info", "hint"].iter().enumerate() {
-            if message.to_ascii_lowercase().contains(&format!("[{name}]")) {
-                counts[index] += 1;
-                break;
-            }
+        if let Some(index) = first_severity_marker(message) {
+            counts[index] += 1;
         }
     }
     (render_counts(counts), counts[0] > 0)
+}
+
+/// The index of the **first** `[severity]` marker by position, or `None`.
+///
+/// # Why position rather than a name-ordered search
+///
+/// omp matches `/\[(error|warning|info|hint)\]/i`, which finds the earliest marker in the string.
+/// My first version looped over the four names and took the first that appeared *anywhere*, which
+/// is a different function: it is ordered by severity, not by position.
+///
+/// Measured divergence, against omp's actual regex in node:
+///
+/// ```text
+/// "src/a.ts:1:1 [warning] cast produces [error] string"
+///   omp:  1 warning(s), errored = false
+///   mine: 1 error(s),   errored = true
+/// ```
+///
+/// A diagnostic quoting another diagnostic is ordinary -- TypeScript and rustc both do it -- so a
+/// warning was being reported as an error, and `errored` drove that all the way out to the caller.
+///
+/// This is precisely the transcribed-by-eye class of mistake the formatter port was written to
+/// eliminate, and I made it in the port itself: faithful to the format string, unfaithful to the
+/// regex. Found by an adversarial reviewer on the seventh pass.
+///
+/// Returns the index into the severity arrays used by [`render_counts`], so the caller does not
+/// re-map names to positions.
+pub(crate) fn first_severity_marker(message: &str) -> Option<usize> {
+    let lowered = message.to_ascii_lowercase();
+    let mut from = 0usize;
+    while let Some(offset) = lowered[from..].find('[') {
+        let start = from + offset;
+        for (index, name) in ["error", "warning", "info", "hint"].iter().enumerate() {
+            if lowered[start..].starts_with(&format!("[{name}]")) {
+                return Some(index);
+            }
+        }
+        from = start + 1;
+    }
+    None
 }
 
 fn render_counts(counts: [usize; 4]) -> String {

@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 203 lib tests plus 63
+**Tests written exceed cases ported**, deliberately. 207 lib tests plus 63
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -399,6 +399,12 @@ Two deliberate divergences, both on the test file:
   column because it never claims to align one. Ours is tested for it
   (`a_tab_advances_to_the_next_stop_rather_than_a_fixed_width`), and that test
   fails against omp's own algorithm — which is the point of writing it down.
+
+One cosmetic divergence in `format::sort_diagnostics`: the message tie-break is a byte compare
+where omp uses `localeCompare`, so mixed-case messages at the same position order differently
+(`A B a b` versus `a A b B`). Display order only — the message is not part of the ledger identity,
+so nothing behavioural depends on it. Recorded rather than fixed, because matching
+`localeCompare` means a collation dependency for the order of two diagnostics on one line.
 
 ANSI stripping was **not** reimplemented. `jcode-base` already had a stripper more
 thorough than omp's regex, but `jcode-base` takes two minutes to compile and this

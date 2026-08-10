@@ -228,7 +228,18 @@ impl Ledger {
 /// error type") is not necessarily an error, and misclassifying a warning as one
 /// tells the caller an edit broke the build when it did not.
 fn is_error(message: &str) -> bool {
-    message.contains("[error]")
+    // The **first** severity marker, not any occurrence of `[error]`.
+    //
+    // This was `message.contains("[error]")`, which is the same bug the formatter's
+    // `summarize_formatted` had: a warning quoting an error -- "[warning] cast produces [error]
+    // string" -- was reported as an error. TypeScript and rustc both emit diagnostics that cite
+    // other diagnostics, so it is ordinary text rather than a contrived one.
+    //
+    // Shares `format::first_severity_marker` so the two cannot drift apart again, which they had
+    // already done once: the doc comment here used to explain that the marker brackets defend
+    // against the *word* "error" appearing in a message, and it was right about that and silent
+    // about the marker itself appearing.
+    crate::format::first_severity_marker(message) == Some(0)
 }
 
 #[cfg(test)]
