@@ -26,7 +26,10 @@ fn ctx(working_dir: std::path::PathBuf, session_id: &str) -> ToolContext {
 /// only supported way to obtain one.
 async fn read_tag(dir: &std::path::Path, session: &str, file: &str) -> String {
     let output = crate::tool::read::ReadTool::new()
-        .execute(json!({ "file_path": file }), ctx(dir.to_path_buf(), session))
+        .execute(
+            json!({ "file_path": file }),
+            ctx(dir.to_path_buf(), session),
+        )
         .await
         .expect("read");
     let header = output.output.lines().next().unwrap_or_default();
@@ -656,7 +659,6 @@ async fn the_title_names_every_file_a_patch_touched() {
         "the title should name both files, got {title:?}"
     );
 }
-
 
 /// A tag read minted must be recognised as *stale* when the file changes, not
 /// reported as belonging to another session.

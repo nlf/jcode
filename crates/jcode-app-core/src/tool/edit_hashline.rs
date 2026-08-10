@@ -18,7 +18,7 @@
 
 use super::{ToolContext, ToolOutput};
 use anyhow::Result;
-use jcode_hashline::{parse_ops, preflight, split_sections, Prepared, SectionInput};
+use jcode_hashline::{Prepared, SectionInput, parse_ops, preflight, split_sections};
 use std::path::Path;
 
 /// Whether to refuse edits to lines no `read` displayed.
@@ -88,9 +88,8 @@ pub async fn execute_hashline(
             )));
         }
         let current_text = tokio::fs::read_to_string(&path).await?;
-        let ops = parse_ops(&section.body).map_err(|error| {
-            anyhow::anyhow!("{} in section [{}]", error, section.path)
-        })?;
+        let ops = parse_ops(&section.body)
+            .map_err(|error| anyhow::anyhow!("{} in section [{}]", error, section.path))?;
         resolved.push(Resolved {
             authored: section.path.clone(),
             resolved: path,

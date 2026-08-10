@@ -17,11 +17,11 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use jcode_ast::{
-    plan, resolve_language, search, RewriteOptions, RewritePlan, SearchFailure, SearchOptions,
+    RewriteOptions, RewritePlan, SearchFailure, SearchOptions, plan, resolve_language, search,
 };
-use jcode_search::{resolve_targets, WalkOptions};
+use jcode_search::{WalkOptions, resolve_targets};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Unknown fields are tolerated rather than rejected, matching the other tools:
 /// one failed native call sends a model back to bash for the session.
@@ -384,13 +384,19 @@ impl Tool for AstEditTool {
             written += 1;
         }
 
-        Ok(ToolOutput::new(render_plan(&plan, &store)).with_title(format!(
-            "ast_edit {} replacement{} in {} file{}",
-            plan.total_replacements,
-            if plan.total_replacements == 1 { "" } else { "s" },
-            written,
-            if written == 1 { "" } else { "s" }
-        )))
+        Ok(
+            ToolOutput::new(render_plan(&plan, &store)).with_title(format!(
+                "ast_edit {} replacement{} in {} file{}",
+                plan.total_replacements,
+                if plan.total_replacements == 1 {
+                    ""
+                } else {
+                    "s"
+                },
+                written,
+                if written == 1 { "" } else { "s" }
+            )),
+        )
     }
 }
 
@@ -416,7 +422,10 @@ fn no_change_message(plan: &RewritePlan) -> String {
     body
 }
 
-fn render_plan(plan: &RewritePlan, store: &std::sync::Arc<jcode_hashline::SnapshotStore>) -> String {
+fn render_plan(
+    plan: &RewritePlan,
+    store: &std::sync::Arc<jcode_hashline::SnapshotStore>,
+) -> String {
     let mut body = format!(
         "Rewrote {} match(es) in {} file(s):\n\n",
         plan.total_replacements,

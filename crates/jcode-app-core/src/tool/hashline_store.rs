@@ -109,7 +109,9 @@ mod tests {
         let tag = for_session("registry-same").record("f.txt", "one\n", None);
 
         assert!(
-            for_session("registry-same").by_hash("f.txt", &tag).is_some(),
+            for_session("registry-same")
+                .by_hash("f.txt", &tag)
+                .is_some(),
             "a second lookup in one session missed the first call's snapshot"
         );
     }

@@ -890,7 +890,6 @@ async fn bash_refuses_to_delete_the_home_directory() {
         )
         .await;
 
-
     let error = result.expect_err("deleting HOME must be refused");
     assert!(
         error.to_string().contains("blocked"),
@@ -987,7 +986,6 @@ async fn indirect_dispatch_paths_cannot_bypass_the_gate() {
             gate_ctx("/tmp"),
         )
         .await;
-
 
     assert!(
         result.is_err(),

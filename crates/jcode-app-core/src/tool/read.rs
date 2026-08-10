@@ -52,9 +52,7 @@ struct NormalizedReadRange {
     style: ReadRangeStyle,
 }
 
-impl NormalizedReadRange {
-
-}
+impl NormalizedReadRange {}
 
 /// Parse a `pages` selection such as "3", "2-5", or "1,4,9-11" into 1-based
 /// page numbers.
@@ -409,10 +407,7 @@ impl Tool for ReadTool {
             // The tag hashes the whole file, not the displayed range, so two
             // reads of one unchanged file agree and `edit` does not report a
             // spurious concurrent modification for a partial read.
-            let cwd = ctx
-                .working_dir
-                .as_deref()
-                .and_then(|dir| dir.to_str());
+            let cwd = ctx.working_dir.as_deref().and_then(|dir| dir.to_str());
             let key = jcode_hashline::normalize_path(&params.file_path, cwd);
             let store = super::hashline_store::for_session(&ctx.session_id);
             let tag = store.record(&key, &content, Some(&seen_lines));

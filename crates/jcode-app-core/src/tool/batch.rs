@@ -19,8 +19,7 @@ const BATCH_DESCRIPTION: &str =
 /// One short example is enough to make the nested call shape unambiguous; the
 /// second call in the old example only repeated the pattern, at prompt cost
 /// paid on every request.
-const BATCH_TOOL_CALLS_DESCRIPTION: &str =
-    r#"Each needs `tool` and `intent` plus that tool's own parameters, e.g. {"tool":"read","file_path":"a.rs"}"#;
+const BATCH_TOOL_CALLS_DESCRIPTION: &str = r#"Each needs `tool` and `intent` plus that tool's own parameters, e.g. {"tool":"read","file_path":"a.rs"}"#;
 
 pub(crate) fn generic_batch_schema() -> Value {
     json!({

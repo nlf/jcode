@@ -75,10 +75,7 @@ async fn ast_grep_requires_a_pattern() {
 async fn an_unknown_language_is_named_rather_than_silently_ignored() {
     let temp = tree(&[("a.rs", "fn a() { one(); }\n")]);
     let error = AstGrepTool::new()
-        .execute(
-            json!({"pattern": "one()", "language": "cobol"}),
-            ctx(&temp),
-        )
+        .execute(json!({"pattern": "one()", "language": "cobol"}), ctx(&temp))
         .await
         .expect_err("unknown language");
 

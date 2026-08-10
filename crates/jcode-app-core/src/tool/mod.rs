@@ -1,5 +1,6 @@
 pub mod ambient;
 mod apply_patch;
+pub mod ast_tools;
 mod bash;
 mod batch;
 mod bg;
@@ -17,10 +18,10 @@ mod edit_hashline;
 mod gmail;
 mod goal;
 mod grep_glob;
+pub mod hashline_store;
 #[cfg(test)]
 mod home_override;
-pub mod ast_tools;
-pub mod hashline_store;
+pub mod lsp_tool;
 
 #[cfg(test)]
 pub(crate) use bash::bash_tool_descriptions_for_test;
@@ -226,8 +227,21 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "glob", grep_glob::GlobTool::new);
             // Structural search and rewrite, ported from omp. These sit beside
             // grep rather than replacing it: grep finds text, these find code.
-            Self::insert_tool_timed(&mut m, &mut timings, "ast_grep", ast_tools::AstGrepTool::new);
-            Self::insert_tool_timed(&mut m, &mut timings, "ast_edit", ast_tools::AstEditTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "ast_grep",
+                ast_tools::AstGrepTool::new,
+            );
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "ast_edit",
+                ast_tools::AstEditTool::new,
+            );
+            // Semantic navigation. Read-only, so it sits beside `ast_grep` in `AUTO_ALLOWED`
+            // rather than behind approval: a model navigates dozens of times per turn.
+            Self::insert_tool_timed(&mut m, &mut timings, "lsp", lsp_tool::LspTool::new);
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,

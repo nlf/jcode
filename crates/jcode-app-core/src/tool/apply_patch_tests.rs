@@ -22,7 +22,10 @@ fn ctx(dir: &std::path::Path, session: &str) -> ToolContext {
 
 async fn run(dir: &std::path::Path, patch: &str) -> Result<ToolOutput> {
     ApplyPatchTool::new()
-        .execute(serde_json::json!({ "patch_text": patch }), ctx(dir, "apply-patch-test"))
+        .execute(
+            serde_json::json!({ "patch_text": patch }),
+            ctx(dir, "apply-patch-test"),
+        )
         .await
 }
 
@@ -77,8 +80,14 @@ async fn a_successful_multi_file_patch_applies_every_file() {
     .await
     .expect("both files should apply");
 
-    assert_eq!(std::fs::read_to_string(temp.path().join("a.txt")).unwrap(), "A\n");
-    assert_eq!(std::fs::read_to_string(temp.path().join("b.txt")).unwrap(), "B\n");
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+        "A\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("b.txt")).unwrap(),
+        "B\n"
+    );
     assert!(output.output.contains("M a.txt"), "{}", output.output);
     assert!(output.output.contains("M b.txt"), "{}", output.output);
 }
@@ -194,7 +203,6 @@ async fn apply_patch_refuses_to_delete_a_protected_path() {
         )
         .await;
 
-
     // Now an Err rather than an Ok carrying refusal text: a patch that did not
     // apply must take the error branch, which is what the port changed.
     let error = result.expect_err("a refused delete must fail the call");
@@ -287,8 +295,11 @@ async fn a_deleted_file_loses_its_snapshot() {
     std::fs::write(temp.path().join("doomed.txt"), "content\n").expect("f");
 
     // Record it first, as a read would have.
-    crate::tool::hashline_store::for_session("apply-patch-test")
-        .record("doomed.txt", "content\n", None);
+    crate::tool::hashline_store::for_session("apply-patch-test").record(
+        "doomed.txt",
+        "content\n",
+        None,
+    );
 
     run(
         temp.path(),
@@ -311,8 +322,7 @@ async fn a_deleted_file_loses_its_snapshot() {
 async fn a_move_records_the_destination_and_drops_the_source() {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(temp.path().join("src.txt"), "body\n").expect("f");
-    crate::tool::hashline_store::for_session("apply-patch-test")
-        .record("src.txt", "body\n", None);
+    crate::tool::hashline_store::for_session("apply-patch-test").record("src.txt", "body\n", None);
 
     run(
         temp.path(),

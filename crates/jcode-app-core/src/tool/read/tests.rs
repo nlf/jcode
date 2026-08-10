@@ -912,10 +912,26 @@ async fn a_selector_read_carries_omps_context_padding() {
         .await
         .expect("read");
 
-    assert!(output.output.contains("49\tline 49"), "one line above: {}", output.output);
-    assert!(output.output.contains("55\tline 55"), "three below: {}", output.output);
-    assert!(!output.output.contains("48\tline 48"), "no more above: {}", output.output);
-    assert!(!output.output.contains("56\tline 56"), "no more below: {}", output.output);
+    assert!(
+        output.output.contains("49\tline 49"),
+        "one line above: {}",
+        output.output
+    );
+    assert!(
+        output.output.contains("55\tline 55"),
+        "three below: {}",
+        output.output
+    );
+    assert!(
+        !output.output.contains("48\tline 48"),
+        "no more above: {}",
+        output.output
+    );
+    assert!(
+        !output.output.contains("56\tline 56"),
+        "no more below: {}",
+        output.output
+    );
 }
 
 /// Several ranges in one selector, which is the thing our explicit parameters

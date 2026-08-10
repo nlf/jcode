@@ -32,6 +32,7 @@ pub mod registry;
 pub mod results;
 pub mod transport;
 
+pub use actions::{Action, ActionError, Request as ActionRequest};
 pub use client::{Capabilities, Client, DEFAULT_REQUEST_TIMEOUT, PublishedDiagnostics, ServerSpec};
 pub use config::{Available, Config, ServerConfig, Unavailable};
 pub use correlation::{Pendings, RequestFailure, ServerRequest, SharedPendings};
@@ -46,4 +47,8 @@ pub use freshness::{
 pub use jsonrpc::{DecodeError, Incoming, METHOD_NOT_FOUND, RequestId, ResponseError};
 pub use ledger::{Ledger, Reduced};
 pub use position::{PositionError, SymbolSpec, parse_symbol, resolve_column};
+pub use registry::{DEFAULT_IDLE_TIMEOUT, Registry};
+pub use results::{
+    Location, Locations, format_location, hover_text, render_locations, uri_to_path,
+};
 pub use transport::{FromServer, Transport, WriteError, Writer};

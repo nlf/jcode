@@ -55,6 +55,7 @@ jcode-hashline = { path = "../jcode-hashline" }
 jcode-patch = { path = "../jcode-patch" }
 jcode-read = { path = "../jcode-read" }
 jcode-ast = { path = "../jcode-ast" }
+jcode-lsp = { path = "../jcode-lsp" }
 jcode-search = { path = "../jcode-search" }
 
 # OAuth

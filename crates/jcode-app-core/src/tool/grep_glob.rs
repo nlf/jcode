@@ -16,11 +16,11 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use jcode_search::{
-    find_files, group_by_file, render, render_paths, resolve_targets, search_contents, select,
-    SearchError, WalkOptions, DEFAULT_FILE_LIMIT,
+    DEFAULT_FILE_LIMIT, SearchError, WalkOptions, find_files, group_by_file, render, render_paths,
+    resolve_targets, search_contents, select,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Unknown fields are tolerated rather than rejected: one failed native call is
 /// enough to send a model back to bash for the rest of the session.
@@ -93,7 +93,11 @@ fn search_error(error: SearchError) -> anyhow::Error {
 /// `glob` and `type` are Claude-Code's way of narrowing, and the ported engine
 /// expresses both as path entries. Combining them here keeps one code path in
 /// the engine rather than two notions of "which files".
-fn combine_scope(path: Option<&str>, glob: Option<&str>, file_type: Option<&str>) -> Option<String> {
+fn combine_scope(
+    path: Option<&str>,
+    glob: Option<&str>,
+    file_type: Option<&str>,
+) -> Option<String> {
     let type_glob = file_type
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -374,8 +378,12 @@ impl Tool for GlobTool {
             .unwrap_or(jcode_search::select::DEFAULT_FILE_LIMIT * 10);
         paths.truncate(limit);
 
-        Ok(ToolOutput::new(render_paths(&paths, total))
-            .with_title(format!("glob {total} file{}", if total == 1 { "" } else { "s" })))
+        Ok(
+            ToolOutput::new(render_paths(&paths, total)).with_title(format!(
+                "glob {total} file{}",
+                if total == 1 { "" } else { "s" }
+            )),
+        )
     }
 }
 

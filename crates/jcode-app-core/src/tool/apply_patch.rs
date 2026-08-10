@@ -8,9 +8,9 @@ use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
-use jcode_patch::{plan, summary, FileOutcome, HunkError, PatchPlan};
+use jcode_patch::{FileOutcome, HunkError, PatchPlan, plan, summary};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -68,8 +68,8 @@ impl Tool for ApplyPatchTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: ApplyPatchInput = serde_json::from_value(input)?;
-        let hunks =
-            jcode_patch::parse(&params.patch_text).map_err(|error| anyhow::anyhow!(error.message()))?;
+        let hunks = jcode_patch::parse(&params.patch_text)
+            .map_err(|error| anyhow::anyhow!(error.message()))?;
 
         if hunks.is_empty() {
             return Err(anyhow::anyhow!(
@@ -162,7 +162,14 @@ async fn commit(
                 }
                 tokio::fs::write(&resolved, content).await?;
                 record_snapshot(ctx, outcome.path(), content);
-                publish(ctx, &resolved, outcome.path(), "created", intent, FileOp::Write);
+                publish(
+                    ctx,
+                    &resolved,
+                    outcome.path(),
+                    "created",
+                    intent,
+                    FileOp::Write,
+                );
             }
             FileOutcome::Deleted { path } => {
                 // `resolve_path` passes absolute paths through unchanged, so a
@@ -249,12 +256,7 @@ fn render_diff(outcome: &FileOutcome, before: &HashMap<String, String>) -> Optio
         FileOutcome::Updated { content, .. } => content.as_str(),
         FileOutcome::Deleted { .. } => "",
     };
-    let diff = super::tool_diff::render_diff(
-        old,
-        new,
-        1,
-        super::tool_diff::DEFAULT_MAX_DIFF_LINES,
-    );
+    let diff = super::tool_diff::render_diff(old, new, 1, super::tool_diff::DEFAULT_MAX_DIFF_LINES);
     (!diff.trim().is_empty()).then_some(diff)
 }
 

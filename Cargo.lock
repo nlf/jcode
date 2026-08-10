@@ -3440,6 +3440,7 @@ dependencies = [
  "jcode-core",
  "jcode-hashline",
  "jcode-import-core",
+ "jcode-lsp",
  "jcode-message-types",
  "jcode-notify-email",
  "jcode-overnight-core",

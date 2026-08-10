@@ -103,7 +103,10 @@ fn a_filter_narrows_within_the_path_rather_than_replacing_it() {
         combine_scope(None, Some("**/*.rs"), None).as_deref(),
         Some("**/*.rs")
     );
-    assert_eq!(combine_scope(Some("src"), None, None).as_deref(), Some("src"));
+    assert_eq!(
+        combine_scope(Some("src"), None, None).as_deref(),
+        Some("src")
+    );
     assert_eq!(combine_scope(None, None, None), None);
 }
 
@@ -123,7 +126,10 @@ fn an_explicit_glob_takes_precedence_over_a_type_filter() {
 #[test]
 fn empty_scope_strings_are_ignored() {
     assert_eq!(combine_scope(Some(""), Some(""), Some("")), None);
-    assert_eq!(combine_scope(Some("src"), Some("  "), None).as_deref(), Some("src"));
+    assert_eq!(
+        combine_scope(Some("src"), Some("  "), None).as_deref(),
+        Some("src")
+    );
 }
 
 /// The descriptions steer away from bash, which a workspace-wide test also
@@ -157,10 +163,8 @@ mod end_to_end {
     /// They passed only because they were always run with `--test-threads=1`,
     /// and failed 5-of-5 under cargo's default parallelism.
     fn fixture_dir(test_name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "jcode-grep-e2e-{}-{test_name}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("jcode-grep-e2e-{}-{test_name}", std::process::id()));
         // Left over from an aborted run, so start from a known state.
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

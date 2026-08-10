@@ -272,7 +272,7 @@ mod tests {
         }
 
         // And the read-only counterparts stay out, or every search renders a diff header.
-        for name in ["read", "grep", "glob", "ls", "ast_grep", "bash"] {
+        for name in ["read", "grep", "glob", "ls", "ast_grep", "lsp", "bash"] {
             assert!(
                 !is_edit_tool_name(name),
                 "{name} does not write files and must not be treated as an edit"

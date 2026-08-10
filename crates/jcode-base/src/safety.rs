@@ -144,6 +144,15 @@ const AUTO_ALLOWED: &[&str] = &[
     // Structural search. Read-only, exactly like grep. `ast_edit` is
     // deliberately absent: it writes, so it goes through approval.
     "ast_grep",
+    // Semantic navigation through a language server: definition, references, hover, symbols.
+    // Read-only, and auto-allowed for the same reason `grep` is — a model navigates dozens of
+    // times in a turn, and prompting each time would make it worse than the text search it
+    // replaces.
+    //
+    // `lsp_edit` is deliberately absent, and does not exist yet: `request` can send an arbitrary
+    // LSP method, so it cannot be auto-approved and belongs on its own tool. The split follows
+    // `ast_grep`/`ast_edit`.
+    "lsp",
 ];
 
 // ---------------------------------------------------------------------------
@@ -562,6 +571,8 @@ mod tests {
             assert_eq!(sys.classify("conversation_search"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("session_search"), ActionTier::AutoAllowed);
             assert_eq!(sys.classify("codesearch"), ActionTier::AutoAllowed);
+            // Semantic navigation, read-only. Prompting for a hover would make it unusable.
+            assert_eq!(sys.classify("lsp"), ActionTier::AutoAllowed);
         });
     }
 
@@ -596,8 +607,11 @@ mod tests {
     fn an_unregistered_tool_requires_permission_rather_than_being_silently_allowed() {
         with_temp_home(|| {
             let sys = SafetySystem::new();
+            // `lsp` was in this list when it did not exist, and is now auto-allowed -- so the
+            // names here have to be ones nothing will ever register. `lsp_edit` stays because it
+            // is planned and *must* be gated when it arrives: if a future commit auto-allows it,
+            // this test fails and asks why, which is the point.
             for name in [
-                "lsp",
                 "lsp_edit",
                 "tool_invented_tomorrow",
                 "",
@@ -633,6 +647,9 @@ mod tests {
             "apply_patch",
             "ast_edit",
             "bash",
+            // Not registered yet. Listed so that whoever adds it cannot auto-allow it by
+            // reflex: `request` can send an arbitrary LSP method, including ones that mutate.
+            "lsp_edit",
         ];
         for name in WRITING_TOOLS {
             assert!(
