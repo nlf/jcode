@@ -42,6 +42,7 @@ pub(super) fn build_info_widget_summary(data: &info_widget::InfoWidgetData) -> I
     let background_tasks = data.background_info.as_ref().map(|b| b.running_tasks.len());
 
     let usage_available = data.usage_info.as_ref().map(|u| u.available);
+    let usage_stale = data.usage_info.as_ref().map(|u| u.stale);
     let usage_provider = data
         .usage_info
         .as_ref()
@@ -67,6 +68,7 @@ pub(super) fn build_info_widget_summary(data: &info_widget::InfoWidgetData) -> I
         background_running,
         background_tasks,
         usage_available,
+        usage_stale,
         usage_provider,
         tokens_per_second: data.tokens_per_second,
         auth_method: Some(format!("{:?}", data.auth_method)),

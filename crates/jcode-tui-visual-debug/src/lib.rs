@@ -149,6 +149,10 @@ pub struct InfoWidgetSummary {
     pub background_running: Option<usize>,
     pub background_tasks: Option<usize>,
     pub usage_available: Option<bool>,
+    /// Whether the usage numbers are last-known-good behind a failed refresh.
+    /// Exposed so the stale path is observable from `client:frame`; without it
+    /// the only way to tell a stale widget from a fresh one is by eye.
+    pub usage_stale: Option<bool>,
     pub usage_provider: Option<String>,
     pub tokens_per_second: Option<f32>,
     pub auth_method: Option<String>,
