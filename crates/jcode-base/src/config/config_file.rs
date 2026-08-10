@@ -44,14 +44,19 @@ fn save_baseline() -> toml::Value {
 }
 
 /// One key's fate in a save: the caller set it, or the caller removed it.
+///
+/// Named `KeyChange` rather than `ConfigChange` because `change_report.rs`
+/// already has a public `ConfigChange` for a different job (summarizing a
+/// config diff for the user). They never meet in scope, but two same-named
+/// types in one `config` module is a trap for the next reader.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum ConfigChange {
+pub(crate) enum KeyChange {
     Set(toml::Value),
     Remove,
 }
 
 /// A single change, addressed by its path from the document root.
-pub(crate) type ChangeEntry = (Vec<String>, ConfigChange);
+pub(crate) type ChangeEntry = (Vec<String>, KeyChange);
 
 /// The keys where `desired` differs from `baseline`, as a flat change set.
 ///
@@ -79,7 +84,7 @@ fn collect_changed_keys(
     let (Some(desired_table), Some(baseline_table)) = (desired.as_table(), baseline.as_table())
     else {
         if desired != baseline {
-            out.push((prefix.clone(), ConfigChange::Set(desired.clone())));
+            out.push((prefix.clone(), KeyChange::Set(desired.clone())));
         }
         return;
     };
@@ -110,7 +115,7 @@ fn collect_changed_keys(
                 let empty = toml::Value::Table(toml::map::Map::new());
                 collect_changed_keys(prefix, &empty, desired_value, out);
             }
-            _ => out.push((prefix.clone(), ConfigChange::Set(desired_value.clone()))),
+            _ => out.push((prefix.clone(), KeyChange::Set(desired_value.clone()))),
         }
         prefix.pop();
     }
@@ -119,7 +124,7 @@ fn collect_changed_keys(
     for key in baseline_table.keys() {
         if !desired_table.contains_key(key) {
             prefix.push(key.clone());
-            out.push((prefix.clone(), ConfigChange::Remove));
+            out.push((prefix.clone(), KeyChange::Remove));
             prefix.pop();
         }
     }
@@ -138,13 +143,13 @@ pub(crate) fn apply_changes(doc: &mut toml_edit::Document, changes: &[ChangeEntr
         };
 
         match change {
-            ConfigChange::Set(value) => {
+            KeyChange::Set(value) => {
                 let Some(table) = descend_or_create(doc, parents) else {
                     continue;
                 };
                 set_preserving_decor(table, leaf, value);
             }
-            ConfigChange::Remove => {
+            KeyChange::Remove => {
                 // Only descend; a removal has no reason to create the tables it
                 // would then remove from.
                 if let Some(table) = descend(doc, parents) {

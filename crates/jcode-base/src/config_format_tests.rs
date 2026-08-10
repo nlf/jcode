@@ -14,6 +14,7 @@
 //! |---|---|---|
 //! | comments on untouched keys survive | `a_comment_on_an_untouched_setting_survives_a_save` | yes |
 //! | comments on the *changed* key survive | `a_comment_on_the_changed_setting_survives_a_save` | yes |
+//! | trailing comments on the changed line survive | `a_trailing_comment_on_the_changed_line_survives` | yes |
 //! | key order is preserved | `key_order_survives_a_save` | yes |
 //! | unmodelled keys survive | `a_key_the_struct_does_not_model_survives_a_save` | yes |
 //! | a no-op save changes no bytes | `a_save_that_changes_nothing_leaves_the_file_byte_identical` | yes |
@@ -34,6 +35,12 @@
 //! guards: they pass either way, because the old code also satisfied them, and
 //! they exist so a future change cannot quietly break them. They are not
 //! evidence that this change did anything.
+//!
+//! The trailing-comment row exists because mutation testing found a hole: with
+//! `set_preserving_decor`'s body deleted, every other test still passed,
+//! including the one named for the changed-key case. A test whose name implies
+//! coverage it does not have is worse than a missing one, so check the
+//! implementation can actually fail the test before trusting the name.
 
 use super::Config;
 
@@ -357,6 +364,39 @@ id = \"another-model\"
     });
 }
 
+/// A trailing comment on the changed line must survive too.
+///
+/// This is the assertion that actually exercises `set_preserving_decor`.
+/// `toml_edit` keeps a comment *above* a key in the key's decor prefix, which
+/// replacing the value never touches, so
+/// `a_comment_on_the_changed_setting_survives_a_save` passes even with the
+/// decor-preservation code deleted. A comment *after* the value lives in the
+/// value's own decor suffix, and that is the one a naive
+/// `insert(key, new_item)` destroys. Found by mutating the implementation and
+/// noticing no test failed.
+#[test]
+fn a_trailing_comment_on_the_changed_line_survives() {
+    let seed = "\
+[display]
+centered = false  # why this is off
+";
+    with_seeded_config(seed, |path| {
+        let mut cfg = Config::load();
+        cfg.display.centered = true;
+        cfg.save().expect("save");
+
+        let after = std::fs::read_to_string(path).expect("read back");
+        assert!(
+            after.contains("centered = true"),
+            "the change must land:\n{after}"
+        );
+        assert!(
+            after.contains("# why this is off"),
+            "the trailing comment on the changed line must survive:\n{after}"
+        );
+    });
+}
+
 /// A config file that does not parse must still be saveable.
 ///
 /// Claimed in `save`'s comment but never checked. The writer parses the
@@ -432,7 +472,7 @@ fn a_save_with_no_existing_file_creates_one() {
 ///
 /// `save_still_applies_a_deliberate_removal` checks the *semantics* (the
 /// setting is gone after a reload). This checks the *file*: the writer's
-/// `ConfigChange::Remove` arm has to actually remove the line, or a cleared
+/// `KeyChange::Remove` arm has to actually remove the line, or a cleared
 /// setting would linger in the text while reading back as absent.
 #[test]
 fn a_removal_deletes_the_key_from_the_file_text() {
