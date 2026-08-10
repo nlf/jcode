@@ -23,6 +23,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DOC = REPO_ROOT / "docs/CONFIG_SAVE_VERIFICATION.md"
 TESTS = REPO_ROOT / "crates/jcode-base/src/config_format_tests.rs"
+COLOR_TESTS = REPO_ROOT / "crates/jcode-base/src/config_color_tests.rs"
 SWEEP = REPO_ROOT / "scripts/mutation_sweep_config_save.py"
 BASE_COMMIT = "f5eb4f860~1"
 
@@ -43,11 +44,13 @@ def main() -> int:
     cited = set(re.findall(r"`([a-z][a-z0-9_]{12,})`", doc))
     declared = set(re.findall(r"#\[test\]\s*\nfn (\w+)", TESTS.read_text()))
 
-    listed = subprocess.run(
-        ["cargo", "test", "-p", "jcode-base", "--lib", "--", "--list"],
-        capture_output=True, text=True, cwd=REPO_ROOT,
-    ).stdout
-    real = set(re.findall(r"::(\w+): test", listed))
+    # Parse the sources rather than shelling out to `cargo test --list`, which
+    # would compile jcode-base. This runs in the `quality` job, which does not
+    # otherwise build that crate, so a compile here would cost minutes on a
+    # cold cache to answer a question the text already answers.
+    real = set(declared)
+    for extra in (COLOR_TESTS,):
+        real |= set(re.findall(r"#\[test\]\s*\nfn (\w+)", extra.read_text()))
 
     # A cited name is "test-shaped" if it looks like a test identifier. Anything
     # test-shaped that is not in the suite is either a typo or a renamed test,

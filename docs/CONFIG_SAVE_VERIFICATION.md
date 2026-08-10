@@ -144,7 +144,7 @@ after tripping over it would be worse.
 
 ## Every changed file, and what covers it
 
-Eleven files changed. A file with no check behind it is where an unverified
+Twelve files changed. A file with no check behind it is where an unverified
 change hides, so each is listed rather than only the interesting ones.
 
 | file | what changed | covered by |
@@ -157,9 +157,10 @@ change hides, so each is listed rather than only the interesting ones.
 | `Cargo.lock` | records that edge | the diff is one line, an edge not a `[[package]]` |
 | `crates/jcode-base/src/auth/copilot_auth_tests.rs` | stops the test writing the real config | md5 in both directions: untouched with the fix, writes without it |
 | `scripts/mutation_sweep_config_save.py` | the mutation harness | self-tested: an uncatchable mutation gives exit 1 |
+| `scripts/check_config_save_doc.py` | the doc checker | self-tested: four probes, each verified to fire |
 | `scripts/swallowed_error_budget.json` | records 2 accepted patterns | parsed both JSONs: file set identical, exactly one file +2 |
-| `.github/workflows/ci.yml` | makes the tests execute | both wrapper commands run locally; YAML parsed; step found in `build` |
-| `docs/CONFIG_SAVE_VERIFICATION.md` | this file | `scripts/check_config_save_doc.py` |
+| `.github/workflows/ci.yml` | makes the tests execute, and enforces this doc | both wrapper commands run locally; YAML parsed; step found in `build` |
+| `docs/CONFIG_SAVE_VERIFICATION.md` | this file | `scripts/check_config_save_doc.py`, run in CI's `quality` job |
 
 That last row matters most. This document is itself a claim, and a stale
 verification doc is worse than none: it launders an unchecked change into a

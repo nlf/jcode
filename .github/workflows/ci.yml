@@ -102,6 +102,22 @@ jobs:
         shell: bash
         run: python3 scripts/check_wildcard_reexport_budget.py
 
+      # The config-save verification doc claims every requirement of
+      # `Config::save` maps to a named check. A stale verification doc is worse
+      # than none, because it launders an unchecked change into a documented
+      # one, so the claim is enforced rather than trusted: this fails if the doc
+      # cites a test that does not exist, omits a test that does, omits a
+      # mutation the sweep runs, or omits a file the change touched.
+      #
+      # Cheap: it parses the sources rather than shelling out to `cargo test
+      # --list`, so it does not build jcode-base, which this job does not
+      # otherwise compile. Measured at 0.05s. The mutation sweep it references
+      # is deliberately NOT run here: that one rebuilds jcode-base once per
+      # mutation, which is minutes, and belongs in a manual or scheduled run.
+      - name: Enforce config-save verification doc
+        shell: bash
+        run: python3 scripts/check_config_save_doc.py
+
       # Frame-cost gate for desktop2. `build_scene` is a pure function of its
       # model and `states::NODES` enumerates the app's visual states, so frame
       # cost is something CI can evaluate rather than something a person has to
