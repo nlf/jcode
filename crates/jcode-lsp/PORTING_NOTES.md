@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 189 lib tests plus 62
+**Tests written exceed cases ported**, deliberately. 203 lib tests plus 63
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -120,8 +120,13 @@ right" have not been checked against each other.
   extensions are later work), but a field present in the data and absent from the struct
   is invisible, where one present and unused is a `todo` a reader can find. Four for four
   on this list.
-- omp's `stripDiagnosticNoise` (`utils.ts:194`) is unported. It will matter when
-  diagnostic formatting lands, because the ledger dedups *formatted* output.
+- ~~omp's `stripDiagnosticNoise` is unported~~ — ported, along with the rest of the formatter
+  (`format`). It mattered more than "unported": the ledger deduplicates *formatted* strings, and
+  every ledger test was using strings transcribed from omp's template by eye, so the module
+  rested on my having read a format string correctly. Ledger tests now generate their input
+  through the real formatter. Expectations came from running a transcription of omp's functions
+  in node, which caught a divergence worth keeping: omp drops a `code` of `0` because `0` is
+  falsey in JavaScript, and a code of 0 is legal in LSP.
 - Windows beyond reading the `cfg!` branches; symlinked binaries; case-insensitive
   filesystems in detection.
 - ~~two tool calls sharing one `Client`~~ — now tested
@@ -130,6 +135,26 @@ right" have not been checked against each other.
   as written; the ten-sender transport test proved frames do not interleave, which is
   weaker than answers reaching the right caller. Mutation-verified with a constant request
   id, which crosses answers between workers.
+
+## The function that was wrong three times
+
+`transport::write_framed` yielded a defect in three consecutive review rounds, and each time
+its doc comment explained why it was safe:
+
+| round | defect | how it was found |
+|---|---|---|
+| — | a cancelled `write_all` left a partial frame and corrupted the stream | measured 65,537 bytes left on the pipe while probing cancel-safety |
+| 5 | the byte counter only moved after a *completed* 8 KiB chunk, so a write cancelled mid-chunk reported `partial: false` — the same corruption, surviving inside the granularity added to fix it | reviewer probe, filling the pipe to a 793-byte remainder |
+| 6 | the poison check ran before the mutex, so a writer queued behind a blocked write appended to its half-frame and was told the stream was fine | reviewer staging two concurrent writers |
+
+Three things this argues, none of them about pipes:
+
+1. A doc comment explaining why code is safe is evidence about the author's belief, not about
+   the code. All three of these had one.
+2. Fixing a bug in a function is not evidence the function is now right. Rounds 5 and 6 both
+   found defects in code written to fix the previous round.
+3. The reviewer's *probes* found all three; reading found none of them. Every one needed a
+   staged concurrent scenario with a measurement.
 
 ## Known gaps, named
 
