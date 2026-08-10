@@ -49,6 +49,7 @@ fn run_patch(store: &SnapshotStore, current: &str, patch: &str) -> Result<String
         section.file_hash.as_deref(),
         &parsed.ops,
         true,
+        None,
     )?;
     Ok(prepared.after)
 }
@@ -253,7 +254,7 @@ fn a_two_file_patch_validates_every_section_before_any_would_be_written() {
         })
         .collect();
 
-    let prepared = preflight(&store, &inputs, true).expect("both sections validate");
+    let prepared = preflight(&store, &inputs, true, None).expect("both sections validate");
     assert_eq!(prepared[0].after, "ALPHA\n");
     assert_eq!(prepared[1].after, "BETA\n");
 }
@@ -291,7 +292,7 @@ fn a_bad_section_anywhere_prevents_the_whole_patch() {
         })
         .collect();
 
-    let error = preflight(&store, &inputs, true).expect_err("b.txt is unvalidatable");
+    let error = preflight(&store, &inputs, true, None).expect_err("b.txt is unvalidatable");
     assert!(error.message().contains("b.txt"), "{}", error.message());
 }
 

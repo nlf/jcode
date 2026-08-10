@@ -10,6 +10,7 @@
 pub mod matching;
 pub mod rewrite;
 pub mod search;
+pub mod syntax;
 
 pub use matching::{
     find, language_for_path, resolve_language, supported_languages, Match, MatchError, Matches,
@@ -18,6 +19,7 @@ pub use matching::{
 
 pub use ast_grep_language::SupportLang;
 pub use rewrite::{plan, PendingFile, RewriteOptions, RewritePlan};
+pub use syntax::parses_cleanly;
 pub use search::{
     search, targets_for, FileMatches, SearchFailure, SearchOptions, SearchResult,
     DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES,

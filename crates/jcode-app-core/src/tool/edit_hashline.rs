@@ -112,7 +112,12 @@ pub async fn execute_hashline(
             ops: &section.ops,
         })
         .collect();
-    let prepared = preflight(&store, &inputs, enforce_seen_lines())
+    // The syntax probe, which is what lets the repair layer keep a closing
+    // bracket the payload dropped. It is injected rather than imported by
+    // `jcode-hashline`, so that crate stays a pure text library with a
+    // one-second test loop instead of taking a tree-sitter dependency.
+    let syntax = |path: &str, text: &str| jcode_ast::parses_cleanly(path, text);
+    let prepared = preflight(&store, &inputs, enforce_seen_lines(), Some(&syntax))
         .map_err(|error| anyhow::anyhow!(error.message()))?;
 
     commit(prepared, &resolved, intent, ctx).await

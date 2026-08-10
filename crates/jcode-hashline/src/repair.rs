@@ -43,6 +43,8 @@
 //! approximated. The detection could be ported ahead of the probe to warn
 //! without rewriting, which is what omp does when spares are disabled.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::parser::{Anchor, Op};
 
 /// Counts of the three bracket kinds, positive for unclosed openers.
@@ -72,6 +74,32 @@ impl Balance {
             bracket: self.bracket + other.bracket,
             brace: self.brace + other.brace,
         }
+    }
+
+    fn negated(self) -> Self {
+        Self {
+            paren: -self.paren,
+            bracket: -self.bracket,
+            brace: -self.brace,
+        }
+    }
+
+    /// Whether this balance supplies at least what `target` asks for.
+    ///
+    /// A component asking for nothing is satisfied by anything, which is why
+    /// every caller must also check that the requirement is not all-zero. A
+    /// vacuous cover is how a rule ends up "justifying" a rewrite with no
+    /// evidence at all.
+    fn covers(self, target: Self) -> bool {
+        fn component(candidate: i32, target: i32) -> bool {
+            if target == 0 {
+                return true;
+            }
+            candidate.signum() == target.signum() && candidate.abs() >= target.abs()
+        }
+        component(self.paren, target.paren)
+            && component(self.bracket, target.bracket)
+            && component(self.brace, target.brace)
     }
 }
 
@@ -162,13 +190,26 @@ struct Group {
 #[derive(Debug, Default)]
 pub struct RepairOutcome {
     pub warnings: Vec<String>,
+    /// A closer spare was available but not applied, because this pass was the
+    /// authored one. The caller re-runs with spares enabled only when the
+    /// authored result turns out not to parse.
+    pub spares_proposed: bool,
 }
 
 /// Repair the boundaries of every replacement in `ops`, in place.
 ///
 /// Only `PUT start=end:` operations are considered. An insertion has no range
 /// for its payload to overflow, and a `CUT` has no payload at all.
-pub fn repair_boundaries(ops: &mut [Op], file_lines: &[&str]) -> RepairOutcome {
+///
+/// `apply_spares` enables the rules that keep a deleted closing bracket on the
+/// grounds that it closes a block. Those are never safe on delimiter counting
+/// alone, so the caller runs this twice: once without, and again with only if
+/// the first result fails to parse. See [`repair_with_syntax_veto`].
+pub fn repair_boundaries_with(
+    ops: &mut [Op],
+    file_lines: &[&str],
+    apply_spares: bool,
+) -> RepairOutcome {
     let mut outcome = RepairOutcome::default();
     let groups: Vec<Group> = ops
         .iter()
@@ -202,13 +243,374 @@ pub fn repair_boundaries(ops: &mut [Op], file_lines: &[&str]) -> RepairOutcome {
         );
     }
 
+    // The textual rules first. They are complete on their own evidence, so
+    // they run in both passes and are unaffected by whether spares are on.
+    let mut unrepaired: Vec<&Group> = Vec::new();
     for group in &groups {
-        if let Some(warning) = repair_group(ops, group, file_lines) {
-            outcome.warnings.push(warning);
+        match repair_group(ops, group, file_lines) {
+            Some(warning) => outcome.warnings.push(warning),
+            None => unrepaired.push(group),
         }
     }
 
+    // Then the closer spares, over whatever the textual rules left alone. They
+    // need the projected state of the whole patch, so they cannot run inside
+    // the loop above: whether this hunk may keep a closer depends on what the
+    // other hunks delete and insert.
+    let projection = Projection::build(ops, &groups, file_lines);
+    for group in unrepaired {
+        let Some(spare) = find_suffix_closer_spare(ops, group, file_lines, &projection) else {
+            continue;
+        };
+        outcome.spares_proposed = true;
+        if !apply_spares {
+            continue;
+        }
+        narrow_range_end(ops, group, spare.keep_from);
+        outcome.warnings.push(format!(
+            "Auto-repaired a dropped closing line in the replacement at line {}: kept \
+             {} line(s) the range deleted but the payload never restated, because \
+             removing them would leave the enclosing block unterminated. Issue the \
+             payload as the final desired content for the whole range, including any \
+             closing bracket it ends with.",
+            group.start_line, spare.count
+        ));
+    }
+
     outcome
+}
+
+/// Repair boundaries with no syntax veto available.
+///
+/// Closer spares never fire here, because nothing can vouch for them. Use
+/// [`repair_with_syntax_veto`] wherever a parse check exists.
+pub fn repair_boundaries(ops: &mut [Op], file_lines: &[&str]) -> RepairOutcome {
+    repair_boundaries_with(ops, file_lines, false)
+}
+
+/// Repair boundaries, letting a syntax check decide whether a closer may be
+/// spared.
+///
+/// `parses` answers "does this text parse, as far as you can tell", and must
+/// return false when it cannot tell. See `jcode_ast::parses_cleanly`.
+/// `materialize` renders a candidate result so it can be offered for checking.
+///
+/// # Why a repair has to be shown to work, not argued
+///
+/// Keeping a deleted `}` is the one repair that cannot be justified textually.
+/// Every other rule here matches lines against text already in the file; this
+/// one asserts that a bracket is *syntax*, and delimiter counting cannot tell a
+/// block closer from a brace in a regex, a string, or a sentence of prose.
+///
+/// So the arithmetic only ever nominates a candidate. The order below is what
+/// makes it safe:
+///
+/// 1. Apply what the author wrote. **If that parses, return it untouched** and
+///    no spare runs at all. A file that still parses is not missing a closer,
+///    whatever the counting says.
+/// 2. Only if it does not parse, try again with spares applied, and **keep that
+///    result only if it parses**.
+/// 3. Otherwise return the authored result unchanged.
+///
+/// The consequence worth stating: in a language nothing can parse, `parses`
+/// returns false for everything, step 2's result is never accepted, and the
+/// authored edit stands. Markdown prose full of braces is therefore never
+/// "balanced" by this layer, which is exactly the corruption it must not cause.
+pub fn repair_with_syntax_veto(
+    ops: &mut [Op],
+    file_lines: &[&str],
+    parses: impl Fn(&str) -> bool,
+    materialize: impl Fn(&[Op]) -> Option<String>,
+) -> RepairOutcome {
+    let authored_ops = ops.to_vec();
+    let authored = repair_boundaries_with(ops, file_lines, false);
+    if !authored.spares_proposed {
+        return authored;
+    }
+
+    // The author's edit keeps the file parsing, so no delimiter heuristic may
+    // second-guess its boundaries.
+    if let Some(text) = materialize(ops)
+        && parses(&text)
+    {
+        return authored;
+    }
+
+    // Re-run from the authored ops rather than continuing from the first pass:
+    // this is a different reading of the same input, not an increment on it.
+    let mut spared_ops = authored_ops;
+    let spared = repair_boundaries_with(&mut spared_ops, file_lines, true);
+    if let Some(text) = materialize(&spared_ops)
+        && parses(&text)
+    {
+        ops.clone_from_slice(&spared_ops);
+        return spared;
+    }
+
+    authored
+}
+
+/// Keep the tail of a replacement's range instead of deleting it.
+///
+/// The payload stays where it is and the range shrinks, so the lines from
+/// `keep_from` onward survive untouched below the new content.
+fn narrow_range_end(ops: &mut [Op], group: &Group, keep_from: usize) {
+    if let Op::Put {
+        anchor: Anchor::Range { end, .. },
+        ..
+    } = &mut ops[group.op_index]
+    {
+        *end = keep_from - 1;
+    }
+}
+
+/// A closing run the range would delete and the payload does not put back.
+struct CloserSpare {
+    /// First line of the run to keep, 1-indexed.
+    keep_from: usize,
+    count: usize,
+}
+
+/// What the whole patch does to the file, as far as any one hunk can see.
+///
+/// A spare cannot be judged from its own hunk. If another hunk deletes the
+/// opener this closer matches, the closer has to go too; if another hunk
+/// inserts the same closer just below, keeping this one duplicates it. So the
+/// rules below need the patch as a whole, projected as though every hunk
+/// applied as authored.
+struct Projection {
+    deleted: BTreeSet<usize>,
+    /// Lines inserted at a given anchor line, in patch order.
+    inserted: BTreeMap<usize, Vec<String>>,
+}
+
+impl Projection {
+    fn build(ops: &[Op], groups: &[Group], _file_lines: &[&str]) -> Self {
+        let mut deleted = BTreeSet::new();
+        let mut inserted: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+        for op in ops {
+            match op {
+                Op::Cut { start, end } => deleted.extend(*start..=*end),
+                Op::Put { anchor, body } => match anchor {
+                    Anchor::Range { start, end } => {
+                        deleted.extend(*start..=*end);
+                        inserted.entry(*start).or_default().extend(body.clone());
+                    }
+                    Anchor::Before(line) | Anchor::After(line) => {
+                        inserted.entry(*line).or_default().extend(body.clone());
+                    }
+                    Anchor::Bof => inserted.entry(1).or_default().extend(body.clone()),
+                    Anchor::Eof => {}
+                },
+                Op::Rem | Op::Mv { .. } => {}
+            }
+        }
+        let _ = groups;
+        Self { deleted, inserted }
+    }
+
+    /// Net brackets left open above `line` once the patch has applied.
+    fn balance_above(&self, line: usize, file_lines: &[&str]) -> Balance {
+        let mut projected: Vec<String> = Vec::new();
+        for candidate in 1..line {
+            if let Some(rows) = self.inserted.get(&candidate) {
+                projected.extend(rows.clone());
+            }
+            if !self.deleted.contains(&candidate) {
+                projected.push(file_lines.get(candidate - 1).copied().unwrap_or("").to_string());
+            }
+        }
+        compute_balance(&projected)
+    }
+
+    /// The closing lines that will sit immediately below `line`.
+    fn closers_below(&self, line: usize, file_lines: &[&str]) -> Vec<String> {
+        let mut below = Vec::new();
+        for candidate in (line + 1)..=file_lines.len() {
+            if let Some(rows) = self.inserted.get(&candidate) {
+                for row in rows {
+                    if !is_structural_closer(row) {
+                        return below;
+                    }
+                    below.push(row.clone());
+                }
+            }
+            if self.deleted.contains(&candidate) {
+                continue;
+            }
+            let text = file_lines.get(candidate - 1).copied().unwrap_or("");
+            if !is_structural_closer(text) {
+                return below;
+            }
+            below.push(text.to_string());
+        }
+        below
+    }
+}
+
+/// A line that is nothing but closing brackets, optionally with one separator.
+///
+/// Deliberately excludes the JSX form omp also recognises elsewhere. A `</div>`
+/// carries no brackets at all, so the balance arithmetic every spare rests on
+/// would be satisfied vacuously and the rule could keep arbitrary lines.
+fn is_structural_closer(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let body = trimmed
+        .strip_suffix([';', ','])
+        .unwrap_or(trimmed)
+        .trim_end();
+    !body.is_empty() && body.chars().all(|ch| matches!(ch, ')' | ']' | '}'))
+}
+
+/// Does the range end in closers the payload drops and nothing replaces?
+///
+/// The reading being tested is "the model wrote the block's new body but forgot
+/// to restate the bracket that closes it". Every condition below is an attempt
+/// to rule that reading out, because the alternative reading, that the model
+/// meant to delete the closer, is equally available and far more destructive to
+/// get wrong.
+fn find_suffix_closer_spare(
+    ops: &[Op],
+    group: &Group,
+    file_lines: &[&str],
+    projection: &Projection,
+) -> Option<CloserSpare> {
+    let body = payload(ops, group);
+    if body.is_empty() {
+        return None;
+    }
+
+    // How many lines at the end of the range are pure closers.
+    let mut suffix_length = 0;
+    while suffix_length < group.end_line - group.start_line + 1 {
+        let line = group.end_line - suffix_length;
+        if !is_structural_closer(file_lines.get(line - 1).copied().unwrap_or("")) {
+            break;
+        }
+        suffix_length += 1;
+    }
+    if suffix_length == 0 {
+        return None;
+    }
+
+    let suffix_start = group.end_line - suffix_length + 1;
+    let suffix: Vec<&str> = (suffix_start..=group.end_line)
+        .map(|line| file_lines.get(line - 1).copied().unwrap_or(""))
+        .collect();
+
+    // Lines the payload already ends with are not missing, and lines an
+    // adjacent hunk puts back below are already covered. Both would be
+    // duplicated rather than restored.
+    //
+    // These two counts are computed but, in this port, never change the
+    // outcome: the delta and opener checks below refuse everything they would
+    // have refused, and a search over several thousand generated patches found
+    // no input where removing either altered the result. omp needs them
+    // because their spare also has a prefix form and a landing-shift rule that
+    // can reach this point by other routes. They are kept because the day one
+    // of those lands, this rule silently stops being conservative without
+    // them, and a comment is cheaper than rediscovering that.
+    let keep_start = payload_restates_suffix_head(body, &suffix);
+    let covered = projected_covers_suffix_tail(&suffix, group, file_lines, projection);
+    let keep_end = suffix_length.checked_sub(covered)?;
+    if keep_start >= keep_end {
+        return None;
+    }
+
+    let kept: Vec<&str> = suffix[keep_start..keep_end].to_vec();
+    let kept_balance = compute_balance(&kept);
+    let needed = kept_balance.negated();
+
+    // The payload must actually be short by these brackets. This subsumes the
+    // "a run that closes nothing" case, since a zero balance asks for nothing
+    // and the opener check below then has nothing to find.
+    let delta = compute_balance(body).minus(compute_balance(range_lines(group, file_lines)));
+    if !delta.covers(needed) {
+        return None;
+    }
+
+    // If a contiguous run of deleted lines just above took the matching opener
+    // with it, the closer must go too. Keeping it would close a block that no
+    // longer opens.
+    if deleted_prefix_balance(group, file_lines, projection).covers(needed) {
+        return None;
+    }
+
+    // And there must be an unclosed opener above it in the projected file for
+    // these brackets to close. A zero requirement fails here rather than
+    // passing vacuously, because a balance of nothing covers nothing to find.
+    if needed == Balance::default() {
+        return None;
+    }
+    let above = projection.balance_above(suffix_start, file_lines);
+    let covered_below = compute_balance(&suffix[keep_end..]);
+    if !above.plus(covered_below).covers(needed) {
+        return None;
+    }
+
+    Some(CloserSpare {
+        keep_from: suffix_start + keep_start,
+        count: keep_end - keep_start,
+    })
+}
+
+/// How many of the suffix's first lines the payload already ends with.
+fn payload_restates_suffix_head(body: &[String], suffix: &[&str]) -> usize {
+    let max = body.len().min(suffix.len());
+    for count in (1..=max).rev() {
+        if body[body.len() - count..]
+            .iter()
+            .zip(suffix)
+            .all(|(row, line)| row == line)
+        {
+            return count;
+        }
+    }
+    0
+}
+
+/// How many of the suffix's last lines will already exist below the range.
+fn projected_covers_suffix_tail(
+    suffix: &[&str],
+    group: &Group,
+    file_lines: &[&str],
+    projection: &Projection,
+) -> usize {
+    let below = projection.closers_below(group.end_line, file_lines);
+    let max = below.len().min(suffix.len());
+    for count in (1..=max).rev() {
+        if below[..count]
+            .iter()
+            .zip(&suffix[suffix.len() - count..])
+            .all(|(row, line)| row == line)
+        {
+            return count;
+        }
+    }
+    0
+}
+
+/// Net brackets removed by the run of deleted lines immediately above a range.
+///
+/// Contiguity is the point: a deleted opener two lines up with a surviving line
+/// between them is not what this range's closer was matching.
+fn deleted_prefix_balance(group: &Group, file_lines: &[&str], projection: &Projection) -> Balance {
+    let mut deleted: Vec<String> = Vec::new();
+    let mut inserted: Vec<String> = Vec::new();
+    let mut line = group.start_line;
+    while line > 1 && projection.deleted.contains(&(line - 1)) {
+        line -= 1;
+        deleted.insert(0, file_lines.get(line - 1).copied().unwrap_or("").to_string());
+        if let Some(rows) = projection.inserted.get(&line) {
+            let mut rows = rows.clone();
+            rows.extend(inserted);
+            inserted = rows;
+        }
+    }
+    compute_balance(&deleted).minus(compute_balance(&inserted))
 }
 
 /// The payload of a replacement op.

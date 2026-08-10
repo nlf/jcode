@@ -151,6 +151,18 @@ pub struct Prepared {
     pub warnings: Vec<String>,
 }
 
+/// Whether a file parses, as far as the caller can tell.
+///
+/// `jcode-hashline` deliberately owns no parser: it is a pure text crate that
+/// compiles in about a second, and taking a tree-sitter dependency to answer
+/// one question would end that. The caller supplies the check instead.
+///
+/// The contract is the one thing to get right. `false` must mean "I cannot
+/// vouch for this", covering an unknown language as well as a genuine syntax
+/// error, because the repair layer treats a missing vouch as a refusal. See
+/// `jcode_ast::parses_cleanly`.
+pub type SyntaxCheck<'a> = &'a dyn Fn(&str, &str) -> bool;
+
 /// Validate and apply a section in memory.
 ///
 /// `enforce_seen_lines` mirrors omp's `enforceSeenLines`, which ships **off**
@@ -160,6 +172,9 @@ pub struct Prepared {
 /// the store ever seeing it, so the guard would refuse edits the model is in
 /// fact well-informed about. It is exposed as a config key for anyone who wants
 /// the stricter behaviour.
+///
+/// `syntax` unlocks the repairs that must be shown to work rather than argued
+/// for. Passing `None` is safe and simply leaves those repairs unavailable.
 pub fn prepare(
     store: &SnapshotStore,
     path: &str,
@@ -167,6 +182,7 @@ pub fn prepare(
     expected_tag: Option<&str>,
     ops: &[Op],
     enforce_seen_lines: bool,
+    syntax: Option<SyntaxCheck<'_>>,
 ) -> Result<Prepared, RejectReason> {
     let actual_tag = compute_file_hash(current_text);
 
@@ -232,7 +248,15 @@ pub fn prepare(
     // unrepaired payload would be judging an edit that is not the one applied.
     let file_lines: Vec<&str> = current_text.split('\n').collect();
     let mut ops = ops.to_vec();
-    let repaired = crate::repair::repair_boundaries(&mut ops, &file_lines);
+    let repaired = match syntax {
+        Some(parses) => crate::repair::repair_with_syntax_veto(
+            &mut ops,
+            &file_lines,
+            |candidate| parses(path, candidate),
+            |candidate| apply_ops(current_text, candidate).ok().map(|out| out.text),
+        ),
+        None => crate::repair::repair_boundaries(&mut ops, &file_lines),
+    };
     let ops = ops.as_slice();
 
     // The guard runs only when the tag matches: only then do anchor line
@@ -393,6 +417,7 @@ pub fn preflight(
     store: &SnapshotStore,
     sections: &[SectionInput<'_>],
     enforce_seen_lines: bool,
+    syntax: Option<SyntaxCheck<'_>>,
 ) -> Result<Vec<Prepared>, PreflightError> {
     let mut seen_paths: Vec<&str> = Vec::new();
     for section in sections {
@@ -413,6 +438,7 @@ pub fn preflight(
             section.expected_tag,
             section.ops,
             enforce_seen_lines,
+            syntax,
         )
         .map_err(|reason| PreflightError::Section {
             path: section.path.to_string(),

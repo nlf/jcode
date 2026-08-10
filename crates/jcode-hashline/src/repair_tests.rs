@@ -20,6 +20,47 @@ fn apply(text: &str, patch: &str) -> (String, Vec<String>) {
     (applied.text, outcome.warnings)
 }
 
+/// Apply with a syntax veto, the way a caller holding a parser would.
+///
+/// `parses` stands in for `jcode_ast::parses_cleanly`. The fake used by most
+/// tests below counts brackets, which is enough to model "this file is
+/// balanced" without pulling a tree-sitter dependency into this crate. Where a
+/// test needs the parser to be *wrong* about something (a brace in prose), it
+/// passes its own closure.
+fn apply_with_veto(
+    text: &str,
+    patch: &str,
+    parses: impl Fn(&str) -> bool,
+) -> (String, Vec<String>) {
+    let mut ops = parse_ops(patch).expect("fixture patch parses").ops;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let outcome = repair_with_syntax_veto(&mut ops, &lines, parses, |candidate| {
+        apply_ops(text, candidate).ok().map(|result| result.text)
+    });
+    let applied = apply_ops(text, &ops).expect("fixture applies");
+    (applied.text, outcome.warnings)
+}
+
+/// A stand-in parser: a file is well-formed when its brackets balance.
+fn brackets_balance(text: &str) -> bool {
+    let lines: Vec<&str> = text.split('\n').collect();
+    compute_balance(&lines) == Balance::default()
+}
+
+/// Run the spare pass with no veto in the way.
+///
+/// A few guards inside the spare rule are only observable this way. Reached
+/// through `repair_with_syntax_veto`, a candidate the guard would refuse is
+/// usually one the parser refuses too, so a test written that way passes
+/// whether or not the guard exists.
+fn apply_spares_directly(text: &str, patch: &str) -> (String, Vec<String>) {
+    let mut ops = parse_ops(patch).expect("fixture patch parses").ops;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let outcome = repair_boundaries_with(&mut ops, &lines, true);
+    let applied = apply_ops(text, &ops).expect("fixture applies");
+    (applied.text, outcome.warnings)
+}
+
 fn joined(rows: &[&str]) -> String {
     rows.join("\n")
 }
@@ -478,5 +519,194 @@ fn an_insertion_is_never_boundary_repaired() {
     let (text, warnings) = apply(&file, "PUT >2:\n+b");
 
     assert_eq!(text, joined(&["a", "b", "b", "c"]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+// Closer spares. These are the rules that claim a bracket is syntax rather
+// than text, so each is gated on a parse check: the authored edit must break
+// the file and the repaired one must fix it. The tests come in pairs, because
+// what a spare must *not* do matters more than what it does.
+
+#[test]
+fn spares_the_closing_line_the_payload_forgot_to_restate() {
+    // The model added a method and dropped the `};` that ends the object. The
+    // authored edit leaves the literal unterminated, and keeping the deleted
+    // line restores it.
+    let file = joined(&[
+        "const handlers = {",
+        "\ta() {",
+        "\t\treturn 1;",
+        "\t},",
+        "};",
+    ]);
+    let (text, warnings) = apply_with_veto(
+        &file,
+        "PUT 5=5:\n+\tb() {\n+\t\treturn 2;\n+\t},",
+        brackets_balance,
+    );
+
+    assert_eq!(
+        text,
+        joined(&[
+            "const handlers = {",
+            "\ta() {",
+            "\t\treturn 1;",
+            "\t},",
+            "\tb() {",
+            "\t\treturn 2;",
+            "\t},",
+            "};",
+        ])
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("dropped closing line")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn does_not_spare_a_closing_line_the_payload_already_restates() {
+    // The range is internally unbalanced and the payload ends with the same
+    // closer. Keeping the deleted one would put a second `}` outside the
+    // payload, which is the opposite of the mistake being repaired.
+    let file = joined(&["class Foo {", "\tok();", "\t}", "}"]);
+    let (text, warnings) =
+        apply_with_veto(&file, "PUT 1=4:\n+class Foo {\n+\tok();\n+}", brackets_balance);
+
+    assert_eq!(text, joined(&["class Foo {", "\tok();", "}"]));
+    assert_eq!(text.lines().filter(|l| *l == "}").count(), 1);
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_closer_with_nothing_to_close_is_not_kept() {
+    // The range ends in a `}` but nothing above it is open, so the brace is
+    // stray text rather than a terminator. Keeping it would preserve a bracket
+    // that closes nothing, which is not the mistake this rule repairs.
+    //
+    // Reached through the spare pass directly, because the veto would refuse
+    // this candidate anyway and would mask which guard did the work.
+    let file = joined(&["one();", "}"]);
+    let (text, warnings) = apply_spares_directly(&file, "PUT 1=2:\n+two();");
+
+    assert_eq!(text, "two();");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_payload_that_is_not_short_a_bracket_gets_no_spare() {
+    // The payload closes everything it opens, so it is not missing anything and
+    // there is nothing for a spare to restore. Without this check the rule
+    // keeps a closer the model deliberately moved inside its new content, which
+    // silently adds a bracket.
+    let file = joined(&["fn a() {", "\tif x {", "\t}", "}"]);
+    let (text, warnings) = apply_spares_directly(&file, "PUT 2=3:\n+\ttwo();");
+
+    assert_eq!(text, joined(&["fn a() {", "\ttwo();", "}"]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn an_authored_edit_that_still_parses_is_never_second_guessed() {
+    // The decisive gate, and the reason the parser is consulted twice rather
+    // than once. The arithmetic nominates a spare here, and the spared result
+    // would also parse, so checking only the repaired candidate would let the
+    // rewrite through. What forbids it is that the file the author actually
+    // wrote is already well-formed: a file that parses is not missing a closer,
+    // whatever the counting says.
+    //
+    // The parser accepts everything, which is the strongest possible form of
+    // this test: nothing downstream can refuse the spare, so only this gate can.
+    let file = joined(&["fn a() {", "\tone();", "}"]);
+    let (text, warnings) = apply_with_veto(&file, "PUT 2=3:\n+\tif x {\n+\t}", |_| true);
+
+    assert_eq!(text, joined(&["fn a() {", "\tif x {", "\t}"]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_brace_in_prose_is_never_resurrected() {
+    // The corruption case this whole mechanism exists to prevent. In a file the
+    // parser cannot judge, `parses` is false for everything, so no repaired
+    // result can ever be shown to be better and the authored edit stands.
+    let file = joined(&["A paragraph.", "closing thought }", "The end."]);
+    let (text, warnings) = apply_with_veto(&file, "PUT 2=2:\n+a new thought", |_| false);
+
+    assert_eq!(
+        text,
+        joined(&["A paragraph.", "a new thought", "The end."]),
+        "prose must be edited exactly as written"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_spare_that_does_not_fix_the_file_is_not_applied() {
+    // The authored edit breaks the file, a spare is nominated, but the result
+    // is still broken. A repair only lands when it is shown to work, so the
+    // authored edit is returned rather than a half-measure.
+    let file = joined(&["fn a() {", "\tone();", "}"]);
+    // The payload opens two more blocks than it closes, so keeping the `}`
+    // cannot balance the file.
+    let (text, warnings) = apply_with_veto(
+        &file,
+        "PUT 2=3:\n+\tif x {\n+\t\tif y {",
+        brackets_balance,
+    );
+
+    assert_eq!(text, joined(&["fn a() {", "\tif x {", "\t\tif y {"]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_closer_whose_opener_another_hunk_deleted_is_not_kept() {
+    // Two hunks: one removes the block's opening line, another replaces its
+    // body and would otherwise keep the closer. With the opener gone the
+    // closer has nothing to close, so keeping it would leave a stray brace.
+    let file = joined(&["if (x) {", "\tbody();", "}", "after();"]);
+    let (text, warnings) = apply_with_veto(
+        &file,
+        "PUT 1=1:\n+// opener removed\n\nPUT 2=3:\n+\tfresh();",
+        brackets_balance,
+    );
+
+    assert_eq!(text, joined(&["// opener removed", "\tfresh();", "after();"]));
+    assert!(
+        !warnings.iter().any(|w| w.contains("dropped closing line")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_jsx_style_closer_is_not_treated_as_a_bracket() {
+    // `</div>` carries no brackets, so the balance arithmetic that justifies
+    // every spare would be satisfied by an empty requirement. Excluding the
+    // JSX form from the closer test is what stops the rule keeping arbitrary
+    // lines it cannot actually reason about.
+    assert!(!is_structural_closer("</div>"));
+    assert!(!is_structural_closer("/>"));
+    assert!(is_structural_closer("}"));
+    assert!(is_structural_closer("\t});"));
+    assert!(is_structural_closer("  }],"));
+    assert!(!is_structural_closer("} else {"));
+    assert!(!is_structural_closer(""));
+}
+
+#[test]
+fn without_a_veto_no_closer_is_ever_spared() {
+    // The plain entry point must stay conservative, since a caller with no
+    // parser has no way to check the result.
+    let file = joined(&[
+        "const handlers = {",
+        "\ta() {",
+        "\t\treturn 1;",
+        "\t},",
+        "};",
+    ]);
+    let (text, warnings) = apply(&file, "PUT 5=5:\n+\tb() {\n+\t\treturn 2;\n+\t},");
+
+    // The `};` is gone, as authored: unbalanced, but exactly what was asked
+    // for, and no worse than before this rule existed.
+    assert!(!text.contains("};"), "{text}");
     assert!(warnings.is_empty(), "{warnings:?}");
 }

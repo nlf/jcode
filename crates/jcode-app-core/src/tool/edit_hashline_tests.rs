@@ -795,3 +795,70 @@ async fn a_changed_file_is_reported_as_stale_not_as_a_foreign_tag() {
         "the refusal should say the file changed: {error}"
     );
 }
+
+/// The closer spare, reached through the real tool with the real tree-sitter
+/// probe behind it. The model adds a method and forgets the `};` that ends the
+/// object, so the authored edit would leave it unterminated.
+#[tokio::test]
+async fn a_dropped_closing_line_is_kept_when_the_file_would_not_parse_without_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("h.js");
+    std::fs::write(
+        &path,
+        "const handlers = {\n\ta() {\n\t\treturn 1;\n\t},\n};\n",
+    )
+    .expect("write");
+    let tag = read_tag(temp.path(), "hl-spare", "h.js").await;
+
+    let output = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "h.js",
+                "input": format!(
+                    "[h.js#{tag}]\nPUT 5.=5:\n+\tb() {{\n+\t\treturn 2;\n+\t}},"
+                ),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-spare"),
+        )
+        .await
+        .expect("the dropped closer is restored rather than the edit refused");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "const handlers = {\n\ta() {\n\t\treturn 1;\n\t},\n\tb() {\n\t\treturn 2;\n\t},\n};\n",
+        "the object literal must still be terminated"
+    );
+    assert!(
+        output.output.contains("dropped closing line"),
+        "a spared closer must be reported: {}",
+        output.output
+    );
+}
+
+/// The same shape in a file the parser cannot judge. Braces in prose are not
+/// syntax, so nothing may be restored on their behalf, and the edit applies
+/// exactly as written.
+#[tokio::test]
+async fn a_brace_in_prose_is_never_restored_by_a_repair() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("notes.md");
+    std::fs::write(&path, "Some prose.\n\nA closing thought }\n").expect("write");
+    let tag = read_tag(temp.path(), "hl-prose", "notes.md").await;
+
+    EditTool::new()
+        .execute(
+            json!({
+                "file_path": "notes.md",
+                "input": format!("[notes.md#{tag}]\nPUT 3.=3:\n+A different thought"),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-prose"),
+        )
+        .await
+        .expect("prose edits apply");
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "Some prose.\n\nA different thought\n",
+        "no brace may be resurrected in a file the parser cannot vouch for"
+    );
+}
