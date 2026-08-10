@@ -927,6 +927,62 @@ fn test_remote_alt_m_toggles_side_panel_visibility() {
     assert_eq!(app.status_notice(), Some("Side panel: Plan".to_string()));
 }
 
+/// Every configurable pane/mode toggle must dispatch in BOTH the local and the
+/// remote key path. The two dispatchers used to hand-maintain parallel lists,
+/// which silently left Alt+I (info widget) and Alt+Y (copy selection) inert in
+/// remote sessions: the key fell through to the composer and typed a letter.
+#[test]
+fn test_shared_toggle_keys_dispatch_in_both_local_and_remote_paths() {
+    // `info_widget::toggle_enabled` mutates process-global state that other
+    // tests read, so serialize against them and restore the flag the moment it
+    // is flipped rather than at the end of the test.
+    let _env_lock = crate::storage::lock_test_env();
+    let _render_lock = scroll_render_test_lock();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+
+    let restore_widgets = |before: bool| {
+        if crate::tui::info_widget::is_enabled() != before {
+            crate::tui::info_widget::toggle_enabled();
+        }
+    };
+
+    // Every default chord that `handle_shared_toggle_keys` owns. Adding a
+    // toggle without wiring it into the shared handler fails here rather than
+    // in a user's terminal.
+    let toggles = ['y', 'm', 't', 's', 'i', 'x'];
+
+    for letter in toggles {
+        // Local path: the key must be consumed, never inserted as text.
+        let widgets_before = crate::tui::info_widget::is_enabled();
+        let mut local = create_test_app();
+        local
+            .handle_key(KeyCode::Char(letter), KeyModifiers::ALT)
+            .unwrap();
+        assert_eq!(
+            local.input, "",
+            "local Alt+{letter} leaked into the composer instead of toggling"
+        );
+        restore_widgets(widgets_before);
+
+        // Remote path: same chord, same expectation.
+        let widgets_before = crate::tui::info_widget::is_enabled();
+        let mut app = create_test_app();
+        let mut remote_conn = crate::tui::backend::RemoteConnection::dummy();
+        rt.block_on(app.handle_remote_key(
+            KeyCode::Char(letter),
+            KeyModifiers::ALT,
+            &mut remote_conn,
+        ))
+        .unwrap();
+        assert_eq!(
+            app.input, "",
+            "remote Alt+{letter} leaked into the composer instead of toggling"
+        );
+        restore_widgets(widgets_before);
+    }
+}
+
 #[test]
 fn test_remote_typing_scroll_lock_preserves_scroll_position() {
     let mut app = create_test_app();

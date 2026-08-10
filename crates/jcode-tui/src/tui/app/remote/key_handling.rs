@@ -390,8 +390,8 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    if app.toggle_keys.side_panel.matches(code, modifiers) {
-        app.toggle_side_panel();
+    // Pane/mode toggles shared with the local key path, so both stay in step.
+    if input::handle_shared_toggle_keys(app, code, modifiers) {
         return Ok(());
     }
 
@@ -420,10 +420,6 @@ async fn handle_remote_key_internal(
     }
     let macos_option_shortcut =
         crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers);
-    if app.toggle_keys.diagram_pane.matches(code, modifiers) {
-        app.toggle_diagram_pane_position();
-        return Ok(());
-    }
     if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
         app.record_keybinding_fast(crate::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
         remote.cycle_model(direction).await?;
@@ -441,14 +437,6 @@ async fn handle_remote_key_internal(
             .macos_option_arrow_escape_direction_for(code, modifiers)
     {
         apply_remote_effort_direction(app, remote, direction).await?;
-        return Ok(());
-    }
-    if app.toggle_keys.typing_scroll_lock.matches(code, modifiers) {
-        app.toggle_typing_scroll_lock();
-        return Ok(());
-    }
-    if app.toggle_keys.todo_card.matches(code, modifiers) {
-        app.toggle_todo_card();
         return Ok(());
     }
     if app.centered_toggle_keys.matches(code, modifiers) {

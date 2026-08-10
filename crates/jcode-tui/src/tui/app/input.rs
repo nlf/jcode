@@ -2239,39 +2239,11 @@ pub(super) fn handle_pre_control_shortcuts(
 
     let macos_option_shortcut =
         crate::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers);
-    if app.toggle_keys.copy_selection.matches(code, modifiers) {
-        app.toggle_copy_selection_mode();
+    if handle_shared_toggle_keys(app, code, modifiers) {
         return true;
     }
 
     if handle_visible_copy_shortcut(app, code, modifiers) {
-        return true;
-    }
-
-    if app.toggle_keys.side_panel.matches(code, modifiers) {
-        app.toggle_side_panel();
-        return true;
-    }
-    if app.toggle_keys.diagram_pane.matches(code, modifiers) {
-        app.toggle_diagram_pane_position();
-        return true;
-    }
-    if app.toggle_keys.typing_scroll_lock.matches(code, modifiers) {
-        app.toggle_typing_scroll_lock();
-        return true;
-    }
-    if app.toggle_keys.info_widget.matches(code, modifiers) {
-        crate::tui::info_widget::toggle_enabled();
-        let status = if crate::tui::info_widget::is_enabled() {
-            "Info widget: ON"
-        } else {
-            "Info widget: OFF"
-        };
-        app.set_status_notice(status);
-        return true;
-    }
-    if app.toggle_keys.todo_card.matches(code, modifiers) {
-        app.toggle_todo_card();
         return true;
     }
     if app.dictation_key_matches(code, modifiers) {
@@ -2357,6 +2329,48 @@ pub(super) fn handle_pre_control_shortcuts(
     }
 
     handle_navigation_shortcuts(app, code, modifiers)
+}
+
+/// Pane/mode toggles that must behave identically in the local and remote key
+/// paths. Both dispatchers call this so a toggle added here reaches both; the
+/// two paths previously hand-maintained parallel lists and drifted, leaving
+/// `info_widget` and `copy_selection` unreachable in remote sessions.
+pub(super) fn handle_shared_toggle_keys(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if app.toggle_keys.copy_selection.matches(code, modifiers) {
+        app.toggle_copy_selection_mode();
+        return true;
+    }
+    if app.toggle_keys.side_panel.matches(code, modifiers) {
+        app.toggle_side_panel();
+        return true;
+    }
+    if app.toggle_keys.diagram_pane.matches(code, modifiers) {
+        app.toggle_diagram_pane_position();
+        return true;
+    }
+    if app.toggle_keys.typing_scroll_lock.matches(code, modifiers) {
+        app.toggle_typing_scroll_lock();
+        return true;
+    }
+    if app.toggle_keys.info_widget.matches(code, modifiers) {
+        crate::tui::info_widget::toggle_enabled();
+        let status = if crate::tui::info_widget::is_enabled() {
+            "Info widget: ON"
+        } else {
+            "Info widget: OFF"
+        };
+        app.set_status_notice(status);
+        return true;
+    }
+    if app.toggle_keys.todo_card.matches(code, modifiers) {
+        app.toggle_todo_card();
+        return true;
+    }
+    false
 }
 
 pub(super) fn handle_visible_copy_shortcut(
