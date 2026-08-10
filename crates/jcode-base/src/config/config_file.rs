@@ -97,25 +97,23 @@ fn collect_changed_keys(
         }
 
         prefix.push(key.clone());
-        match (
-            desired_value.as_table(),
-            baseline_value.and_then(|value| value.as_table()),
-        ) {
-            // Both sides are tables, so recurse and change only the leaves that
-            // actually differ. Replacing the whole table here would clobber
-            // sibling keys a concurrent edit had added.
-            (Some(_), Some(_)) => {
-                let baseline_child = baseline_value.expect("matched as a table above");
-                collect_changed_keys(prefix, baseline_child, desired_value, out);
-            }
+        // Recurse only when the desired side is a table. Binding the baseline
+        // as a value rather than re-deriving it avoids an `expect` for an
+        // invariant the match arm already established.
+        if desired_value.is_table() {
             // A table with no table baseline is wholly new to this caller.
             // Recursing against an empty baseline emits its leaves one by one,
-            // which lets the writer build the section without flattening it.
-            (Some(_), None) => {
-                let empty = toml::Value::Table(toml::map::Map::new());
-                collect_changed_keys(prefix, &empty, desired_value, out);
-            }
-            _ => out.push((prefix.clone(), KeyChange::Set(desired_value.clone()))),
+            // which lets the writer build the section without flattening it,
+            // and changing only the leaves that differ means a concurrent
+            // edit's sibling keys are never clobbered.
+            let empty = toml::Value::Table(toml::map::Map::new());
+            let baseline_child = match baseline_value {
+                Some(value) if value.is_table() => value,
+                _ => &empty,
+            };
+            collect_changed_keys(prefix, baseline_child, desired_value, out);
+        } else {
+            out.push((prefix.clone(), KeyChange::Set(desired_value.clone())));
         }
         prefix.pop();
     }
