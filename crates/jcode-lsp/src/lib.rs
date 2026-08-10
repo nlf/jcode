@@ -28,6 +28,7 @@ pub mod jsonrpc;
 pub mod ledger;
 pub mod position;
 pub mod registry;
+pub mod results;
 pub mod transport;
 
 pub use client::{Capabilities, Client, DEFAULT_REQUEST_TIMEOUT, PublishedDiagnostics, ServerSpec};
