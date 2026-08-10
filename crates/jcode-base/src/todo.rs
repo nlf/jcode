@@ -124,17 +124,13 @@ pub fn delivery_state_passes(goal: &TodoGoal) -> bool {
     let iteration_passes = goal
         .iteration_maturity
         .is_some_and(IterationMaturity::permits_completion);
-    let stopping_evidence_passes = !matches!(
-        goal.iteration_maturity,
-        Some(
-            IterationMaturity::PlateauConfirmed
-                | IterationMaturity::ConstraintsExhausted
-                | IterationMaturity::BudgetExhausted
-        )
-    ) || goal
-        .stopping_evidence
-        .as_deref()
-        .is_some_and(|evidence| !evidence.trim().is_empty());
+    let stopping_evidence_passes = !goal
+        .iteration_maturity
+        .is_some_and(IterationMaturity::requires_stopping_evidence)
+        || goal
+            .stopping_evidence
+            .as_deref()
+            .is_some_and(|evidence| !evidence.trim().is_empty());
     delivery_passes
         && autonomy_passes
         && iteration_passes
@@ -163,8 +159,20 @@ const LEGACY_TODO_HILL_CLIMBABILITY_CONTINUATION_MESSAGE: &str = "Your hill-clim
 
 /// Model-facing continuation for the private end-to-end ownership check. It
 /// asks for more work without revealing that an evaluator triggered it.
-pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "[automated follow-up - not a user message] Continue the work below. Keep the todo up to date; do not reply or wait for the user.";
-
+///
+/// Deliberately *not* an instruction to keep working no matter what. This is a
+/// scheduler heuristic with no knowledge of what the user last said, so it
+/// cannot override them: if they paused the work, or the only remaining step
+/// is their judgement, the correct response is to say so and stop. An earlier
+/// version ended with a flat "do not reply or wait for the user", which read
+/// as user authority and pushed toward inventing scope rather than finishing
+/// what was asked.
+///
+/// Describes the blocked-on-the-user case in plain language rather than naming
+/// the maturity state that clears the gate. Naming it would invite setting the
+/// field to get past the check, which is the same reason no other terminal
+/// state appears here.
+pub const TODO_OWNERSHIP_CONTINUATION_MESSAGE: &str = "[automated check, not a user message] Some goals below look unfinished. If there is work you already know is needed, continue it without asking first. Keep the todo up to date as you go. If instead a goal is waiting on the user, because they paused it or because the only thing left is their judgement, do not invent new work to fill the gap: record that it is waiting on them, say what they have to decide, and stop.";
 /// Build an ownership continuation that directs work toward each affected goal
 /// without exposing fields, scores, thresholds, or pass/fail language.
 pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[TodoGoal]) -> String {
@@ -249,17 +257,13 @@ pub fn build_todo_ownership_continuation_message(todos: &[TodoItem], goals: &[To
                 )
             ));
         }
-        if matches!(
-            goal.iteration_maturity,
-            Some(
-                IterationMaturity::PlateauConfirmed
-                    | IterationMaturity::ConstraintsExhausted
-                    | IterationMaturity::BudgetExhausted
-            )
-        ) && !goal
-            .stopping_evidence
-            .as_deref()
-            .is_some_and(|evidence| !evidence.trim().is_empty())
+        if goal
+            .iteration_maturity
+            .is_some_and(IterationMaturity::requires_stopping_evidence)
+            && !goal
+                .stopping_evidence
+                .as_deref()
+                .is_some_and(|evidence| !evidence.trim().is_empty())
         {
             message.push_str(&format!(
                 "\n- Goal \"{}\": gather more evidence about whether the work should stop.",
@@ -1695,7 +1699,10 @@ mod tests {
                 TODO_INTENT_UNDERSTANDING_CONTINUATION_MESSAGE,
                 "understanding of the user's intent",
             ),
-            (TODO_OWNERSHIP_CONTINUATION_MESSAGE, "continue the work"),
+            // "continue it" rather than "continue the work": the message is
+            // deliberately conditional now, since a goal blocked on the user
+            // must not be pushed forward.
+            (TODO_OWNERSHIP_CONTINUATION_MESSAGE, "continue it"),
             (TODO_COMPLETION_CONTINUATION_MESSAGE, "more validation"),
             (
                 TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE,
@@ -2181,6 +2188,91 @@ mod tests {
         ));
     }
 
+    /// The exact scenario this state was added for.
+    ///
+    /// A goal whose acceptance is the user's opinion ("is this layout better?")
+    /// has an honest maturity of `improving`: the loop is not exhausted, it is
+    /// blocked on a person. Before `AwaitingAcceptance` existed there was no
+    /// terminal state for that, so the ownership check fired and pushed for
+    /// more iteration on a goal whose only remaining step was someone else's
+    /// judgement. That is what makes an agent invent scope.
+    #[test]
+    fn a_goal_waiting_on_the_users_judgement_can_be_completed() {
+        let previous = vec![todo("widen the gutter", "in_progress", Some("widgets"))];
+        let completed = vec![todo("widen the gutter", "completed", Some("widgets"))];
+
+        // What I could honestly report before: reads as unfinished.
+        let mut blocked = delivery_goal(Some("widgets"), Some(DeliveryState::WorkflowValidated));
+        blocked.iteration_maturity = Some(IterationMaturity::Improving);
+        assert!(
+            !newly_completed_groups_have_sufficient_delivery(&previous, &completed, &[blocked]),
+            "precondition: an honest 'improving' report is treated as unfinished"
+        );
+
+        // The same work, now expressible.
+        let mut awaiting = delivery_goal(Some("widgets"), Some(DeliveryState::WorkflowValidated));
+        awaiting.iteration_maturity = Some(IterationMaturity::AwaitingAcceptance);
+        awaiting.stopping_evidence =
+            Some("Widgets render at the new width; whether that reads better is nlf's call".into());
+        assert!(
+            newly_completed_groups_have_sufficient_delivery(&previous, &completed, &[awaiting]),
+            "a goal blocked on the user's judgement must be completable"
+        );
+    }
+
+    /// The state must not become a free pass out of finishing work: claiming
+    /// it without saying what the user has to decide is still unfinished.
+    #[test]
+    fn awaiting_acceptance_still_has_to_say_what_the_user_must_decide() {
+        let previous = vec![todo("work", "in_progress", Some("widgets"))];
+        let completed = vec![todo("work", "completed", Some("widgets"))];
+
+        let mut bare = delivery_goal(Some("widgets"), Some(DeliveryState::WorkflowValidated));
+        bare.iteration_maturity = Some(IterationMaturity::AwaitingAcceptance);
+        bare.stopping_evidence = None;
+        assert!(
+            !newly_completed_groups_have_sufficient_delivery(&previous, &completed, &[bare.clone()]),
+            "awaiting_acceptance with no note is not a defensible stop"
+        );
+
+        // Whitespace is not evidence either.
+        let mut blank = bare;
+        blank.stopping_evidence = Some("   ".to_string());
+        assert!(
+            !newly_completed_groups_have_sufficient_delivery(&previous, &completed, &[blank]),
+            "blank stopping evidence must not pass"
+        );
+    }
+
+    /// The continuation must not tell the model to keep working regardless of
+    /// what the user said. It is a scheduler heuristic, not user authority.
+    #[test]
+    fn the_ownership_continuation_does_not_claim_user_authority() {
+        let message = TODO_OWNERSHIP_CONTINUATION_MESSAGE;
+        assert!(
+            !message.contains("do not reply or wait for the user"),
+            "the unconditional do-not-wait instruction is what pushed toward \
+             inventing scope: {message}"
+        );
+        assert!(
+            message.contains("waiting on the user"),
+            "it must name the blocked-on-the-user case: {message}"
+        );
+        assert!(
+            message.contains("do not invent new work"),
+            "it must say not to fill the gap with invented scope: {message}"
+        );
+        assert!(
+            !message.contains("awaiting_acceptance"),
+            "must not name the state that clears the gate, or it invites setting \
+             the field instead of doing the work: {message}"
+        );
+        assert!(
+            message.contains("not a user message"),
+            "it must still identify itself as automated: {message}"
+        );
+    }
+
     #[test]
     fn delivery_is_not_required_before_group_completion() {
         let previous = vec![todo("work", "pending", Some("ship"))];
@@ -2219,7 +2311,7 @@ mod tests {
     /// that the todo write which triggered the check was discarded.
     #[test]
     fn ownership_message_names_the_field_that_must_be_raised() {
-        assert!(TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("Continue the work below"));
+        assert!(TODO_OWNERSHIP_CONTINUATION_MESSAGE.contains("continue it without asking first"));
         for private_calibration in [
             "necessary_followthrough",
             "outcome_reached",

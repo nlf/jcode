@@ -871,12 +871,12 @@ impl Tool for TodoTool {
                             },
                             "iteration_maturity": {
                                 "type": "string",
-                                "enum": ["not_started", "exploring", "improving", "plateau_unproven", "outcome_reached", "constraints_exhausted", "plateau_confirmed", "budget_exhausted"],
+                                "enum": ["not_started", "exploring", "improving", "plateau_unproven", "outcome_reached", "awaiting_acceptance", "constraints_exhausted", "plateau_confirmed", "budget_exhausted"],
                                 "description": "How far the feedback loop was actually exercised, and any evidence-based reason to stop iterating."
                             },
                             "stopping_evidence": {
                                 "type": "string",
-                                "description": "Evidence for the reported iteration_maturity: attempts, observations, or a real budget limit."
+                                "description": "Evidence for iteration_maturity: attempts, observations, a budget limit, or what the user must decide."
                             }
                         }
                     }

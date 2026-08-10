@@ -315,21 +315,43 @@ semantic_state! {
         Exploring = "exploring", legacy: 13..=29, score: 21,
         Improving = "improving", legacy: 30..=49, score: 40,
         PlateauUnproven = "plateau_unproven", legacy: 50..=69, score: 60,
-        OutcomeReached = "outcome_reached", legacy: 70..=79, score: 74,
+        OutcomeReached = "outcome_reached", legacy: 70..=74, score: 72,
+        AwaitingAcceptance = "awaiting_acceptance", legacy: 75..=79, score: 76,
         ConstraintsExhausted = "constraints_exhausted", legacy: 80..=87, score: 84,
         PlateauConfirmed = "plateau_confirmed", legacy: 88..=95, score: 92,
         BudgetExhausted = "budget_exhausted", legacy: 96..=100, score: 98,
     }
 }
-
 impl IterationMaturity {
     /// Terminal bases that can justify completing a goal. `BudgetExhausted` is
     /// deliberately terminal but not "better" than a confirmed plateau; the
     /// ordering exists only for legacy numeric compatibility.
+    ///
+    /// `AwaitingAcceptance` is terminal for the same practical reason but a
+    /// different cause: the loop is not exhausted, it is *blocked on a person*.
+    /// Some goals end in a judgement only the user can make ("is this layout
+    /// better?", "is this wording right?"), and without a terminal state for
+    /// that case an honest report reads as unfinished work. The follow-up
+    /// machinery then pushes for more iteration on a goal whose only remaining
+    /// step is someone else's opinion, which is how an agent ends up inventing
+    /// scope nobody asked for.
     pub fn permits_completion(self) -> bool {
         matches!(
             self,
             Self::OutcomeReached
+                | Self::AwaitingAcceptance
+                | Self::ConstraintsExhausted
+                | Self::PlateauConfirmed
+                | Self::BudgetExhausted
+        )
+    }
+    /// States that must say *why* stopping is defensible. `AwaitingAcceptance`
+    /// is included deliberately: naming what the user has to decide is what
+    /// keeps it from becoming a free pass out of finishing the work.
+    pub fn requires_stopping_evidence(self) -> bool {
+        matches!(
+            self,
+            Self::AwaitingAcceptance
                 | Self::ConstraintsExhausted
                 | Self::PlateauConfirmed
                 | Self::BudgetExhausted
