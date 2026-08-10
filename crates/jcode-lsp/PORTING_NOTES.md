@@ -21,7 +21,7 @@ at an exact 56 with no case titles behind it. What follows is the titles.
 | E `WorkspaceEdit` | 11 | 0 | v2 |
 | write: `rename_file` | 4 | 0 | v2 |
 
-**Tests written exceed cases ported**, deliberately. 188 lib tests plus 62
+**Tests written exceed cases ported**, deliberately. 189 lib tests plus 62
 integration tests cover the 41 ported cases, because a behaviour omp asserts once
 often needs two or three tests here: their fixtures assert an outcome where the
 Rust version can also pin the *reason* (the error variant, what was consumed, what
@@ -108,8 +108,12 @@ right" have not been checked against each other.
 - ~~a `TimedOut` freshness result discards the cached publish where omp returns it~~ —
   examined, and the judgement turned out to be unmakeable: one `TimedOut` covered both "a
   publish arrived but never settled" and "nothing was ever published", which call for
-  opposite handling. Split into `TimedOutWithPublish` and `TimedOutWithNothing` so the
-  caller can act. Six of six audited items have been worth the visit, five as defects.
+  opposite handling. Split into `TimedOutWithPublish` and `TimedOutWithNothing`. The reviewer
+  then retracted "judgement call" on round 5, having found that omp's `diagnostics.ts:259`
+  returns the publish after its loop expires — so discarding it would diverge on every slow
+  server. `a_timed_out_publish_is_still_in_the_callers_hand` pins that the split is enough:
+  the caller holds the observation it passed in, so the diagnostics were never unavailable,
+  only unsanctioned.
 - `idle_timeout` is parsed and consumed by nothing, pending Q1.
 - ~~`warmupTimeoutMs` and `capabilities` silently dropped by serde~~ — checked, real,
   now parsed. Neither is *consumed* yet (startup readiness and the rust-analyzer

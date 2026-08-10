@@ -520,3 +520,55 @@ fn a_timeout_says_whether_anything_was_published() {
         Decision::Accept(Freshness::TimedOutWithNothing)
     );
 }
+
+/// **A timed-out wait with a publish leaves the diagnostics usable, as omp does.**
+///
+/// The reviewer first filed this as a judgement call, then retracted that on round 5: omp's
+/// `diagnostics.ts` returns `published.diagnostics` after its loop expires, so discarding
+/// them would be a behavioural divergence on every slow server rather than a taste.
+///
+/// The split into `TimedOutWithPublish` / `TimedOutWithNothing` is what makes omp's behaviour
+/// *available* here, and this test is the proof that it is enough: the caller already holds
+/// the `Observation` it passed in, so the diagnostics are in hand -- what it lacked was
+/// permission to use them. `TimedOutWithPublish` is that permission, and
+/// `TimedOutWithNothing` withholds it.
+///
+/// Asserted as the pairing a caller relies on, since the decision and the data live in
+/// different places and nothing else says they must agree.
+#[test]
+fn a_timed_out_publish_is_still_in_the_callers_hand() {
+    let mut wait = FreshnessWait::new(FreshnessRequest {
+        expected_version: None,
+        settle: ms(500),
+        timeout: ms(100),
+    });
+
+    let observation = seen("boom", None, 1);
+    let decision = wait.observe(&observation, ms(150));
+
+    assert_eq!(decision, Decision::Accept(Freshness::TimedOutWithPublish));
+    // The point: on this variant the caller's own observation carries the diagnostics, so
+    // omp's "return what was published" is reachable without a second lookup or a re-poll.
+    let diagnostics = observation
+        .diagnostics
+        .as_ref()
+        .expect("TimedOutWithPublish must never be paired with an empty observation");
+    assert_eq!(diagnostics.len(), 1);
+
+    // And the other variant is only ever reached with nothing to hand over, so a caller
+    // matching on it cannot accidentally report an empty list as a clean file.
+    let mut empty = FreshnessWait::new(FreshnessRequest {
+        expected_version: None,
+        settle: ms(500),
+        timeout: ms(100),
+    });
+    let nothing_seen = nothing(1);
+    assert_eq!(
+        empty.observe(&nothing_seen, ms(150)),
+        Decision::Accept(Freshness::TimedOutWithNothing)
+    );
+    assert!(
+        nothing_seen.diagnostics.is_none(),
+        "TimedOutWithNothing must never be paired with a publish"
+    );
+}
