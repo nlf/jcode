@@ -102,6 +102,22 @@ Three defects, two of which no failing test would have surfaced:
 3. **`set_preserving_decor` had no test reaching it** (`c31b392e6`). Deleting
    its body broke nothing, including the test named for that exact case.
 
+## Will these checks actually run again?
+
+A check that never executes is not a check. The tests here were in a trap the
+workflow already documents: `jcode-base --lib` was invoked by exactly one
+Windows-only filter, so `config::format_tests` and `config::color_tests` would
+have compiled on every PR and run on none. The integration test was worse —
+`--lib` does not run `tests/`, and only `provider_matrix` and `e2e` are named
+as integration binaries, so it would never have run anywhere.
+
+| claim | check | observed |
+|---|---|---|
+| the unit cohort runs in CI | added a step; ran the exact wrapper command locally | 101 passed, exit 0 |
+| the cohort really includes these tests | `--list` on the CI filter | 17 `format_tests` + `color_tests` present |
+| the integration test runs in CI | named explicitly; ran the wrapper locally | 1 passed, exit 0 |
+| the workflow is still valid | parsed the YAML, located the step | present in the `build` job |
+
 ## Method notes worth keeping
 
 - **A live check that passes against the unfixed build is not evidence.** I
