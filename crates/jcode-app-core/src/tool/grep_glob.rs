@@ -1,7 +1,8 @@
 //! The `grep` and `glob` tools.
 //!
 //! These were adapters onto `agentgrep`. They now use `jcode-search`, ported
-//! from omp, so agentgrep can be deleted.
+//! from omp; agentgrep has since been deleted, along with its `find`, `trace`,
+//! and `outline` modes.
 //!
 //! # Why the schema keeps its Claude-Code shape
 //!
