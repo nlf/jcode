@@ -62,13 +62,28 @@
 /// redirects `$HOME`: comparing against `$HOME` would compare the sandbox to
 /// itself and never fire.
 ///
-/// # Why it compares exact paths rather than `starts_with`
+/// # Scope: writes, not reads
 ///
-/// "Inside the real home" is too coarse, and this machine proves it: `TMPDIR`
-/// is `~/.jcode/scratch`, so `TempDir::new()` hands back a path *underneath*
-/// the real home. A `starts_with` test flags every correctly sandboxed test on
-/// such a setup. Only the specific protected paths count, so a temp dir that
-/// happens to live under home is fine while `~/.jcode` itself is not.
+/// This guards the write path, not path resolution. Guarding resolution was
+/// tried first and measured: it failed 123 tests in `jcode-base` alone, and
+/// the backtraces showed almost all of them were the same thing — a
+/// `LazyLock` config cache loading the real config on first touch, from
+/// whichever test happened to run first. That is non-hermetic, but it is a
+/// *read*, and a read has never destroyed anyone's settings.
+///
+/// All three historical incidents were saves. Guarding writes catches every
+/// one of them while leaving the read noise alone. Making reads hermetic too
+/// is worth doing, but it means giving `CONFIG_CACHE` a test seam rather than
+/// editing 123 tests, and that is a separate piece of work.
+///
+/// # Containment, with one exception that matters
+///
+/// A write targets a file *inside* the protected directory, so this tests
+/// containment rather than equality. The exception is that on this machine
+/// `TMPDIR` is `~/.jcode/scratch`, so `TempDir::new()` returns a path
+/// underneath the very directory being protected. A naive `starts_with`
+/// therefore flags every correctly sandboxed test. Anything under a temp root
+/// is excluded first, which is what makes the check usable here at all.
 ///
 /// This panics rather than silently redirecting: a redirect would let a
 /// misconfigured test keep passing, which is the failure this exists to end.
@@ -85,25 +100,25 @@ pub(crate) fn check_not_real_home(what: &str, resolved: &std::path::Path) {
         // suite on an exotic platform. The C-net redirect still applies.
         return;
     };
-    // Exact match against the specific protected paths, not containment: see
-    // the note above about TMPDIR living inside the home directory.
-    //
+    // A temp dir can legitimately live *inside* the protected directory: on
+    // this machine TMPDIR is ~/.jcode/scratch. Excluding temp roots first is
+    // what makes containment usable; without it every sandboxed test trips.
+    if under_temp_root(resolved) {
+        return;
+    }
     // The config entry is the platform config dir rather than a hardcoded
-    // `.config`, since on macOS that is `~/Library/Application Support`. It is
-    // recomputed here rather than taken from the caller so the guard states
-    // its own idea of what is protected.
+    // `.config`, since on macOS that is `~/Library/Application Support`.
     let mut protected = vec![real.join(".jcode")];
     if let Some(config) = dirs::config_dir() {
         protected.push(config.join("jcode"));
     }
-    if !protected.iter().any(|p| resolved == p) {
+    if !protected.iter().any(|p| resolved.starts_with(p)) {
         return;
     }
     panic!(
-        "test escaped its sandbox: {what}() resolved {}, which is the \
-         developer's real jcode state directory.\n\
+        "test wrote into the developer's real jcode state: {what} -> {}\n\
          \n\
-         This test reads or writes the developer's actual jcode state. On a \
+         This write lands in the developer's actual ~/.jcode. On a config \
          save() path it silently destroys their settings: three suites have \
          done exactly this, and each took months to find, because an escaping \
          test passes just like a sandboxed one.\n\
@@ -117,9 +132,30 @@ pub(crate) fn check_not_real_home(what: &str, resolved: &std::path::Path) {
          HOME to a temp dir too, so the fallback lands inside the sandbox \
          (see save_github_token_creates_config_dir). As a last resort set \
          JCODE_ALLOW_REAL_HOME_IN_TESTS=1, but only for a test that genuinely \
-         neither reads nor writes.",
+         writes nothing that matters.",
         resolved.display(),
     )
+}
+/// Whether a path lives under a temporary-directory root.
+///
+/// Load-bearing on this machine, where `TMPDIR` is `~/.jcode/scratch`: without
+/// it, every correctly sandboxed test writing into its own `TempDir` would be
+/// flagged as writing into the protected directory.
+#[cfg(feature = "test-guard")]
+fn under_temp_root(path: &std::path::Path) -> bool {
+    let mut roots = vec![std::env::temp_dir()];
+    for key in ["TMPDIR", "TMP", "TEMP", "JCODE_HOME"] {
+        if let Some(value) = std::env::var_os(key) {
+            roots.push(std::path::PathBuf::from(value));
+        }
+    }
+    roots.iter().any(|root| {
+        // Compare canonicalized where possible: on macOS TMPDIR is often a
+        // /var symlink to /private/var, and an uncanonicalized compare misses.
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        path.starts_with(root) || canonical_path.starts_with(&canonical_root)
+    })
 }
 /// The real home directory, from the passwd database rather than `$HOME`.
 ///

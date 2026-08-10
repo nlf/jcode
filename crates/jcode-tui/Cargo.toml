@@ -113,5 +113,11 @@ test-support = ["jcode-app-core/test-support"]
 # target. Feature unification applies this only to test/bench/example builds.
 jcode-app-core = { path = "../jcode-app-core", default-features = false, features = ["test-support"] }
 
+# Arms the real-home write guard for this crate's tests. Same unification
+# trick as the line above, and the same reason it is safe: dev-dependencies
+# never reach a shipped binary. This suite is the one that twice destroyed a
+# hand-written palette in the real config.
+jcode-storage = { path = "../jcode-storage", features = ["test-guard"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 global-hotkey = "0.7"

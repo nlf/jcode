@@ -157,9 +157,7 @@ pub fn jcode_dir() -> Result<PathBuf> {
     }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    let resolved = home.join(".jcode");
-    test_guard::check_not_real_home("jcode_dir", &resolved);
-    Ok(resolved)
+    Ok(home.join(".jcode"))
 }
 
 pub fn logs_dir() -> Result<PathBuf> {
@@ -199,9 +197,7 @@ pub fn app_config_dir() -> Result<PathBuf> {
 
     let config_dir =
         dirs::config_dir().ok_or_else(|| anyhow::anyhow!("No config directory found"))?;
-    let resolved = config_dir.join("jcode");
-    test_guard::check_not_real_home("app_config_dir", &resolved);
-    Ok(resolved)
+    Ok(config_dir.join("jcode"))
 }
 
 /// Resolve a path under the user's home directory, but sandbox it under
@@ -223,9 +219,7 @@ pub fn user_home_path(relative: impl AsRef<Path>) -> Result<PathBuf> {
     }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    let resolved = home.join(relative);
-    test_guard::check_not_real_home("user_home_path", &resolved);
-    Ok(resolved)
+    Ok(home.join(relative))
 }
 
 /// Best-effort startup hardening for local config dirs that may store credentials.
@@ -526,6 +520,11 @@ fn write_json_inner<T: Serialize + ?Sized>(
 }
 
 fn write_bytes_inner(path: &Path, bytes: &[u8], durable: bool, secret: bool) -> Result<()> {
+    // Every write in this crate funnels through here, so this one call covers
+    // write_json, write_json_secret, write_json_fast, write_text_secret,
+    // write_bytes, and upsert_env_file_value.
+    test_guard::check_not_real_home("write", path);
+
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
         if secret {

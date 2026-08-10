@@ -1,25 +1,23 @@
-//! Tests for the real-home guard.
+//! Tests for the real-home write guard.
 //!
 //! These matter more than most: the guard's entire value is that it fires on
-//! an escape and stays quiet on a correctly sandboxed test. A guard that fires
-//! on healthy work becomes noise and gets disabled, which is the cry-wolf
-//! failure this codebase has hit before.
+//! an escaping write and stays quiet on a correctly sandboxed one. A guard
+//! that fires on healthy work becomes noise and gets disabled, which is the
+//! cry-wolf failure this codebase has hit before.
 //!
-//! Note these run only with `--features test-guard`, since without it
-//! `check_not_real_home` compiles to nothing. The crate's own suite is run
-//! both ways in CI for that reason.
+//! They run only with `--features test-guard`, since without it the guard
+//! compiles to nothing.
 
 #![cfg(feature = "test-guard")]
 
 use std::path::PathBuf;
 
-/// Serialize env mutation across these tests. They all edit process-global
-/// state, so without this they corrupt each other's setup non-deterministically
-/// (the flake shape that hid a real defect in the config-save work).
+/// Serialize env mutation across these tests. They edit process-global state,
+/// so without this they corrupt each other non-deterministically.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn real_home() -> PathBuf {
-    // Same source the guard uses, so the test cannot pass by comparing a
+    // The same source the guard uses, so a test cannot pass by comparing a
     // redirected $HOME against itself.
     #[cfg(unix)]
     unsafe {
@@ -33,123 +31,109 @@ fn real_home() -> PathBuf {
     PathBuf::from(std::env::var_os("USERPROFILE").expect("USERPROFILE"))
 }
 
-/// The escape this whole mechanism exists to catch: `JCODE_HOME` unset, `HOME`
-/// pointing at the developer's real directory. This is the exact shape of all
-/// three historical incidents.
+/// The escape this exists to catch, and the exact shape of all three
+/// historical incidents: a write landing in the real `~/.jcode`.
+///
+/// Deliberately targets a file that does not exist and is never created: the
+/// guard must panic before any filesystem work happens, which is the whole
+/// point. If this test ever starts leaving a file behind, the guard has moved
+/// to the wrong side of the write.
 #[test]
-fn an_unsandboxed_resolution_panics() {
+fn a_write_into_the_real_jcode_home_panics() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var_os("JCODE_HOME");
-    unsafe { std::env::remove_var("JCODE_HOME") };
+    let victim = real_home().join(".jcode").join("guard-probe-never-written");
 
-    let result = std::panic::catch_unwind(crate::jcode_dir);
+    let result = std::panic::catch_unwind(|| crate::write_json(&victim, &serde_json::json!({})));
 
-    if let Some(prev) = prev {
-        unsafe { std::env::set_var("JCODE_HOME", prev) };
-    }
-
-    let err = result.expect_err("resolving the real home must panic under the guard");
+    let err = result.expect_err("a write into the real jcode home must panic");
     let msg = err
         .downcast_ref::<String>()
         .map(String::as_str)
         .unwrap_or_default();
     assert!(
-        msg.contains("escaped its sandbox"),
+        msg.contains("real jcode state"),
         "panic should explain the escape, got: {msg}"
     );
     assert!(
         msg.contains("JCODE_HOME"),
         "panic should name the fix, got: {msg}"
     );
-}
-
-/// A properly sandboxed test must be untouched. Without this, the guard could
-/// pass its other test by panicking unconditionally.
-#[test]
-fn a_sandboxed_resolution_is_allowed() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var_os("JCODE_HOME");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-    unsafe { std::env::set_var("JCODE_HOME", temp.path()) };
-
-    let resolved = crate::jcode_dir().expect("sandboxed resolution should succeed");
-
-    match prev {
-        Some(prev) => unsafe { std::env::set_var("JCODE_HOME", prev) },
-        None => unsafe { std::env::remove_var("JCODE_HOME") },
-    }
-    assert_eq!(resolved, temp.path());
-}
-
-/// The false positive that would have made this unusable.
-///
-/// `save_github_token_creates_config_dir` unsets `JCODE_HOME` on purpose, to
-/// exercise the XDG fallback, and redirects `HOME` so the fallback still lands
-/// in a temp dir. That is correct and must not fire. A guard keyed on
-/// "`JCODE_HOME` is unset" would fail it, which is why the guard compares the
-/// resolved path against the passwd home instead.
-#[test]
-fn unsetting_jcode_home_is_fine_when_home_is_redirected() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let prev_jcode_home = std::env::var_os("JCODE_HOME");
-    let prev_home = std::env::var_os("HOME");
-    let temp = tempfile::TempDir::new().expect("temp dir");
-
-    unsafe {
-        std::env::remove_var("JCODE_HOME");
-        std::env::set_var("HOME", temp.path());
-    }
-
-    let result = std::panic::catch_unwind(crate::jcode_dir);
-
-    unsafe {
-        match prev_home {
-            Some(prev) => std::env::set_var("HOME", prev),
-            None => std::env::remove_var("HOME"),
-        }
-        if let Some(prev) = prev_jcode_home {
-            std::env::set_var("JCODE_HOME", prev);
-        }
-    }
-
-    let resolved = result
-        .expect("redirected HOME is a correct sandbox and must not panic")
-        .expect("resolution should succeed");
     assert!(
-        resolved.starts_with(temp.path()),
-        "should resolve inside the temp home, got {}",
-        resolved.display()
-    );
-    // Not `starts_with(real_home())`: TMPDIR on this machine is
-    // `~/.jcode/scratch`, so the sandbox legitimately lives *under* the real
-    // home. What must not happen is resolving to the real state dir itself.
-    assert_ne!(
-        resolved,
-        real_home().join(".jcode"),
-        "must not resolve to the real jcode state directory"
+        !victim.exists(),
+        "the guard must refuse before writing anything"
     );
 }
 
-/// The opt-out has to work, or a legitimately-real-home test has no way out.
+/// A sandboxed write must be untouched. Without this the guard could pass its
+/// other test by panicking unconditionally.
+#[test]
+fn a_write_into_a_temp_dir_is_allowed() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let target = temp.path().join("nested").join("state.json");
+
+    crate::write_json(&target, &serde_json::json!({"ok": true})).expect("sandboxed write");
+
+    assert!(target.exists(), "the sandboxed write should have landed");
+}
+
+/// The case that makes containment usable on this machine.
+///
+/// `TMPDIR` here is `~/.jcode/scratch`, so a `TempDir` lives *inside* the very
+/// directory being protected. A naive `starts_with` check flags every
+/// correctly sandboxed test. This pins the exclusion so that regression is
+/// caught rather than rediscovered.
+#[test]
+fn a_temp_dir_inside_the_protected_directory_is_still_allowed() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let scratch = real_home().join(".jcode").join("scratch");
+    if !scratch.exists() {
+        // Only meaningful on a machine whose TMPDIR is inside the home.
+        return;
+    }
+    let temp = tempfile::Builder::new()
+        .prefix("guard-containment-")
+        .tempdir_in(&scratch)
+        .expect("temp dir inside the protected directory");
+    let target = temp.path().join("state.json");
+
+    crate::write_json(&target, &serde_json::json!({"ok": true}))
+        .expect("a temp dir inside the protected directory is still a sandbox");
+
+    assert!(target.exists());
+    assert!(
+        target.starts_with(real_home().join(".jcode")),
+        "this test is only meaningful if the path really is inside the protected dir"
+    );
+}
+
+/// The opt-out has to work, or a test that legitimately writes to the real
+/// home has no way out.
 #[test]
 fn the_explicit_opt_out_is_honoured() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var_os("JCODE_HOME");
-    unsafe {
-        std::env::remove_var("JCODE_HOME");
-        std::env::set_var("JCODE_ALLOW_REAL_HOME_IN_TESTS", "1");
-    }
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let target = temp.path().join("state.json");
 
-    let result = std::panic::catch_unwind(crate::jcode_dir);
-
-    unsafe {
-        std::env::remove_var("JCODE_ALLOW_REAL_HOME_IN_TESTS");
-        if let Some(prev) = prev {
-            std::env::set_var("JCODE_HOME", prev);
-        }
-    }
+    unsafe { std::env::set_var("JCODE_ALLOW_REAL_HOME_IN_TESTS", "1") };
+    let result = std::panic::catch_unwind(|| crate::write_json(&target, &serde_json::json!({})));
+    unsafe { std::env::remove_var("JCODE_ALLOW_REAL_HOME_IN_TESTS") };
 
     result
         .expect("the opt-out must suppress the panic")
-        .expect("resolution should succeed");
+        .expect("write should succeed");
+}
+
+/// Secret writes go through a different public entry point but the same
+/// choke point. Pinned separately because auth tokens are exactly the kind of
+/// thing a test should never scribble into the real home.
+#[test]
+fn a_secret_write_into_the_real_jcode_home_also_panics() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let victim = real_home().join(".jcode").join("guard-probe-secret");
+
+    let result = std::panic::catch_unwind(|| crate::write_text_secret(&victim, "token"));
+
+    result.expect_err("a secret write into the real jcode home must panic");
+    assert!(!victim.exists(), "the guard must refuse before writing");
 }

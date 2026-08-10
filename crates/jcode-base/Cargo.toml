@@ -156,3 +156,8 @@ global-hotkey = "0.7"
 # MultiProvider routing tests exercise the real OpenRouter/OpenAI-compatible
 # runtime through the composition-root registry, exactly like the binary.
 jcode-provider-openrouter-runtime = { path = "../jcode-provider-openrouter-runtime" }
+
+# Arms the real-home guard for this crate's tests. Dev-dependencies are
+# compiled only for test targets, so this cannot reach a shipped binary.
+# See crates/jcode-storage/src/test_guard.rs.
+jcode-storage = { path = "../jcode-storage", features = ["test-guard"] }
