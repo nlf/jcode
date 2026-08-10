@@ -13,5 +13,12 @@ rand = "0.9.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+[features]
+# Enabled by consumers through their `[dev-dependencies]`, which cargo compiles
+# only for test targets. That is what makes the guard active for tests and
+# structurally absent from every shipped binary, at every profile. See
+# `src/test_guard.rs` for why this is a feature rather than `cfg!(test)`.
+test-guard = []
+
 [dev-dependencies]
 tempfile = "3"

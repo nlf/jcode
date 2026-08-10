@@ -1,3 +1,7 @@
+mod test_guard;
+#[cfg(test)]
+mod test_guard_tests;
+
 use anyhow::Result;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -153,7 +157,9 @@ pub fn jcode_dir() -> Result<PathBuf> {
     }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    Ok(home.join(".jcode"))
+    let resolved = home.join(".jcode");
+    test_guard::check_not_real_home("jcode_dir", &resolved);
+    Ok(resolved)
 }
 
 pub fn logs_dir() -> Result<PathBuf> {
@@ -193,7 +199,9 @@ pub fn app_config_dir() -> Result<PathBuf> {
 
     let config_dir =
         dirs::config_dir().ok_or_else(|| anyhow::anyhow!("No config directory found"))?;
-    Ok(config_dir.join("jcode"))
+    let resolved = config_dir.join("jcode");
+    test_guard::check_not_real_home("app_config_dir", &resolved);
+    Ok(resolved)
 }
 
 /// Resolve a path under the user's home directory, but sandbox it under
@@ -215,7 +223,9 @@ pub fn user_home_path(relative: impl AsRef<Path>) -> Result<PathBuf> {
     }
 
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    Ok(home.join(relative))
+    let resolved = home.join(relative);
+    test_guard::check_not_real_home("user_home_path", &resolved);
+    Ok(resolved)
 }
 
 /// Best-effort startup hardening for local config dirs that may store credentials.
