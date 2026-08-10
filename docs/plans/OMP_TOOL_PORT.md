@@ -1832,10 +1832,22 @@ applied result. Seven modules, all mutation-tested, clippy clean.
 
 ## What is deliberately not here
 
+> **Two of these landed on 2026-08-10** and the entries are left in place with
+> their original reasoning, because what the estimates got wrong is the useful
+> part. See `~/NLFCODE.md` items 1 and 2 for the full accounting.
+
 - **The repair layer** — 83% of `apply.ts`. Phase 5, gated on measurement.
+  **Tier 1 shipped in `c9173e170`** (`repair.rs`): two-sided echo, duplicate
+  prefix/suffix, indentation. The "2-3 weeks" figure measured the layer by line
+  count, but the bulk of those lines are the closer-spare rules, which are
+  inseparable from a tree-sitter veto and remain unported. The textual rules
+  that carry the everyday value were an afternoon.
 - **Block ops (`N*`)** — needs tree-sitter. `block.test.ts` is 49 cases.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
 - **Recovery (3-way merge on drift)** — `recovery.ts`, 12.6 KB.
+  **Shipped in `fd73854e7`** (`recovery.rs`), and it is *not* a three-way
+  merge: omp built that and removed it. It is anchor remapping plus verbatim
+  replay, refusing whenever the anchors cannot be proven.
 - **All jcode integration** — 3b and 3c, where the real remaining risk lives.
 
 Both excluded features are refused with a message naming them as unimplemented,
