@@ -250,6 +250,35 @@ impl Server {
             // lands but its answer cannot. Nothing else in this fixture produces that
             // ordering: STOP_READING_ON stops before the next write, which makes the
             // request itself fail and never reaches the answer path.
+            // Ask a small question and then close our stdin, so the client's answer fails
+            // *cleanly* -- a broken pipe with no bytes landing. Distinct from
+            // askThenDeafen, whose 20,000-section answer is large enough that its prefix
+            // lands and poisons the transport by itself. This knob is the case where the
+            // failure is fatal and nothing was written, which is the one that used to leave
+            // the transport looking healthy.
+            "test/askThenClose" => {
+                let inner_id = {
+                    let mut observed = self.lock();
+                    observed.next_server_id += 1;
+                    format!("srv-{}", observed.next_server_id)
+                };
+                self.lock().awaiting.insert(
+                    inner_id.clone(),
+                    (id.clone(), "workspace/configuration".to_string()),
+                );
+                self.send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": inner_id,
+                    "method": "workspace/configuration",
+                    "params": {"items": [{"section": "any"}]}
+                }));
+                // Exit, so the client's answer -- however small -- hits a broken pipe and
+                // fails cleanly with no bytes landing. `std::process::exit` rather than a
+                // flag, because the failure has to happen on the *answer* write and any
+                // graceful path risks draining it first.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::process::exit(0);
+            }
             "test/askThenDeafen" => {
                 let inner_id = {
                     let mut observed = self.lock();

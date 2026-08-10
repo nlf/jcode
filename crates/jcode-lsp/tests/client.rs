@@ -1095,3 +1095,81 @@ async fn concurrent_callers_each_receive_their_own_answer() {
         "40 concurrent requests left entries in the pending map"
     );
 }
+
+/// **A client that can no longer be used says so, without needing a doomed request.**
+///
+/// `Transport::desynchronised` existed and was not reachable from `Client`, so the only way
+/// for a pool or adapter to discover a dead client was to send a request and read the
+/// failure -- an evict decision costing a request and its deadline.
+///
+/// Also asserts the second half: an unanswered *server* request marks the connection
+/// unusable even when the failed answer left no bytes behind. The reviewer measured that a
+/// large abandoned answer poisons the transport by itself, because its prefix lands, so the
+/// wedge was already fatal by luck rather than by decision. A server waiting forever for an
+/// answer is wedged regardless of how many bytes reached it.
+#[tokio::test]
+async fn a_wedged_client_reports_itself_unusable() {
+    let client = start(&[], json!({})).await;
+    assert!(
+        !client.unusable(),
+        "a freshly started client must not report itself unusable"
+    );
+
+    // The server asks for 20,000 config sections and stops reading, so the answer cannot be
+    // written.
+    let _ = client
+        .request("test/askThenDeafen", json!({}), Duration::from_secs(20))
+        .await
+        .expect_err("a wedged connection cannot answer");
+
+    assert!(
+        client.unusable(),
+        "the connection is wedged and must report itself unusable, so a pool can evict it \
+         without first spending a request to find out"
+    );
+}
+
+/// The narrow case the `poison()` call covers, and why it is **not** tested end to end.
+///
+/// `a_wedged_client_reports_itself_unusable` cannot see the explicit `poison()`: its
+/// 20,000-section answer is large enough that the prefix lands, which poisons the transport
+/// by itself. Deleting `poison()` leaves that test green, so it does not prove the call does
+/// anything.
+///
+/// I tried to reach the other case -- an answer that fails *cleanly*, with no bytes written
+/// -- with a fixture that asks a small question and exits. It does not work, and the reason
+/// is worth recording: **a small write into the pipe of an exited process still succeeds.**
+/// Measured, by instrumenting the send: `outcome = None`, no error at all. The kernel accepts
+/// it into the buffer and only a subsequent write, or a large one, sees `EPIPE`.
+///
+/// So on this platform the answer write either succeeds or has already landed bytes, and the
+/// window where it fails having written nothing is not reachable through the public API
+/// without racing the process teardown.
+///
+/// The `poison()` call therefore stays as defence with no test behind it, and this comment is
+/// the honest statement of that. It costs one atomic store on a path that has already
+/// failed, and the alternative -- a transport that looks healthy after the server was left
+/// waiting forever -- is worse than an untested line. Recorded rather than deleted, because a
+/// reviewer asked for it on the reasoning that the outcome should not depend on the size of
+/// the answer, and that reasoning is right even where the failure is hard to stage.
+#[tokio::test]
+async fn a_small_answer_to_a_dead_server_still_lands_in_the_pipe() {
+    let client = start(&[], json!({})).await;
+
+    // The server asks, then exits. The answer is one config section.
+    let _ = client
+        .request("test/askThenClose", json!({}), Duration::from_secs(5))
+        .await;
+
+    // No assertion on `unusable()`: the write succeeded, so nothing poisoned the transport
+    // and nothing should have. What is asserted is that this does not hang or panic, and that
+    // the client survives a server exiting mid-exchange.
+    //
+    // If a future platform or a larger default answer makes the write fail here, the
+    // `poison()` call in `answer_channel` becomes observable and this test should become the
+    // one that pins it.
+    assert!(
+        client.outstanding().await == 0,
+        "a request whose server exited must not stay pending"
+    );
+}

@@ -134,6 +134,16 @@ pub struct Writer {
 }
 
 impl Writer {
+    /// Mark the connection unusable, without writing anything.
+    ///
+    /// For the case where the *failure to write* is itself fatal: an unanswered server
+    /// request leaves the server waiting forever, whether or not any bytes of the answer
+    /// landed. Without this, a small answer that failed cleanly left the transport looking
+    /// healthy and the next caller discovered otherwise at its own expense.
+    pub fn poison(&self) {
+        self.poisoned.store(true, Ordering::SeqCst);
+    }
+
     /// Send one framed message, bounded by `deadline`.
     pub async fn send(&self, body: &[u8], deadline: Duration) -> Result<(), WriteError> {
         write_framed(&self.stdin, &self.poisoned, body, deadline).await
@@ -197,12 +207,34 @@ async fn write_framed(
                     "stdin already closed",
                 ));
             };
-            // Chunked so progress is observable. 8 KiB is well under a typical
-            // 64 KiB pipe buffer, so a healthy write still completes in one or two
-            // syscalls and the bookkeeping costs nothing.
-            for chunk in framed.chunks(8 * 1024) {
-                pipe.write_all(chunk).await?;
-                written.fetch_add(chunk.len(), Ordering::SeqCst);
+            // **Byte-granular, using `write` rather than `write_all`.**
+            //
+            // This was `write_all` over 8 KiB chunks, with the counter bumped after each
+            // chunk *completed*. A `write_all` cancelled midway through a chunk has already
+            // handed the kernel every byte that fit, but the counter had not moved -- so the
+            // caller was told `partial: false`, the poison flag stayed clear, and the next
+            // write appended to a half-frame. Exactly the corruption the chunking was added
+            // to prevent, surviving inside the chunk granularity.
+            //
+            // Measured: with the pipe filled, an 8 KiB frame blocked and reported
+            // `partial: false` with `desynchronised == false`.
+            //
+            // `write` returns the count for each successful call, so the total is exact and
+            // a cancellation between calls loses nothing. The loop is what `write_all` does
+            // internally; the only difference is that the progress is ours to see.
+            let mut offset = 0usize;
+            while offset < framed.len() {
+                let landed = pipe.write(&framed[offset..]).await?;
+                if landed == 0 {
+                    // A zero-length write on a pipe means the far end is gone. Reported as
+                    // an error rather than looping, since retrying cannot make progress.
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "the language server stopped accepting input",
+                    ));
+                }
+                offset += landed;
+                written.fetch_add(landed, Ordering::SeqCst);
             }
             // Flush explicitly: a buffered frame the server never sees is
             // indistinguishable from a server that never answers.
@@ -214,13 +246,22 @@ async fn write_framed(
         Ok(Ok(())) => Ok(()),
         Ok(Err(source)) => Err(WriteError::Closed { source }),
         Err(_) => {
-            // Note the lock is still held by the abandoned write. Deliberate: the
-            // correct response to a blocked write is to tear the transport down,
-            // and letting a later write queue behind a wedge would hang that one
-            // too.
+            // The lock is **released** here, not held.
             //
-            // A chunk boundary is not a frame boundary, so *any* progress means the
-            // server has a partial frame.
+            // This comment used to claim the opposite -- that the abandoned write kept the
+            // guard, so later writes would queue behind the wedge rather than proceeding.
+            // That is false: the timeout drops the write future, the future owns the
+            // `MutexGuard`, and dropping it releases the lock. A reviewer disproved it by
+            // showing `close_stdin()` completes in under two seconds after an abandoned
+            // write, where a held lock would deadlock.
+            //
+            // What actually gates later writes is the `poisoned` flag below. The comment
+            // described a mechanism that does not exist, next to the one that does, which is
+            // worse than no comment: it would have survived a refactor that removed the real
+            // protection.
+            //
+            // Any progress at all means the server has a partial frame, because a write
+            // boundary is not a frame boundary.
             let landed = written.load(Ordering::SeqCst);
             let partial = landed > 0;
             if partial {

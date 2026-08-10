@@ -331,6 +331,19 @@ impl Client {
                     // because it is what turns a silent hang into a reported error.
                     //
                     // Reported by an adversarial reviewer as unreached.
+                    //
+                    // The transport is marked unusable too, and not only when the failed
+                    // write left a partial frame. The reviewer measured that a *large*
+                    // abandoned answer poisons the transport by itself, since its prefix
+                    // lands -- so the wedge was already effectively fatal, but by luck: an
+                    // answer small enough to fail without landing bytes (`Closed`, or a
+                    // block with nothing written) left the transport looking healthy, and
+                    // the next caller paid a fresh `WRITE_DEADLINE` discovering otherwise.
+                    //
+                    // Marking it here makes the outcome the same either way. A server that
+                    // asked a question and never got its answer is wedged regardless of how
+                    // many bytes reached it, which is the fact that matters.
+                    stdin.poison();
                     pendings
                         .fail_all(&format!(
                             "{name}: could not answer the server's request ({error}); \
@@ -483,6 +496,21 @@ impl Client {
             .await
             .values()
             .any(|registered| registered == method)
+    }
+
+    /// Whether this client is unusable and must be replaced.
+    ///
+    /// `true` means a partial frame reached the server, so the byte stream can never be
+    /// parsed correctly again. Nothing sent afterwards will be understood, and the transport
+    /// refuses further writes.
+    ///
+    /// Exists because a pool or adapter above this layer needs to *ask*. Without it the only
+    /// way to discover a dead client is to send a request and read the failure, so an evict
+    /// decision costs a doomed request and its deadline. A reviewer pointed this out while
+    /// checking the answer-failure path: `Transport::desynchronised` already existed and was
+    /// simply not reachable from here.
+    pub fn unusable(&self) -> bool {
+        self.transport.desynchronised()
     }
 
     /// How many requests are still awaiting an answer.

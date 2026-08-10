@@ -492,3 +492,62 @@ async fn waiting_for_a_live_process_to_exit_reports_failure() {
         "a killed process must be confirmed gone"
     );
 }
+
+/// **A write that blocks partway through must report that bytes landed.**
+///
+/// The transport chunked its writes so progress was observable, then bumped the counter
+/// after each chunk *completed*. A `write_all` cancelled midway through a chunk has already
+/// handed the kernel every byte that fit, so the count was wrong in the one direction that
+/// matters: the caller was told `partial: false`, the poison flag stayed clear, and the next
+/// write appended to a half-frame.
+///
+/// That is precisely the silent corruption the chunking was written to prevent, surviving
+/// inside the chunk granularity. Measured before the fix: an 8 KiB frame against a full pipe
+/// reported `partial: false` and `desynchronised: false`.
+///
+/// Found by an adversarial reviewer on the fifth pass, in code that had already been
+/// reviewed four times and whose own doc comment explained why it was safe.
+///
+/// The test fills until a write actually blocks, rather than computing a fill size: pipe
+/// buffers vary, and a first attempt that assumed 64 KiB passed and failed on alternate runs
+/// as the server drained.
+#[tokio::test]
+async fn a_write_that_blocks_partway_reports_a_partial_frame() {
+    let (transport, _rx) = spawn(&[("FAKE_LSP_STOP_READING_ON", "test/wedge")]);
+    send_request(&transport, 1, "test/wedge", json!({})).await;
+    // Let the server reach the point where it stops draining stdin.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let writer = transport.writer();
+    let mut fills = 0;
+    let failure = loop {
+        assert!(fills <= 40, "the pipe never filled after {fills} x 8 KiB");
+        match writer
+            .send(&vec![b'x'; 8 * 1024], Duration::from_millis(300))
+            .await
+        {
+            Ok(()) => fills += 1,
+            Err(failure) => break failure,
+        }
+    };
+
+    assert!(
+        matches!(failure, WriteError::Blocked { partial: true, .. }),
+        "a write that blocked partway must report partial; got {failure:?} after {fills} \
+         successful fills"
+    );
+    assert!(
+        failure.desynchronised(),
+        "a partial frame desynchronises the stream and the caller must be told"
+    );
+
+    // And the transport refuses further writes, rather than appending to the half-frame.
+    let after = writer
+        .send(b"{}", Duration::from_millis(300))
+        .await
+        .expect_err("a poisoned transport must refuse");
+    assert!(
+        after.desynchronised(),
+        "the transport was not poisoned, so a later write would corrupt the stream: {after:?}"
+    );
+}
