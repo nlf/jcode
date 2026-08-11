@@ -656,14 +656,18 @@ fn find_suffix_closer_spare(
     // adjacent hunk puts back below are already covered. Both would be
     // duplicated rather than restored.
     //
-    // These two counts are computed but, in this port, never change the
-    // outcome: the delta and opener checks below refuse everything they would
-    // have refused, and a search over several thousand generated patches found
-    // no input where removing either altered the result. omp needs them
-    // because their spare also has a prefix form and a landing-shift rule that
-    // can reach this point by other routes. They are kept because the day one
-    // of those lands, this rule silently stops being conservative without
-    // them, and a comment is cheaper than rediscovering that.
+    // `keep_start` is load-bearing: a payload that restates part of the closing
+    // run must not have that part kept a second time, and the delta check below
+    // does not catch it, because a payload restating one closer of two is still
+    // short by one. It was previously documented here as never changing the
+    // outcome, which was true when measured and stopped being true once the
+    // prefix spare landed and more inputs reached this rule. Re-measured rather
+    // than reasoned about: `a_payload_restating_part_of_the_closing_run` fails
+    // without it.
+    //
+    // `covered` still changes nothing measurable. It is kept because omp needs
+    // it and because the day an adjacent-hunk case does reach here, this rule
+    // silently stops being conservative without it.
     let keep_start = payload_restates_suffix_head(body, &suffix);
     let covered = projected_covers_suffix_tail(&suffix, group, file_lines, projection);
     let keep_end = suffix_length.checked_sub(covered)?;

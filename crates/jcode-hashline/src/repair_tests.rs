@@ -1050,3 +1050,37 @@ fn a_payload_that_opens_with_a_closer_is_left_to_the_echo_rules() {
 
     assert!(!prefix_spare_of(&file, "PUT 3=4:\n+}", 3, 4));
 }
+
+
+
+#[test]
+fn a_payload_restating_part_of_the_closing_run() {
+    // The range covers the last method and both closing lines, and the payload
+    // restates the inner `},` but not the outer `};`. Only one closer is
+    // missing, so only one may be kept.
+    //
+    // The delta check cannot catch this on its own: a payload restating one
+    // closer of two is still short by exactly one, so the arithmetic is
+    // satisfied either way. Without `keep_start` the kept run starts at the
+    // `},` the payload already ends with, the `};` is dropped, and the object
+    // literal is left unterminated.
+    let file = joined(&[
+        "const h = {",
+        "\ta() {",
+        "\t\treturn 1;",
+        "\t},",
+        "};",
+    ]);
+    let (text, warnings) =
+        apply_spares_directly(&file, "PUT 2=5:\n+\tb() {\n+\t\treturn 2;\n+\t},");
+
+    assert_eq!(
+        text,
+        joined(&["const h = {", "\tb() {", "\t\treturn 2;", "\t},", "};"]),
+        "the closer the payload did not restate is the one kept"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("kept 1 line(s)")),
+        "{warnings:?}"
+    );
+}
