@@ -1844,8 +1844,17 @@ applied result. Seven modules, all mutation-tested, clippy clean.
   those lines are the spare rules and their two-pass machinery, and the
   textual rules that carry the everyday value were an afternoon. Still
   unported: the prefix spare and the landing-shift rules.
-- **Block ops (`N*`)** — needs tree-sitter. `block.test.ts` is 49 cases.
+- **Block ops (`N*`)** — needs tree-sitter, which is now **on this path
+  already**: the closer spare (`729bf1f2f`) added `jcode_ast::parses_cleanly`
+  and wired a syntax check into the patcher. `block.test.ts` is 49 cases.
+  Refused by name today, not silently ignored.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
+- **Landing-shift** — an `insert after N:` body slides past closers to its own
+  depth. 219 test lines. Absent, and unlike the two above it produces no
+  diagnosis, because there is no distinct syntax to refuse.
+- **The prefix closer spare** — the mirror of the suffix spare that shipped.
+  Absent, and it is what would reach four guards in the suffix spare that are
+  unreachable in this port and documented as such.
 - **Recovery (3-way merge on drift)** — `recovery.ts`, 12.6 KB.
   **Shipped in `fd73854e7`** (`recovery.rs`), and it is *not* a three-way
   merge: omp built that and removed it. It is anchor remapping plus verbatim
