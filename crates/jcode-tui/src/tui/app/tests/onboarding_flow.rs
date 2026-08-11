@@ -586,6 +586,15 @@ fn openrouter_key_typed_through_full_key_path_does_not_reopen_picker() {
             Some(key),
             "key must be exported to the process env for immediate use"
         );
+
+        // Saving the key exports it to the *process* env, which outlives the
+        // temp home this closure restores. Left set, it convinced later tests
+        // that a real OpenRouter credential was configured: the info-widget
+        // auth-method test reported OpenRouterApiKey where it expected ApiKey,
+        // because a present OPENROUTER_API_KEY suppresses the
+        // openai-compatible profile autodetection and defaults the API base
+        // back to openrouter.ai. Clear it once the assertion above has run.
+        crate::env::remove_var("OPENROUTER_API_KEY");
     });
 }
 

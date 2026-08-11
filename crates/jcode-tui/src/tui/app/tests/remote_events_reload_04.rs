@@ -1403,6 +1403,13 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
         "JCODE_NAMED_PROVIDER_PROFILE",
         "JCODE_PROVIDER_PROFILE_ACTIVE",
         "JCODE_PROVIDER_PROFILE_NAME",
+        // The credential itself, not just the JCODE_* knobs: a present
+        // OPENROUTER_API_KEY suppresses openai-compatible profile
+        // autodetection, which defaults the API base back to openrouter.ai and
+        // reports OpenRouterApiKey for the openai-compatible case. Saved and
+        // restored with the rest so this test states its own preconditions
+        // rather than inheriting whatever a previous test exported.
+        "OPENROUTER_API_KEY",
     ];
     let saved_env = tracked_env
         .iter()
