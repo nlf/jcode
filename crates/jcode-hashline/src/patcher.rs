@@ -216,6 +216,11 @@ fn repair_and_apply(
 ) -> Result<(crate::apply::ApplyResult, Vec<String>, Vec<Op>), RejectReason> {
     let file_lines: Vec<&str> = current_text.split('\n').collect();
     let mut ops = ops.to_vec();
+    // Landing correction first, because it decides *where* a body goes and the
+    // repair rules below reason about what sits around it. Running it after
+    // would have repair compare a payload against the neighbours of a line the
+    // insertion is about to leave.
+    let mut warnings = crate::landing::repair_landings(&mut ops, &file_lines);
     let repaired = match parsing.syntax {
         Some(parses) => crate::repair::repair_with_syntax_veto(
             &mut ops,
@@ -230,7 +235,7 @@ fn repair_and_apply(
     // authored edit is applied exactly as written, so refusing it would block a
     // literal edit on a suspicion; saying what was unclear lets the model fix
     // the boundary on its next turn if the guess was wrong.
-    let mut warnings = repaired.warnings;
+    warnings.extend(repaired.warnings);
     if let Some(ambiguity) = repaired.ambiguity {
         warnings.push(ambiguity.message);
     }

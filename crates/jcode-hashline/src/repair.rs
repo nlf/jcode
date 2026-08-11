@@ -604,7 +604,7 @@ impl Projection {
 /// Deliberately excludes the JSX form omp also recognises elsewhere. A `</div>`
 /// carries no brackets at all, so the balance arithmetic every spare rests on
 /// would be satisfied vacuously and the rule could keep arbitrary lines.
-fn is_structural_closer(line: &str) -> bool {
+pub(crate) fn is_structural_closer(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return false;

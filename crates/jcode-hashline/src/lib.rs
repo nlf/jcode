@@ -11,6 +11,7 @@ pub mod apply;
 pub mod blocks;
 pub mod format;
 pub mod input;
+pub mod landing;
 pub mod parser;
 pub mod patcher;
 pub mod prefixes;
