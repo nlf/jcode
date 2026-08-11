@@ -784,3 +784,144 @@ fn a_multi_line_refusal_keeps_its_own_closing_advice() {
     };
     assert!(plain.message("s.rs").contains("Check the line numbers"));
 }
+
+
+
+
+
+/// A stub block resolver: a line ending in `{` opens a block that runs to the
+/// next line that is only `}`. Enough to test the transform without pulling a
+/// parser into this crate, which is the same reason `SyntaxCheck` is injected.
+fn stub_blocks(_path: &str, text: &str, line: usize) -> Option<crate::blocks::BlockSpan> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let opener = lines.get(line.checked_sub(1)?)?;
+    if !opener.trim_end().ends_with('{') {
+        return None;
+    }
+    for candidate in (line + 1)..=lines.len() {
+        if lines.get(candidate - 1).copied().unwrap_or("").trim() == "}" {
+            return Some(crate::blocks::BlockSpan {
+                start: line,
+                end: candidate,
+            });
+        }
+    }
+    None
+}
+
+#[test]
+fn a_block_anchor_survives_drift_exactly_as_a_line_range_does() {
+    // The line number in `PUT 2*:` means line 2 of the file the model *read*,
+    // which is the same thing it means in `PUT 2=2:`. Both must therefore
+    // survive the same drift and produce the same file.
+    //
+    // Resolving a block against the current text instead looks obviously right,
+    // because that is where the edit lands, and it is right while the tag is
+    // current. Under drift it silently asks about a different line: here line 2
+    // of the drifted file is `alpha`, which opens nothing, so the block op was
+    // refused outright while the identical range edit recovered cleanly.
+    let read = "alpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let drifted = "NEWTOP\nalpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let expected = "NEWTOP\nalpha\nfn target() {\n\tCHANGED();\n}\nomega\n";
+
+    let store = SnapshotStore::new();
+    let tag = store.record(PATH, read, None);
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    // The model saw the block open on line 2 and replaces it whole.
+    let block = prepare(
+        &store,
+        PATH,
+        drifted,
+        Some(&tag),
+        &ops("PUT 2*:\n+fn target() {\n+\tCHANGED();\n+}"),
+        false,
+        parsing,
+    )
+    .expect("a block anchor must recover from drift");
+
+    assert_eq!(block.after, expected);
+    assert!(
+        block.warnings.iter().any(|w| w.contains("Recovered")),
+        "{:?}",
+        block.warnings
+    );
+
+    // The same edit as an explicit range, for comparison rather than as a
+    // separate assertion: if these ever diverge, the block path has grown a
+    // rule about drift that the rest of the pipeline does not have.
+    let range = prepare(
+        &store,
+        PATH,
+        drifted,
+        Some(&tag),
+        &ops("PUT 3=3:\n+\tCHANGED();"),
+        false,
+        parsing,
+    )
+    .expect("the equivalent range recovers");
+
+    assert_eq!(block.after, range.after);
+}
+
+#[test]
+fn a_block_anchor_resolves_against_the_current_file_when_the_tag_is_current() {
+    // The other half of the rule. With no drift there is nothing to translate,
+    // and the snapshot and the file are the same text anyway.
+    let text = "alpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let store = SnapshotStore::new();
+    let tag = store.record(PATH, text, None);
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    let prepared = prepare(
+        &store,
+        PATH,
+        text,
+        Some(&tag),
+        &ops("PUT 2*:\n+fn target() {\n+\tCHANGED();\n+}"),
+        false,
+        parsing,
+    )
+    .expect("resolves");
+
+    assert_eq!(prepared.after, "alpha\nfn target() {\n\tCHANGED();\n}\nomega\n");
+    assert!(prepared.warnings.is_empty(), "{:?}", prepared.warnings);
+}
+
+#[test]
+fn a_block_anchor_with_an_unrecognized_tag_still_resolves_against_the_file() {
+    // A tag this store never minted means there is no snapshot to resolve
+    // against, so the current text is the only text available. The edit is
+    // refused for the unminted tag either way; what matters is that the missing
+    // snapshot does not turn into a panic or a confusing block error that
+    // hides the real reason.
+    let text = "alpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let store = SnapshotStore::new();
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    let error = prepare(
+        &store,
+        PATH,
+        text,
+        Some("FFFF"),
+        &ops("PUT 2*:\n+fn target() {\n+\tCHANGED();\n+}"),
+        false,
+        parsing,
+    )
+    .expect_err("an unminted tag is refused");
+
+    let message = error.message(PATH);
+    assert!(
+        message.contains("never invent"),
+        "the tag must be the reported problem, not the block: {message}"
+    );
+}

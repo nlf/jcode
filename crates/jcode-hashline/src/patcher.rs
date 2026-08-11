@@ -265,18 +265,44 @@ pub fn prepare(
     parsing: Parsing<'_>,
 ) -> Result<Prepared, RejectReason> {
     let actual_tag = compute_file_hash(current_text);
+    let drifted = expected_tag.is_some_and(|expected| expected != actual_tag);
 
-    // Block anchors resolve first, against the file as it is now, so everything
-    // downstream sees concrete ranges. Doing it here rather than per-branch is
-    // what keeps drift handling, repair and recovery ignorant of blocks: by the
-    // time any of them run, `PUT 5*:` has become `PUT 5.=9:`.
+    // Block anchors become concrete ranges before anything else runs, so drift
+    // handling, repair and recovery stay ignorant of blocks: by the time any of
+    // them see the ops, `PUT 5*:` is `PUT 5.=9:`.
     //
-    // Against the *current* text even when the tag is stale, because that is
-    // the file the edit will land in. Resolving against the snapshot the model
-    // read would name a block by coordinates that no longer hold.
+    // **Which file to resolve against is the whole question, and the first
+    // answer here was wrong.** Resolving against the current text looks
+    // obviously right, since that is where the edit lands, and it is right when
+    // the tag is current. Under drift it is not: line 5 of the file now is not
+    // the line the model was looking at, so the block that resolves is whatever
+    // has moved into that position. The tag exists precisely to say the model's
+    // coordinates are stale, and this ignored it.
+    //
+    // Under drift the anchor is therefore resolved against the snapshot the
+    // model actually read, producing a range in *its* coordinates, which is
+    // exactly what recovery is built to remap. That keeps one rule for the
+    // whole pipeline: every line number a model writes means a line in the file
+    // it read, and recovery is the single place that translates.
+    //
+    // Before this, a block op could not survive drift at all. It resolved
+    // against the wrong line and was refused, while the identical edit written
+    // as a plain range recovered cleanly.
     let mut ops = ops.to_vec();
-    crate::blocks::resolve(&mut ops, path, current_text, parsing.blocks)
-        .map_err(|detail| RejectReason::Unapplicable { detail })?;
+    let resolve_against = if drifted {
+        expected_tag
+            .and_then(|expected| store.by_hash(path, expected))
+            .map(|snapshot| snapshot.text)
+    } else {
+        None
+    };
+    crate::blocks::resolve(
+        &mut ops,
+        path,
+        resolve_against.as_deref().unwrap_or(current_text),
+        parsing.blocks,
+    )
+    .map_err(|detail| RejectReason::Unapplicable { detail })?;
     let ops = &ops[..];
 
     if let Some(expected) = expected_tag
