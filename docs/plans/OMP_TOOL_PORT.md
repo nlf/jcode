@@ -1861,9 +1861,12 @@ applied result. Seven modules, all mutation-tested, clippy clean.
   `>N*` (insert after a block) remains refused by name: it needs the inward
   landing correction, which is not built.
 
-  A recheck found one further defect (`a9c3d166e`): resolution ran against the
-  current file rather than the snapshot behind the tag, so a block op could not
-  survive drift at all while the same edit as a plain range recovered fine.
+  Two further defects came out of rechecking, both at seams rather than in the
+  feature itself: resolution ran against the current file rather than the
+  snapshot behind the tag, so a block op could not survive drift at all
+  (`a9c3d166e`); and the seen-line guard judged the resolved range rather than
+  the anchor, so with enforcement on it demanded the model have read the very
+  lines block anchors exist to avoid counting (`883349e05`).
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
   **Declined 2026-08-11.** nlf decided against building it, and omp's own
   framing agrees that registers only earn their surface once moves are common.
