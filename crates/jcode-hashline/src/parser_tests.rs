@@ -238,7 +238,7 @@ fn zero_and_leading_zero_line_numbers_are_not_ranges() {
 ///
 /// The message matters as much as the refusal. Without a dedicated one these
 /// fall through to "no preceding hunk header", which tells a model its syntax
-/// was unrecognized rather than that the feature does not exist yet — so it
+/// was unrecognized rather than that the feature does not exist — so it
 /// retries the same thing instead of choosing a different op.
 #[test]
 fn unimplemented_register_and_after_block_forms_are_refused_by_name() {
@@ -251,6 +251,32 @@ fn unimplemented_register_and_after_block_forms_are_refused_by_name() {
              is unrecognized; got: {error}"
         );
     }
+}
+
+/// A refusal must not promise a feature nobody intends to build.
+///
+/// `>N*` is unbuilt but wanted, so "yet" is honest and tells a model to expect
+/// it later. Clipboard registers were considered and declined on 2026-08-11, so
+/// "yet" there would be a promise this codebase has decided not to keep, and
+/// the alternative offered is the permanent answer rather than a stopgap.
+#[test]
+fn a_declined_feature_is_not_described_as_merely_pending() {
+    let registers = parse_ops("CUT 5.=9 @fn").expect_err("refused");
+    assert!(
+        !registers.contains("yet"),
+        "registers were declined, so the message must not imply they are coming: \
+         {registers}"
+    );
+    assert!(
+        registers.contains("CUT") && registers.contains("PUT"),
+        "it has to say what to do instead: {registers}"
+    );
+
+    let after_block = parse_ops("PUT >2*:\n+x").expect_err("refused");
+    assert!(
+        after_block.contains("yet"),
+        "`>N*` is still intended, so its message should say so: {after_block}"
+    );
 }
 
 // ─── block anchors ───────────────────────────────────────────────────────────

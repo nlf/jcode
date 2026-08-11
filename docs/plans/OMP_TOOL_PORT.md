@@ -1865,9 +1865,11 @@ applied result. Seven modules, all mutation-tested, clippy clean.
   current file rather than the snapshot behind the tag, so a block op could not
   survive drift at all while the same edit as a plain range recovered fine.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
-  **Paused pending a decision:** nlf is not convinced the feature is wanted,
-  and omp's own framing is that registers only earn their surface once moves
-  are common. Nothing is built.
+  **Declined 2026-08-11.** nlf decided against building it, and omp's own
+  framing agrees that registers only earn their surface once moves are common.
+  Nothing is built, and the refusal message stands as the permanent answer
+  rather than a placeholder. Revisit only if cross-file moves become common
+  enough to be worth the surface, which is a usage question, not a code one.
 - **Landing-shift** — **shipped in `b82e24d47`** (outward half only). An
   `insert after N:` body indented shallower than its anchor now slides past the
   closing lines below it, with a warning. This document called it the least

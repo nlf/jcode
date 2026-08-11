@@ -269,6 +269,12 @@ fn scan_block_anchor(locator: &str) -> Option<usize> {
 ///
 /// Reported by name so a model learns the feature is absent rather than that
 /// its syntax was wrong. The latter invites an identical retry.
+///
+/// The two cases differ in more than wording. `>N*` is unbuilt but wanted, so
+/// it says "yet". Clipboard registers were considered and declined, so theirs
+/// does not: promising a feature that is not coming is worse than refusing it
+/// plainly, and the alternative offered is the real answer rather than a
+/// stopgap.
 fn unsupported_feature(locator: &str) -> Option<String> {
     if locator.starts_with('>') && locator.contains('*') {
         return Some(
@@ -279,8 +285,8 @@ fn unsupported_feature(locator: &str) -> Option<String> {
     }
     if locator.contains('@') {
         return Some(
-            "Clipboard registers (`@name`) are not supported yet; delete with `CUT` \
-             and re-insert the content with `PUT`."
+            "Clipboard registers (`@name`) are not supported; move content by \
+             deleting it with `CUT` and re-inserting it with `PUT`."
                 .to_string(),
         );
     }
