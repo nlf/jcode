@@ -1051,8 +1051,6 @@ fn a_payload_that_opens_with_a_closer_is_left_to_the_echo_rules() {
     assert!(!prefix_spare_of(&file, "PUT 3=4:\n+}", 3, 4));
 }
 
-
-
 #[test]
 fn a_payload_restating_part_of_the_closing_run() {
     // The range covers the last method and both closing lines, and the payload
@@ -1083,4 +1081,37 @@ fn a_payload_restating_part_of_the_closing_run() {
         warnings.iter().any(|w| w.contains("kept 1 line(s)")),
         "{warnings:?}"
     );
+}
+
+#[test]
+fn a_spare_and_a_landing_shift_never_fight_over_the_same_lines() {
+    // Both corrections move things around a block's closing line, so a patch
+    // that triggers each at once is the case where they could disagree: the
+    // shift could slide an insertion onto lines the spare is keeping, or the
+    // spare could narrow a range out from under it.
+    //
+    // They cannot, and the reason is the targeted-lines rule rather than luck:
+    // the replacement names lines 2-4, so the shift refuses to cross line 4 and
+    // stays put, leaving the spare free to keep it. Asserted in both hunk
+    // orders, because "which correction ran first" is exactly the kind of thing
+    // that changes when this file is next touched.
+    let file = joined(&["fn a() {", "\tif x {", "\t\ty();", "\t}", "}"]);
+    let expected = joined(&["fn a() {", "\twhile z {", "\tq();", "\t}", "}"]);
+
+    for patch in [
+        "PUT >3:\n+\tq();\nPUT 2=4:\n+\twhile z {",
+        "PUT 2=4:\n+\twhile z {\nPUT >3:\n+\tq();",
+    ] {
+        let mut ops = parse_ops(patch).expect("fixture patch parses").ops;
+        let lines: Vec<&str> = file.split('\n').collect();
+        let landing = crate::landing::repair_landings(&mut ops, &lines);
+        repair_boundaries_with(&mut ops, &lines, true);
+        let applied = apply_ops(&file, &ops).expect("applies");
+
+        assert!(
+            landing.is_empty(),
+            "{patch:?} must not shift onto a line another hunk owns: {landing:?}"
+        );
+        assert_eq!(applied.text, expected, "for {patch:?}");
+    }
 }

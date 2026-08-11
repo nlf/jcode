@@ -785,10 +785,6 @@ fn a_multi_line_refusal_keeps_its_own_closing_advice() {
     assert!(plain.message("s.rs").contains("Check the line numbers"));
 }
 
-
-
-
-
 /// A stub block resolver: a line ending in `{` opens a block that runs to the
 /// next line that is only `}`. Enough to test the transform without pulling a
 /// parser into this crate, which is the same reason `SyntaxCheck` is injected.
@@ -923,5 +919,63 @@ fn a_block_anchor_with_an_unrecognized_tag_still_resolves_against_the_file() {
     assert!(
         message.contains("never invent"),
         "the tag must be the reported problem, not the block: {message}"
+    );
+}
+
+#[test]
+fn a_landing_shift_composes_with_recovery() {
+    // Both corrections move a line number, in different coordinate systems, so
+    // the order matters: recovery translates the model's anchor into current
+    // coordinates, and only then can the landing shift ask what sits below it.
+    // Reversed, the shift would count closers in the file the model read and
+    // apply the result to the file it did not.
+    //
+    // Asserted as an equivalence rather than a literal landing: the same edit
+    // under drift and without it must produce the same file, because drift is
+    // not supposed to change what an edit means.
+    let read = "fn f() {\n\tif x {\n\t\ta();\n\t}\n\tb();\n}\n";
+    let drifted = "// top\nfn f() {\n\tif x {\n\t\ta();\n\t}\n\tb();\n}\n";
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    let store = SnapshotStore::new();
+    let tag = store.record(PATH, read, None);
+    let recovered = prepare(
+        &store,
+        PATH,
+        drifted,
+        Some(&tag),
+        &ops("PUT >3:\n+\tc();"),
+        false,
+        parsing,
+    )
+    .expect("recovers");
+
+    let clean_store = SnapshotStore::new();
+    let clean_tag = clean_store.record(PATH, read, None);
+    let clean = prepare(
+        &clean_store,
+        PATH,
+        read,
+        Some(&clean_tag),
+        &ops("PUT >3:\n+\tc();"),
+        false,
+        parsing,
+    )
+    .expect("applies");
+
+    // The body escapes the `if` in both, landing as a sibling at its own depth.
+    assert_eq!(clean.after, "fn f() {\n\tif x {\n\t\ta();\n\t}\n\tc();\n\tb();\n}\n");
+    assert_eq!(recovered.after, format!("// top\n{}", clean.after));
+    assert!(
+        recovered.warnings.iter().any(|w| w.contains("Recovered"))
+            && recovered
+                .warnings
+                .iter()
+                .any(|w| w.contains("Moved an insertion")),
+        "both corrections must be reported, not just the last one: {:?}",
+        recovered.warnings
     );
 }
