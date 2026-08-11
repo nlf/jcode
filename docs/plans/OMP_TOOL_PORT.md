@@ -1860,6 +1860,10 @@ applied result. Seven modules, all mutation-tested, clippy clean.
 
   `>N*` (insert after a block) remains refused by name: it needs the inward
   landing correction, which is not built.
+
+  A recheck found one further defect (`a9c3d166e`): resolution ran against the
+  current file rather than the snapshot behind the tag, so a block op could not
+  survive drift at all while the same edit as a plain range recovered fine.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
   **Paused pending a decision:** nlf is not convinced the feature is wanted,
   and omp's own framing is that registers only earn their surface once moves
