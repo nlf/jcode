@@ -1418,6 +1418,12 @@ fn render_background_task_messages_prefer_display_name() {
 
 #[test]
 fn render_system_message_uses_scheduled_task_card() {
+    // Holds the glyph env lock: the title style depends on TERM/TERM_PROGRAM,
+    // read separately by the render and by `width_stable_system_title` below.
+    // `render_system_message_uses_width_stable_titles_on_kitty` sets and then
+    // restores those vars under this lock, so an unguarded reader could render
+    // under one terminal and compute its expected title under the other.
+    let _guard = system_glyph_env_lock();
     let msg = DisplayMessage::system(
         "[Scheduled task]\nA scheduled task for this session is now due.\n\nTask: Follow up on the scheduler test\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nBranch: master\n\nBackground: Verify the scheduled task card styling\nSuccess criteria: The due task renders clearly\nScheduled by session: session_test",
     );
@@ -1442,6 +1448,8 @@ fn render_system_message_uses_scheduled_task_card() {
 
 #[test]
 fn render_tool_message_uses_scheduled_card() {
+    // Same TERM/TERM_PROGRAM race as the system-message card above.
+    let _guard = system_glyph_env_lock();
     let msg = DisplayMessage {
         role: "tool".to_string(),
         content: "Scheduled task 'Follow up on the scheduler test' for in 1m (id: sched_abc123)\nWorking directory: /home/jeremy/jcode\nRelevant files: src/tui/ui_messages.rs\nTarget: resume session session_test".to_string(),

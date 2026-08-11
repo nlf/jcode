@@ -36,9 +36,21 @@ fn unknown_ctrl_chord_sets_hotkey_feedback_with_suggestion() {
 
 #[test]
 fn rare_known_hotkey_sets_feedback_and_repeats_stop_once_familiar() {
+    // The comment below assumed a fresh JCODE_HOME, but nothing established
+    // one. Each Ctrl+T press records keybinding-proficiency state through
+    // `app_config_dir()`, which re-reads JCODE_HOME every call, so this both
+    // depended on the ambient home's usage history and wrote a config tree
+    // into whichever temp home a concurrent test had installed. That is how it
+    // broke `gather_ambient_info_filters_to_session_reminders_when_ambient_disabled`,
+    // whose AmbientManager then read a directory this test had just created.
+    let _env_lock = crate::storage::lock_test_env();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp.path());
+
     let mut app = create_test_app();
 
-    // Ctrl+T toggles queue mode; a fresh JCODE_HOME has no usage history, so
+    // Ctrl+T toggles queue mode; the temp home above has no usage history, so
     // the first press is "rare" and should explain itself.
     app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
         .unwrap();
@@ -61,6 +73,11 @@ fn rare_known_hotkey_sets_feedback_and_repeats_stop_once_familiar() {
         app.hotkey_feedback.is_none(),
         "familiar hotkeys should not re-announce"
     );
+
+    match prev_home {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
 }
 
 #[test]

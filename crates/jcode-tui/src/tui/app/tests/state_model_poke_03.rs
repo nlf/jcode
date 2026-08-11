@@ -558,6 +558,14 @@ fn test_new_local_session_does_not_run_post_login_model_refresh() {
 
 #[test]
 fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
+    // Takes the shared test-env lock because this test drives a post-login
+    // activation that publishes ProviderModelActivated onto the process-global
+    // bus. Without it this runs concurrently with the Cerebras lifecycle test,
+    // which subscribes to that same bus and asserts on the model each event
+    // carries: it would receive this test's "state-space-alpha" activation and
+    // fail. Draining at subscribe time cannot help, since the interfering event
+    // is published after the subscription is established.
+    let _env_lock = crate::storage::lock_test_env();
     ensure_test_jcode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::tui::ui::clear_test_render_state_for_tests();

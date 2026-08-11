@@ -1313,6 +1313,22 @@ pub(super) fn gather_ambient_info(ambient_enabled: bool) -> Option<AmbientWidget
 fn gather_ambient_info_inner(ambient_enabled: bool) -> Option<AmbientWidgetData> {
     let state = crate::ambient::AmbientState::load().unwrap_or_default();
     let manager = crate::ambient::AmbientManager::new().ok();
+    gather_ambient_info_from(ambient_enabled, state, manager.as_ref())
+}
+
+/// Build the widget data from an already-loaded state and manager.
+///
+/// Split out so a caller that has just written to a specific `JCODE_HOME` can
+/// read back through *that* manager. Every path here re-reads `JCODE_HOME` on
+/// each call, so a test that constructs its own manager and then calls
+/// `gather_ambient_info_inner` can silently read a different home if another
+/// test swaps the variable in between; passing the manager in removes that
+/// second resolution entirely.
+fn gather_ambient_info_from(
+    ambient_enabled: bool,
+    state: crate::ambient::AmbientState,
+    manager: Option<&crate::ambient::AmbientManager>,
+) -> Option<AmbientWidgetData> {
     let queue_items: Vec<_> = manager
         .as_ref()
         .map(|m| m.queue().items().to_vec())

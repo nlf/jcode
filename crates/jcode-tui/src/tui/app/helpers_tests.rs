@@ -443,11 +443,17 @@ fn gather_ambient_info_filters_to_session_reminders_when_ambient_disabled() {
         })
         .expect("schedule second reminder");
 
-    // This test exercises queue filtering, not the stale-while-revalidate cache.
-    // Read synchronously while the temporary JCODE_HOME and its files are pinned:
-    // an unrelated in-flight cache refresh can otherwise overwrite the cleared
-    // process-global cache with data loaded under another test's JCODE_HOME.
-    let info = gather_ambient_info_inner(false).expect("ambient info");
+    // This test exercises queue filtering, not the stale-while-revalidate cache,
+    // and not JCODE_HOME resolution. Read back through the *same* manager the
+    // items were written with: `gather_ambient_info_inner` would construct a new
+    // one, and every path in that construction re-reads JCODE_HOME. Hundreds of
+    // tests in this crate swap that variable without taking the env lock, so the
+    // second resolution frequently landed in another test's temp home and found
+    // an empty queue (observed: written to .tmp2lD9tO, read from
+    // jcode-test-home-4365).
+    let state = crate::ambient::AmbientState::load().unwrap_or_default();
+    let info =
+        super::gather_ambient_info_from(false, state, Some(&manager)).expect("ambient info");
     assert!(info.show_widget);
     assert_eq!(info.queue_count, 3);
     assert_eq!(info.reminder_count, 2);
