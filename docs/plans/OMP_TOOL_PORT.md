@@ -1842,29 +1842,49 @@ applied result. Seven modules, all mutation-tested, clippy clean.
   behind `jcode_ast::parses_cleanly`). The "2-3 weeks" figure measured the
   layer by line count, which is why it was an order of magnitude off: most of
   those lines are the spare rules and their two-pass machinery, and the
-  textual rules that carry the everyday value were an afternoon. Still
-  unported: the prefix spare and the landing-shift rules.
-- **Block ops (`N*`)** — needs tree-sitter, which is now **on this path
-  already**: the closer spare (`729bf1f2f`) added `jcode_ast::parses_cleanly`
-  and wired a syntax check into the patcher. `block.test.ts` is 49 cases.
-  Refused by name today, not silently ignored.
+  textual rules that carry the everyday value were an afternoon. The prefix
+  spare followed in **`fd789d842`**, along with a fix to the suffix spare that
+  had been guessing which side of a spared closer the payload belonged on.
+- **Block ops (`N*`)** — **shipped in `e73013c4b`.** `PUT 5*:` replaces the
+  construct beginning on line 5, `CUT 5*` deletes it, via
+  `jcode_ast::block_at` and `jcode-hashline`'s `blocks.rs`.
+
+  The repeated "needs tree-sitter, defer" in this document was wrong the whole
+  time: `jcode-ast` has had tree-sitter since long before, and the closer-spare
+  work put the probe on this exact path. The parser side was one function. The
+  cost was entirely in grammar behaviour nobody predicted: file-spanning
+  wrapper nodes in YAML, nodes that end at column 0 of the following line in
+  Go, and tree-sitter inventing structure for files that do not parse. None of
+  those are visible in a braces-and-semicolons language, so a test suite
+  written in Rust and TypeScript passed against every one of them.
+
+  `>N*` (insert after a block) remains refused by name: it needs the inward
+  landing correction, which is not built.
 - **Clipboard registers (`@name`)** — 25 cases. Refused by name, not silently.
-- **Landing-shift** — an `insert after N:` body slides past closers to its own
-  depth. 219 test lines. Absent, and unlike the two above it produces no
-  diagnosis, because there is no distinct syntax to refuse.
-- **The prefix closer spare** — the mirror of the suffix spare that shipped.
-  Absent, and it is what would reach four guards in the suffix spare that are
-  unreachable in this port and documented as such.
+  **Paused pending a decision:** nlf is not convinced the feature is wanted,
+  and omp's own framing is that registers only earn their surface once moves
+  are common. Nothing is built.
+- **Landing-shift** — **shipped in `b82e24d47`** (outward half only). An
+  `insert after N:` body indented shallower than its anchor now slides past the
+  closing lines below it, with a warning. This document called it the least
+  valuable of the remaining work; that was a guess, and it fires on the very
+  ordinary shape of anchoring on a block's last statement while writing the
+  body at the parent's depth. The inward half is for `>N*` lowerings and has
+  nothing that could reach it.
+- **The prefix closer spare** — **shipped in `fd789d842`.** It was predicted
+  here to make four unreachable guards in the suffix spare reachable; one was
+  (`keep_start`, now pinned by a test that fails without it, `a6b494528`), and
+  the other three still are not.
 - **Recovery (3-way merge on drift)** — `recovery.ts`, 12.6 KB.
   **Shipped in `fd73854e7`** (`recovery.rs`), and it is *not* a three-way
   merge: omp built that and removed it. It is anchor remapping plus verbatim
   replay, refusing whenever the anchors cannot be proven.
 - **All jcode integration** — 3b and 3c, where the real remaining risk lives.
 
-Both excluded features are refused with a message naming them as unimplemented,
-rather than falling through to "unrecognized syntax". That distinction came out
-of mutation testing and matters: a model told its syntax is wrong retries the
-same thing.
+The remaining unbuilt forms (clipboard registers, and `>N*`) are refused with a
+message naming them as unimplemented, rather than falling through to
+"unrecognized syntax". That distinction came out of mutation testing and
+matters: a model told its syntax is wrong retries the same thing.
 
 ## Mutation testing: 25 mutations, 3 survivors, 3 real defects
 
