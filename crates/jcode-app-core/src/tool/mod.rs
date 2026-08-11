@@ -27,6 +27,7 @@ pub mod lsp_tool;
 pub(crate) use bash::bash_tool_descriptions_for_test;
 pub mod inflight;
 mod invalid;
+mod jcode_docs;
 mod ls;
 pub mod mcp;
 mod memory;
@@ -52,6 +53,13 @@ use jcode_message_types::ToolDefinition;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// A configured `mcp` grant includes the dynamically named tools registered
+/// by MCP servers. Those names are not known when profiles are resolved.
+pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
+    allowed.contains(name) || (allowed.contains("mcp") && name.starts_with("mcp__"))
+}
+
 use std::sync::{LazyLock, RwLock as StdRwLock};
 use tokio::sync::RwLock;
 
@@ -168,12 +176,6 @@ impl Clone for Registry {
 }
 
 impl Registry {
-    /// A configured `mcp` grant includes the dynamically named tools registered
-    /// by MCP servers. Those names are not known when profiles are resolved.
-    pub(crate) fn is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
-        allowed.contains(name) || (name.starts_with("mcp__") && allowed.contains("mcp"))
-    }
-
     fn shared_skills_registry() -> Arc<RwLock<SkillRegistry>> {
         SkillRegistry::shared_registry()
     }
@@ -279,6 +281,12 @@ impl Registry {
                 websearch::WebSearchTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "invalid", invalid::InvalidTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "jcode_docs",
+                jcode_docs::JcodeDocsTool::new,
+            );
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
             Self::insert_tool_timed(
@@ -396,7 +404,7 @@ impl Registry {
             .iter()
             .filter(|(name, _)| {
                 allowed_tools
-                    .map(|set| Self::is_allowed(set, name))
+                    .map(|set| tool_name_is_allowed(set, name))
                     .unwrap_or(true)
             })
             .map(|(name, tool)| {
@@ -672,7 +680,7 @@ impl Registry {
         let resolved_name = Self::resolve_tool_name(name);
         if let Some(policy) = session_tool_policy(&ctx.session_id) {
             if let Some(allowed) = policy.allowed_tools.as_ref()
-                && !Self::is_allowed(allowed, resolved_name)
+                && !tool_name_is_allowed(allowed, resolved_name)
             {
                 return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
             }
@@ -1273,19 +1281,23 @@ fn levenshtein(a: &str, b: &str) -> usize {
 }
 
 #[cfg(test)]
-mod policy_tests {
-    use super::*;
+mod mcp_allow_list_tests {
+    use super::tool_name_is_allowed;
+    use std::collections::HashSet;
 
     #[test]
-    fn mcp_grant_allows_dynamic_server_tools_only() {
+    fn allowing_mcp_also_allows_dynamic_server_tools() {
         let allowed = HashSet::from(["mcp".to_string(), "read".to_string()]);
-        assert!(Registry::is_allowed(&allowed, "mcp"));
-        assert!(Registry::is_allowed(
+
+        assert!(tool_name_is_allowed(&allowed, "mcp"));
+        assert!(tool_name_is_allowed(&allowed, "mcp__filesystem__read_file"));
+        assert!(tool_name_is_allowed(
             &allowed,
             "mcp__codebase_memory__search"
         ));
-        assert!(Registry::is_allowed(&allowed, "read"));
-        assert!(!Registry::is_allowed(&allowed, "bash"));
+        assert!(tool_name_is_allowed(&allowed, "read"));
+        assert!(!tool_name_is_allowed(&allowed, "mcpish"));
+        assert!(!tool_name_is_allowed(&allowed, "bash"));
     }
 }
 

@@ -454,6 +454,7 @@ fn tool_config_acp_profile_allows_core_coding_plus_batch() {
     assert!(allowed.contains("grep"));
     assert!(allowed.contains("glob"));
     assert!(allowed.contains("batch"));
+    assert!(allowed.contains("mcp"));
     assert!(!allowed.contains("swarm"));
     assert!(!allowed.contains("subagent"));
     assert!(!allowed.contains("side_panel"));

@@ -258,6 +258,26 @@ fn pinned_todos_payload_refreshes_and_clears_with_config_and_todos() {
 }
 
 #[test]
+fn pinned_todos_are_omitted_from_info_widgets() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _pin = PinTodosEnvGuard::enable();
+    let app = create_test_app();
+    let session_id = app.session.id.clone();
+    crate::todo::save_todos(
+        &session_id,
+        &[pinned_band_todo("t1", "only in pinned band", "pending")],
+    )
+    .unwrap();
+
+    let info = app.info_widget_data();
+    assert!(info.todos.is_empty());
+    assert!(info.todo_goals.is_empty());
+    assert!(!info.has_data_for(crate::tui::info_widget::WidgetKind::Todos));
+
+    crate::todo::save_todos(&session_id, &[]).unwrap();
+}
+
+#[test]
 fn pinned_todos_hide_todo_tool_messages_from_the_transcript() {
     let _env_lock = crate::storage::lock_test_env();
     let _pin = PinTodosEnvGuard::enable();
@@ -302,6 +322,7 @@ fn pinned_todos_hide_todo_tool_messages_from_the_transcript() {
     let backend = ratatui::backend::TestBackend::new(80, 40);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     let transcript = render_and_snap(&app, &mut terminal);
+    assert!(!transcript.contains("duplicate todo transcript card"));
     assert!(transcript.contains("PINNED_ONLY"), "{transcript}");
     let _ = crate::todo::save_todos(&session_id, &[]);
 }
