@@ -1153,16 +1153,22 @@ fn test_new_for_remote_restores_split_view_from_reload_state() {
 
 #[test]
 fn test_restore_reload_state_supports_legacy_input_format() {
-    let session_id = format!("test-reload-legacy-{}", std::process::id());
-    let jcode_dir = crate::storage::jcode_dir().unwrap();
-    let path = jcode_dir.join(format!("client-input-{}", session_id));
-    std::fs::write(&path, "2\nhello").unwrap();
+    // Needs the temp-home guard its neighbours use: without it this writes
+    // into the real jcode dir, and `jcode_dir()` can resolve to a different
+    // home at read time than at write time when a concurrent test swaps
+    // JCODE_HOME, so the restore fails depending on test order.
+    with_temp_jcode_home(|| {
+        let session_id = "test-reload-legacy";
+        let jcode_dir = crate::storage::jcode_dir().unwrap();
+        let path = jcode_dir.join(format!("client-input-{}", session_id));
+        std::fs::write(&path, "2\nhello").unwrap();
 
-    let restored =
-        App::restore_input_for_reload(&session_id).expect("legacy reload state should restore");
-    assert_eq!(restored.input, "hello");
-    assert_eq!(restored.cursor, 2);
-    assert!(restored.queued_messages.is_empty());
+        let restored =
+            App::restore_input_for_reload(session_id).expect("legacy reload state should restore");
+        assert_eq!(restored.input, "hello");
+        assert_eq!(restored.cursor, 2);
+        assert!(restored.queued_messages.is_empty());
+    });
 }
 
 #[test]
