@@ -2533,6 +2533,9 @@ enum RunAutoPokeFollowUp {
     Incomplete {
         count: usize,
         message: String,
+        /// Identity of the list this poke is about, so a poke that changed
+        /// nothing is not sent twice. See [`run_poke_fingerprint`].
+        fingerprint: String,
     },
     ConfidenceSummary {
         total_todos: usize,
@@ -2541,9 +2544,7 @@ enum RunAutoPokeFollowUp {
     },
     /// Deferred quality-check reminder for the points this turn flagged and
     /// never resolved. Delivered once, ahead of the confidence summary.
-    GateDigest {
-        message: String,
-    },
+    GateDigest { message: String },
 }
 
 fn run_todos(session_id: &str) -> Vec<crate::todo::TodoItem> {
@@ -2609,6 +2610,7 @@ fn build_run_auto_poke_follow_up_from_todos(
         return Some(RunAutoPokeFollowUp::Incomplete {
             count: incomplete.len(),
             message: build_run_poke_message(&incomplete),
+            fingerprint: run_poke_fingerprint(&incomplete),
         });
     }
     // Verify the weak points before judging completion confidence: the digest
@@ -2631,6 +2633,39 @@ fn build_run_auto_poke_follow_up_from_todos(
 
 fn build_run_poke_message(incomplete: &[crate::todo::TodoItem]) -> String {
     crate::todo::build_auto_poke_message(incomplete.len())
+}
+
+/// Identity of the todo list as it stood when we last poked about it.
+///
+/// A poke exists to make the model act on its todos. If the list comes back
+/// byte-identical, the poke changed nothing, and sending it again asks the same
+/// question that just failed while burning an API call per turn.
+///
+/// Observed live before this guard: a `jcode run` whose prompt told the model
+/// not to touch its todos sent **300 identical pokes**, each answered with a
+/// one-line refusal. The only thing that stopped it was the process being
+/// killed. `JCODE_RUN_AUTO_POKE_MAX_TURNS` bounds this, but it is unset by
+/// default, so the default was unbounded.
+///
+/// The TUI has had this guard since `last_auto_poke_fingerprint`; this is the
+/// same rule on the `run` path, which never got it.
+///
+/// Note what this deliberately does **not** do: a model that is genuinely
+/// working and changing its list on every turn still gets poked every turn,
+/// which is the point. Only a poke that demonstrably achieved nothing is
+/// suppressed. A list that keeps churning without converging is a different
+/// failure and needs a different guard (the TUI's
+/// `todo_completion_gate_attempts` counter is the equivalent there).
+fn run_poke_fingerprint(incomplete: &[crate::todo::TodoItem]) -> String {
+    serde_json::to_string(incomplete).unwrap_or_else(|_| build_run_poke_message(incomplete))
+}
+
+/// Whether an incomplete-todo poke would repeat one that already failed.
+///
+/// `last` is the fingerprint of the list when we last poked, or `None` if we
+/// have not poked yet in this run.
+fn run_poke_is_repeat(last: Option<&String>, fingerprint: &str) -> bool {
+    last.is_some_and(|last| last == fingerprint)
 }
 
 fn build_run_todo_validation_message(
@@ -2681,6 +2716,7 @@ async fn run_single_message_command_plain_with_auto_poke(
     let mut turns_completed = 0usize;
     let mut confidence_spike_challenged = false;
     let mut gate_digest_delivered = false;
+    let mut last_poke_fingerprint: Option<String> = None;
     loop {
         agent.run_once(&next_message).await?;
         turns_completed += 1;
@@ -2731,7 +2767,18 @@ async fn run_single_message_command_plain_with_auto_poke(
                 );
                 continue;
             }
-            Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
+            Some(RunAutoPokeFollowUp::Incomplete {
+                count,
+                message,
+                fingerprint,
+            }) => {
+                if run_poke_is_repeat(last_poke_fingerprint.as_ref(), &fingerprint) {
+                    eprintln!(
+                        "{} incomplete todo(s), unchanged since we last poked. We stopped poking; the agent is not acting on them.",
+                        count
+                    );
+                    break;
+                }
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
                         eprintln!(
@@ -2741,6 +2788,7 @@ async fn run_single_message_command_plain_with_auto_poke(
                     }
                     break;
                 }
+                last_poke_fingerprint = Some(fingerprint);
                 next_message = message;
                 eprintln!(
                     "{} incomplete todo(s). We poked the agent for you. Set JCODE_RUN_AUTO_POKE=0 to disable.",
@@ -2763,6 +2811,7 @@ async fn run_single_message_command_capture_with_auto_poke(
     let mut turns_completed = 0usize;
     let mut confidence_spike_challenged = false;
     let mut gate_digest_delivered = false;
+    let mut last_poke_fingerprint: Option<String> = None;
     loop {
         outputs.push(agent.run_once_capture(&next_message).await?);
         turns_completed += 1;
@@ -2810,7 +2859,18 @@ async fn run_single_message_command_capture_with_auto_poke(
                 next_message = message;
                 continue;
             }
-            Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
+            Some(RunAutoPokeFollowUp::Incomplete {
+                count,
+                message,
+                fingerprint,
+            }) => {
+                if run_poke_is_repeat(last_poke_fingerprint.as_ref(), &fingerprint) {
+                    outputs.push(format!(
+                        "{} incomplete todo(s), unchanged since we last poked. We stopped poking; the agent is not acting on them.",
+                        count
+                    ));
+                    break;
+                }
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
                         outputs.push(format!(
@@ -2820,6 +2880,7 @@ async fn run_single_message_command_capture_with_auto_poke(
                     }
                     break;
                 }
+                last_poke_fingerprint = Some(fingerprint);
                 next_message = message;
             }
             None => break,
@@ -2866,6 +2927,7 @@ async fn run_single_message_command_ndjson(
     let mut turns_completed = 0usize;
     let mut confidence_spike_challenged = false;
     let mut gate_digest_delivered = false;
+    let mut last_poke_fingerprint: Option<String> = None;
     loop {
         let turn_result = {
             let mut run_future = std::pin::pin!(agent.run_once_streaming_mpsc(
@@ -2962,7 +3024,23 @@ async fn run_single_message_command_ndjson(
                 )?;
                 continue;
             }
-            Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
+            Some(RunAutoPokeFollowUp::Incomplete {
+                count,
+                message,
+                fingerprint,
+            }) => {
+                if run_poke_is_repeat(last_poke_fingerprint.as_ref(), &fingerprint) {
+                    write_json_line(
+                        &mut stdout,
+                        &serde_json::json!({
+                            "type": "auto_poke_stopped",
+                            "session_id": session_id,
+                            "incomplete_todos": count,
+                            "reason": "unchanged_todos",
+                        }),
+                    )?;
+                    break;
+                }
                 if run_command_auto_poke_limit_reached(turns_completed, max_turns) {
                     if let Some(max_turns) = max_turns {
                         write_json_line(
@@ -2977,6 +3055,7 @@ async fn run_single_message_command_ndjson(
                     }
                     break;
                 }
+                last_poke_fingerprint = Some(fingerprint);
                 next_message = message;
                 write_json_line(
                     &mut stdout,

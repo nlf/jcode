@@ -394,7 +394,7 @@ fn run_auto_poke_followup_prioritizes_incomplete_todos() {
     let followup = build_run_auto_poke_follow_up_from_todos(&todos, false, None);
 
     match followup {
-        Some(RunAutoPokeFollowUp::Incomplete { count, message }) => {
+        Some(RunAutoPokeFollowUp::Incomplete { count, message, .. }) => {
             assert_eq!(count, 1);
             assert_eq!(
                 message,
@@ -403,6 +403,72 @@ fn run_auto_poke_followup_prioritizes_incomplete_todos() {
         }
         _ => panic!("expected incomplete-todo follow-up"),
     }
+}
+
+/// The bug this pins ran live: a `jcode run` whose prompt told the model not to
+/// touch its todos was poked **300 times**, each poke answered with a one-line
+/// refusal, stopped only by killing the process. The poke asks the model to act
+/// on its list; if the list comes back byte-identical, the poke achieved
+/// nothing and asking again just spends another API call on the same question.
+#[test]
+fn a_poke_that_changed_nothing_is_not_sent_again() {
+    let todos = vec![test_todo("a", "pending", "high", None, None)];
+    let first = build_run_auto_poke_follow_up_from_todos(&todos, false, None);
+    let fingerprint = match first {
+        Some(RunAutoPokeFollowUp::Incomplete { fingerprint, .. }) => fingerprint,
+        _ => panic!("expected an incomplete-todo follow-up"),
+    };
+
+    // No poke has been sent yet, so the first one must go out.
+    assert!(!run_poke_is_repeat(None, &fingerprint));
+    // The list came back unchanged: the poke failed, do not repeat it.
+    assert!(run_poke_is_repeat(Some(&fingerprint), &fingerprint));
+}
+
+/// The guard must not silence a model that is actually working. Only a poke
+/// that demonstrably achieved nothing is suppressed, so any real movement in
+/// the list -- including a status change that leaves the count identical --
+/// earns another poke.
+#[test]
+fn a_list_that_moved_is_still_poked() {
+    let fingerprint_of =
+        |todos: &[crate::todo::TodoItem]| match build_run_auto_poke_follow_up_from_todos(
+            todos, false, None,
+        ) {
+            Some(RunAutoPokeFollowUp::Incomplete { fingerprint, .. }) => fingerprint,
+            _ => panic!("expected an incomplete-todo follow-up"),
+        };
+
+    let pending = vec![
+        test_todo("a", "pending", "high", None, None),
+        test_todo("b", "pending", "high", None, None),
+    ];
+    // Same number of incomplete todos, but one has been started. Counting
+    // alone would call this unchanged; the list plainly moved.
+    let started = vec![
+        test_todo("a", "in_progress", "high", None, None),
+        test_todo("b", "pending", "high", None, None),
+    ];
+    assert!(!run_poke_is_repeat(
+        Some(&fingerprint_of(&pending)),
+        &fingerprint_of(&started)
+    ));
+
+    // One finished: fewer incomplete, still work left, still worth poking.
+    let progressed = vec![
+        test_todo(
+            "a",
+            "completed",
+            "high",
+            None,
+            Some(ConfidenceState::Verified),
+        ),
+        test_todo("b", "pending", "high", None, None),
+    ];
+    assert!(!run_poke_is_repeat(
+        Some(&fingerprint_of(&started)),
+        &fingerprint_of(&progressed)
+    ));
 }
 
 #[test]
