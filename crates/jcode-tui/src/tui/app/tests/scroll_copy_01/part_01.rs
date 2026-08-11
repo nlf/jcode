@@ -1168,6 +1168,35 @@ fn test_prompt_jump_ctrl_esc_fallback_on_macos() {
     assert!(app.scroll_offset > 0);
 }
 
+/// Ctrl+5 must reach the prompt-rank handler, not be rewritten to Ctrl+].
+///
+/// macOS carried a legacy tty alias mapping Ctrl+5 to Ctrl+], which ran before
+/// key dispatch and so shadowed `ctrl_prompt_rank`'s Ctrl+5..Ctrl+9 bindings
+/// entirely: pressing Ctrl+5 jumped to the *next* prompt instead of the 5th
+/// most-recent one, and left auto-scroll unpaused. Ctrl+] still works on its
+/// own (see `test_prompt_jump_ctrl_brackets`), so the alias only did harm.
+#[test]
+fn test_ctrl_5_is_prompt_rank_not_a_bracket_alias() {
+    let _render_lock = scroll_render_test_lock();
+    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
+    render_and_snap(&app, &mut terminal);
+
+    let positions = crate::tui::ui::last_user_prompt_positions();
+    assert_eq!(positions.len(), 1, "fixture should seed exactly one prompt");
+
+    app.handle_key(KeyCode::Char('5'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // The rank handler clamps to the oldest prompt and pauses auto-scroll.
+    // The prompt-jump path this used to hit would land at 0 and leave
+    // auto_scroll_paused false, so this distinguishes the two.
+    assert_eq!(app.scroll_offset, positions[0]);
+    assert!(
+        app.auto_scroll_paused,
+        "the prompt-rank handler pauses auto-scroll; the bracket alias did not"
+    );
+}
+
 #[test]
 fn test_ctrl_digit_side_panel_preset_in_app() {
     let mut app = create_test_app();

@@ -1235,25 +1235,37 @@ fn git_column_state(merge_disabled: bool) -> TestState {
 /// per-file list. Merging on collapses everything into one box and drops the
 /// filenames, which is the behavior `display.widget_overview = false` exists to
 /// escape.
+/// The scan column is read back from the layout snapshot rather than hardcoded:
+/// the widget column starts at the transcript's right edge (x=80 at width 120),
+/// so a fixed x=90 sliced through the middle of every box and counted none of
+/// them, failing regardless of what was actually drawn.
 #[test]
 fn unmerged_column_renders_separate_boxes_with_git_filenames() {
     let merged = draw_state(&git_column_state(false), 120, 40);
-    let merged_boxes = column_box_count(&merged, 90);
+    let column_x = crate::tui::ui::last_layout_snapshot()
+        .and_then(|layout| layout.diff_pane_area)
+        .expect("column mode should reserve a widget column")
+        .x;
+    let merged_boxes = column_box_count(&merged, column_x);
     assert!(
-        !column_contains(&merged, 90, "README.md"),
+        !column_contains(&merged, column_x, "README.md"),
         "merged Overview uses the compact git line, so filenames should not appear"
     );
 
     let unmerged = draw_state(&git_column_state(true), 120, 40);
-    let unmerged_boxes = column_box_count(&unmerged, 90);
+    let unmerged_boxes = column_box_count(&unmerged, column_x);
 
+    assert!(
+        merged_boxes > 0,
+        "the merged Overview should still draw at least one box at x={column_x}"
+    );
     assert!(
         unmerged_boxes > merged_boxes,
         "merging off should draw more widget boxes (merged={merged_boxes} unmerged={unmerged_boxes})"
     );
     assert!(
-        column_contains(&unmerged, 90, "README.md")
-            && column_contains(&unmerged, 90, "src/tui/ui.rs"),
+        column_contains(&unmerged, column_x, "README.md")
+            && column_contains(&unmerged, column_x, "src/tui/ui.rs"),
         "the standalone git widget must list its changed files"
     );
 }

@@ -403,6 +403,11 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
     let prev_home = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", temp.path());
     crate::auth::claude::set_active_account_override(None);
+    // A temp home does not isolate the machine's Keychain, so on a developer
+    // machine with Claude Code installed the onboarding flow would still find a
+    // real importable login. A hermetic home means a machine with nothing to
+    // import.
+    crate::auth::claude::set_native_credentials_present_override(Some(false));
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();
     // The config cache is keyed by content, not by home, so a config written
@@ -412,6 +417,7 @@ fn with_temp_jcode_home<T>(f: impl FnOnce() -> T) -> T {
 
     let result = f();
 
+    crate::auth::claude::set_native_credentials_present_override(None);
     crate::auth::claude::set_active_account_override(None);
     crate::auth::codex::set_active_account_override(None);
     crate::auth::AuthStatus::invalidate_cache();

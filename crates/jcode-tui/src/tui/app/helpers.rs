@@ -196,20 +196,22 @@ pub(super) fn partition_queued_messages(
     (user_messages, reminder, display_system_messages)
 }
 
+/// macOS terminals cannot distinguish Ctrl+[ from Esc, so accept Ctrl+Esc as a
+/// stand-in for Ctrl+[ (jump to the previous prompt).
+///
+/// This deliberately does *not* map Ctrl+5 to Ctrl+]. That legacy tty mapping
+/// made Ctrl+5 unreachable on macOS: `ctrl_prompt_rank` binds Ctrl+5..Ctrl+9 to
+/// "jump to the Nth most-recent prompt", so the rewrite silently turned the
+/// documented Ctrl+5 into "next prompt" before the rank handler ever saw it.
+/// Ctrl+] is delivered directly by every terminal we support and is covered by
+/// `test_prompt_jump_ctrl_brackets`, so nothing needed the alias.
 #[cfg(target_os = "macos")]
 pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut KeyModifiers) {
     if !modifiers.contains(KeyModifiers::CONTROL) {
         return;
     }
-    match code {
-        KeyCode::Esc => {
-            *code = KeyCode::Char('[');
-        }
-        KeyCode::Char('5') => {
-            // Legacy tty mapping for Ctrl+]
-            *code = KeyCode::Char(']');
-        }
-        _ => {}
+    if matches!(code, KeyCode::Esc) {
+        *code = KeyCode::Char('[');
     }
 }
 

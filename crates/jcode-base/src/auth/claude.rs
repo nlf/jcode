@@ -782,6 +782,13 @@ fn read_claude_code_keychain_blob() -> Option<String> {
 /// reading the secret value. The secret is only read during an approved
 /// import or at runtime load.
 pub fn native_credentials_present() -> bool {
+    // The Keychain is machine state that JCODE_HOME cannot redirect, so a test
+    // wanting a "no importable logins" machine has no other way to say so: on
+    // any developer machine with Claude Code installed the real item is found
+    // and the onboarding flow branches into the import review.
+    if let Some(forced) = native_credentials_present_override() {
+        return forced;
+    }
     if std::env::var(CLAUDE_CODE_OAUTH_TOKEN_ENV)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
@@ -789,6 +796,30 @@ pub fn native_credentials_present() -> bool {
         return true;
     }
     claude_code_keychain_item_exists()
+}
+
+/// Test-only override for native-credential detection. `None` means "ask the
+/// machine", which is always what a real run does.
+static NATIVE_CREDENTIALS_PRESENT_OVERRIDE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+fn native_credentials_present_override() -> Option<bool> {
+    match NATIVE_CREDENTIALS_PRESENT_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(false),
+        2 => Some(true),
+        _ => None,
+    }
+}
+
+/// Force [`native_credentials_present`] to a fixed answer for the duration of a
+/// test. Pass `None` to restore real machine detection.
+pub fn set_native_credentials_present_override(value: Option<bool>) {
+    let encoded = match value {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    };
+    NATIVE_CREDENTIALS_PRESENT_OVERRIDE.store(encoded, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// macOS: cheaply check whether the Claude Code Keychain item exists without
