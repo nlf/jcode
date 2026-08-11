@@ -132,6 +132,93 @@ fn subtree_has_error(node: Node<'_, StrDoc<SupportLang>>) -> bool {
     node.children().any(subtree_has_error)
 }
 
+/// The lines a syntactic construct occupies, 1-indexed and inclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// The syntactic construct beginning on line `line`, if one does.
+///
+/// This is what makes `PUT 5*:` mean "replace the function starting at line 5"
+/// without the model having to count to its closing brace. The counting is the
+/// error-prone part, and it is the part a parser can simply be asked.
+///
+/// # Which node, when several begin on the same line
+///
+/// Every ancestor of a construct tends to start where it starts: at line 1 of a
+/// file whose first line is `fn a() {`, the `source_file`, the `function_item`
+/// and its name all begin there. The one that is useful is the **largest**
+/// construct starting on that line and ending on a later one, because that is
+/// what a person means by "the block at line 5". Taking the smallest would
+/// resolve an `if/else` to its first branch and orphan the `else`.
+///
+/// With one exception, and it is the whole reason this is not a one-liner: a
+/// node covering the entire file is a wrapper, not a block within it. Braces
+/// languages have exactly one such node, the root, but YAML nests several
+/// (`document`, `block_node`, `block_mapping`) that each span everything, and
+/// taking the largest there resolves `PUT 1*:` to the file rather than to the
+/// key the model named. So the largest node *smaller than the whole file* wins,
+/// and only when there is none at all does a file-spanning node get used, which
+/// is what still lets a file containing one function resolve that function.
+///
+/// `None` when the language is unknown, the line is blank or out of range, the
+/// file does not parse, or nothing multi-line begins there. Every one of those
+/// is a refusal to guess, and the caller reports it rather than editing.
+pub fn block_at(path: &str, text: &str, line: usize) -> Option<BlockSpan> {
+    let language = language_for_path(path)?;
+    if line == 0 {
+        return None;
+    }
+    // A block anchored inside a file that does not parse is not trustworthy:
+    // tree-sitter recovers from errors by inventing structure, and the span it
+    // reports may cover nothing the author would recognise.
+    let doc = AstGrep::new(text, language);
+    let root = doc.root();
+    if subtree_has_error(root.clone()) {
+        return None;
+    }
+    let last_line = text.lines().count();
+
+    // Largest that is not the whole file, and separately largest of any, so a
+    // file-spanning node can still be the answer when it is the only one.
+    let mut best_within: Option<BlockSpan> = None;
+    let mut best_any: Option<BlockSpan> = None;
+    let mut stack: Vec<Node<'_, StrDoc<SupportLang>>> = root.children().collect();
+    while let Some(node) = stack.pop() {
+        let start = node.start_pos().line() + 1;
+        let end = node.end_pos().line() + 1;
+        // Some grammars end a node at column 0 of the *following* line rather
+        // than at the end of its own. Counting that line would make a YAML
+        // mapping claim the sibling key below it.
+        let end = if node.end_pos().column(&node) == 0 && end > start {
+            end - 1
+        } else {
+            end
+        };
+        if start == line && end > start {
+            let span = BlockSpan { start, end };
+            if best_any.is_none_or(|current| end > current.end) {
+                best_any = Some(span);
+            }
+            let whole_file = start == 1 && end >= last_line;
+            if !whole_file && best_within.is_none_or(|current| end > current.end) {
+                best_within = Some(span);
+            }
+        }
+        // Only descend where the answer can still be: a node that ends before
+        // the target line cannot contain one starting on it.
+        for child in node.children() {
+            if child.end_pos().line() + 1 >= line {
+                stack.push(child);
+            }
+        }
+    }
+    best_within.or(best_any)
+}
+
 #[cfg(test)]
 #[path = "syntax_tests.rs"]
 mod syntax_tests;
+

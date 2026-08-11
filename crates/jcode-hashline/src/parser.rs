@@ -1,9 +1,9 @@
 //! Parsing hunk headers and body rows into edit operations.
 //!
 //! Ported from the op layer of oh-my-pi's `tokenizer.ts` and `parser.ts`,
-//! against the grammar in their `grammar.lark`. Block ops (`N*`) and clipboard
-//! registers (`@name`) are deliberately out of scope for v1: the first needs
-//! tree-sitter, and the second is only useful once moves are common.
+//! against the grammar in their `grammar.lark`. Clipboard registers (`@name`)
+//! are deliberately out of scope for v1: they are only useful once moves are
+//! common.
 //!
 //! # The separator leniency is the point
 //!
@@ -21,6 +21,13 @@ use crate::prefixes::{is_read_metadata_line, strip_one_leading_hashline_prefix};
 pub enum Anchor {
     /// An inclusive range of original lines, 1-indexed.
     Range { start: usize, end: usize },
+    /// The syntactic block beginning on a line, resolved against the file.
+    ///
+    /// Deferred rather than resolved here, because the parser has neither the
+    /// file text nor its language: `PUT 5*:` is only meaningful once someone
+    /// can look at line 5. [`crate::blocks::resolve`] turns it into a
+    /// [`Anchor::Range`], and every later stage sees only concrete ranges.
+    Block(usize),
     /// The gap before a line.
     Before(usize),
     /// The gap after a line.
@@ -138,6 +145,15 @@ fn parse_header(line: &str) -> HeaderScan {
         if let Some(reason) = unsupported_feature(rest) {
             return HeaderScan::Unsupported(reason);
         }
+        if let Some(line) = scan_block_anchor(rest) {
+            return HeaderScan::Op(
+                Op::Put {
+                    anchor: Anchor::Block(line),
+                    body: Vec::new(),
+                },
+                false,
+            );
+        }
         let Some((start, end, tail)) = scan_range(rest, true) else {
             return HeaderScan::NotAHeader;
         };
@@ -160,6 +176,18 @@ fn parse_header(line: &str) -> HeaderScan {
         None => (rest, false),
     };
 
+    // A block anchor, resolved later against the file. Checked before the gap
+    // locators so `>N*` is not mistaken for a plain `>N` with trailing junk.
+    if let Some(line) = scan_block_anchor(locator) {
+        return HeaderScan::Op(
+            Op::Put {
+                anchor: Anchor::Block(line),
+                body: Vec::new(),
+            },
+            expects_body,
+        );
+    }
+
     // Gap locators.
     if let Some(target) = locator.strip_prefix('<') {
         let Some((line, tail)) = scan_line_number(target) else {
@@ -168,8 +196,18 @@ fn parse_header(line: &str) -> HeaderScan {
         if !tail.trim().is_empty() {
             return HeaderScan::NotAHeader;
         }
-        let anchor = if line == 1 { Anchor::Bof } else { Anchor::Before(line) };
-        return HeaderScan::Op(Op::Put { anchor, body: Vec::new() }, expects_body);
+        let anchor = if line == 1 {
+            Anchor::Bof
+        } else {
+            Anchor::Before(line)
+        };
+        return HeaderScan::Op(
+            Op::Put {
+                anchor,
+                body: Vec::new(),
+            },
+            expects_body,
+        );
     }
     if let Some(target) = locator.strip_prefix('>') {
         let target = target.trim();
@@ -213,15 +251,29 @@ fn parse_header(line: &str) -> HeaderScan {
     )
 }
 
+/// Scan a block anchor: a line number followed by `*`, optionally after `>`.
+///
+/// `PUT 5*:` replaces the block beginning on line 5; `CUT 5*` deletes it. The
+/// `>` form (`PUT >5*:`, insert after the block) is deliberately not accepted
+/// here and falls through to [`unsupported_feature`], because landing an
+/// insertion after a block needs the depth correction that is not built yet,
+/// and accepting it would put the body at the block's last line with no regard
+/// for the scope it claimed.
+fn scan_block_anchor(locator: &str) -> Option<usize> {
+    let locator = locator.trim();
+    let (line, tail) = scan_line_number(locator)?;
+    (tail.trim() == "*").then_some(line)
+}
+
 /// Recognize a locator that uses a defined-but-unimplemented feature.
 ///
 /// Reported by name so a model learns the feature is absent rather than that
 /// its syntax was wrong. The latter invites an identical retry.
 fn unsupported_feature(locator: &str) -> Option<String> {
-    if locator.contains('*') {
+    if locator.starts_with('>') && locator.contains('*') {
         return Some(
-            "Block anchors (`N*`) are not supported yet; use an explicit line range \
-             such as `PUT 5.=9:`."
+            "Inserting after a block (`>N*`) is not supported yet; use `PUT N*:` to \
+             replace the block, or `PUT >M:` with the block's last line."
                 .to_string(),
         );
     }
@@ -330,9 +382,7 @@ pub fn parse_ops(body: &str) -> Result<ParsedOps, String> {
             _ => continue,
         };
         if end < start {
-            return Err(format!(
-                "Range {start}.={end} ends before it starts."
-            ));
+            return Err(format!("Range {start}.={end} ends before it starts."));
         }
         let span = end - start + 1;
         if span > MAX_RANGE_SPAN {

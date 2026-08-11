@@ -37,8 +37,16 @@ fn store_with_full_read() -> (SnapshotStore, String) {
 fn a_matching_tag_applies() {
     let (store, tag) = store_with_full_read();
 
-    let prepared = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 2.=2:\n+TWO"), true, None)
-        .expect("a current tag must apply");
+    let prepared = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+TWO"),
+        true,
+        Parsing::default(),
+    )
+    .expect("a current tag must apply");
 
     assert_eq!(prepared.after, "one\nTWO\nthree\nfour\nfive\n");
 }
@@ -51,16 +59,30 @@ fn a_tag_minted_here_but_now_stale_is_reported_as_drift() {
     let old_tag = store.record(PATH, TEXT, Some(&[1, 2, 3, 4, 5, 6]));
     let changed = "one\nCHANGED\nthree\nfour\nfive\n";
 
-    let error = prepare(&store, PATH, changed, Some(&old_tag), &ops("CUT 2"), true, None)
-        .expect_err("a stale tag must be refused");
+    let error = prepare(
+        &store,
+        PATH,
+        changed,
+        Some(&old_tag),
+        &ops("CUT 2"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("a stale tag must be refused");
 
     assert!(
         matches!(error, RejectReason::StaleTag { .. }),
         "expected drift, got {error:?}"
     );
     let message = error.message(PATH);
-    assert!(message.contains("changed between the read and this edit"), "{message}");
-    assert!(message.contains("re-read"), "must say what to do: {message}");
+    assert!(
+        message.contains("changed between the read and this edit"),
+        "{message}"
+    );
+    assert!(
+        message.contains("re-read"),
+        "must say what to do: {message}"
+    );
 }
 
 /// A tag nothing ever minted is a different mistake: the model invented it, or
@@ -71,8 +93,16 @@ fn a_tag_never_minted_here_is_reported_as_invented() {
     let store = SnapshotStore::new();
     store.record(PATH, TEXT, Some(&[1, 2, 3, 4, 5, 6]));
 
-    let error = prepare(&store, PATH, TEXT, Some("FFFF"), &ops("CUT 2"), true, None)
-        .expect_err("an unminted tag must be refused");
+    let error = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some("FFFF"),
+        &ops("CUT 2"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("an unminted tag must be refused");
 
     assert!(
         matches!(error, RejectReason::UnknownTag { .. }),
@@ -80,7 +110,10 @@ fn a_tag_never_minted_here_is_reported_as_invented() {
     );
     let message = error.message(PATH);
     assert!(message.contains("not from this session"), "{message}");
-    assert!(message.contains("never invent"), "must name the actual mistake: {message}");
+    assert!(
+        message.contains("never invent"),
+        "must name the actual mistake: {message}"
+    );
 }
 
 /// The two rejections must not collapse into one. They need different fixes,
@@ -91,12 +124,28 @@ fn the_two_tag_rejections_carry_different_messages() {
     let old_tag = store.record(PATH, TEXT, Some(&[1, 2, 3, 4, 5, 6]));
     let changed = "one\nCHANGED\nthree\nfour\nfive\n";
 
-    let stale = prepare(&store, PATH, changed, Some(&old_tag), &ops("CUT 2"), true, None)
-        .expect_err("stale")
-        .message(PATH);
-    let unknown = prepare(&store, PATH, changed, Some("FFFF"), &ops("CUT 2"), true, None)
-        .expect_err("unknown")
-        .message(PATH);
+    let stale = prepare(
+        &store,
+        PATH,
+        changed,
+        Some(&old_tag),
+        &ops("CUT 2"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("stale")
+    .message(PATH);
+    let unknown = prepare(
+        &store,
+        PATH,
+        changed,
+        Some("FFFF"),
+        &ops("CUT 2"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("unknown")
+    .message(PATH);
 
     assert_ne!(stale, unknown);
 }
@@ -106,8 +155,16 @@ fn the_two_tag_rejections_carry_different_messages() {
 #[test]
 fn an_untagged_section_skips_tag_validation() {
     let store = SnapshotStore::new();
-    let prepared = prepare(&store, PATH, TEXT, None, &ops("CUT 2"), true, None)
-        .expect("no tag means no tag check");
+    let prepared = prepare(
+        &store,
+        PATH,
+        TEXT,
+        None,
+        &ops("CUT 2"),
+        true,
+        Parsing::default(),
+    )
+    .expect("no tag means no tag check");
     assert_eq!(prepared.after, "one\nthree\nfour\nfive\n");
 }
 
@@ -120,8 +177,16 @@ fn an_edit_to_a_line_the_read_never_displayed_is_refused() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1, 2]));
 
-    let error = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 5.=5:\n+FIVE"), true, None)
-        .expect_err("line 5 was never displayed");
+    let error = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 5.=5:\n+FIVE"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("line 5 was never displayed");
 
     match error {
         RejectReason::UnseenLines { ref lines, .. } => assert_eq!(lines, &[5]),
@@ -134,8 +199,16 @@ fn an_edit_to_a_displayed_line_applies() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1, 2]));
 
-    let prepared = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 2.=2:\n+TWO"), true, None)
-        .expect("line 2 was displayed");
+    let prepared = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+TWO"),
+        true,
+        Parsing::default(),
+    )
+    .expect("line 2 was displayed");
 
     assert_eq!(prepared.after, "one\nTWO\nthree\nfour\nfive\n");
 }
@@ -149,15 +222,37 @@ fn a_rejection_reveals_the_lines_and_a_retry_then_succeeds() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1, 2]));
 
-    let error = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 5.=5:\n+FIVE"), true, None)
-        .expect_err("first attempt is refused");
+    let error = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 5.=5:\n+FIVE"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("first attempt is refused");
 
     let message = error.message(PATH);
-    assert!(message.contains("5:five"), "must show the real content: {message}");
-    assert!(message.contains("count as seen"), "must say a retry will work: {message}");
+    assert!(
+        message.contains("5:five"),
+        "must show the real content: {message}"
+    );
+    assert!(
+        message.contains("count as seen"),
+        "must say a retry will work: {message}"
+    );
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 5.=5:\n+FIVE"), true, None)
-        .expect("the retry must now succeed");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 5.=5:\n+FIVE"),
+        true,
+        Parsing::default(),
+    )
+    .expect("the retry must now succeed");
 }
 
 /// Over the reveal cap, nothing merges. Without this a model could split one
@@ -169,14 +264,30 @@ fn an_over_cap_rejection_merges_nothing_and_the_retry_still_fails() {
     let tag = store.record(PATH, &big, Some(&[1]));
 
     let patch = format!("PUT 2.={}:\n+X", SEEN_LINE_REVEAL_CAP + 10);
-    let error = prepare(&store, PATH, &big, Some(&tag), &ops(&patch), true, None)
-        .expect_err("far too many unseen lines");
+    let error = prepare(
+        &store,
+        PATH,
+        &big,
+        Some(&tag),
+        &ops(&patch),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("far too many unseen lines");
 
     let message = error.message(PATH);
     assert!(message.contains("re-read the range"), "{message}");
 
-    prepare(&store, PATH, &big, Some(&tag), &ops(&patch), true, None)
-        .expect_err("the retry must still fail, or the guard is walkable");
+    prepare(
+        &store,
+        PATH,
+        &big,
+        Some(&tag),
+        &ops(&patch),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("the retry must still fail, or the guard is walkable");
 }
 
 /// A very wide line truncates in the reveal, which flags the whole reveal, so
@@ -185,15 +296,34 @@ fn an_over_cap_rejection_merges_nothing_and_the_retry_still_fails() {
 #[test]
 fn a_column_clipped_reveal_merges_nothing() {
     let store = SnapshotStore::new();
-    let wide = format!("head\n{}\nfoot\n", "a".repeat(SEEN_LINE_REVEAL_MAX_COLUMNS + 100));
+    let wide = format!(
+        "head\n{}\nfoot\n",
+        "a".repeat(SEEN_LINE_REVEAL_MAX_COLUMNS + 100)
+    );
     let tag = store.record(PATH, &wide, Some(&[1]));
 
-    let error = prepare(&store, PATH, &wide, Some(&tag), &ops("PUT 2.=2:\n+X"), true, None)
-        .expect_err("line 2 was not displayed");
+    let error = prepare(
+        &store,
+        PATH,
+        &wide,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+X"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("line 2 was not displayed");
     assert!(error.message(PATH).contains("re-read the range"));
 
-    prepare(&store, PATH, &wide, Some(&tag), &ops("PUT 2.=2:\n+X"), true, None)
-        .expect_err("a clipped reveal must not unlock the retry");
+    prepare(
+        &store,
+        PATH,
+        &wide,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+X"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("a clipped reveal must not unlock the retry");
 }
 
 /// Absent provenance means the guard cannot judge, so it stands aside. This is
@@ -204,8 +334,16 @@ fn absent_provenance_disables_the_guard_rather_than_blocking() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, None);
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 5.=5:\n+FIVE"), true, None)
-        .expect("no provenance means the guard cannot judge");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 5.=5:\n+FIVE"),
+        true,
+        Parsing::default(),
+    )
+    .expect("no provenance means the guard cannot judge");
 }
 
 /// The guard is switchable. omp ships it off; we default it on, and the
@@ -215,8 +353,16 @@ fn the_guard_can_be_disabled() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1, 2]));
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 5.=5:\n+FIVE"), false, None)
-        .expect("with the guard off, an unseen line applies");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 5.=5:\n+FIVE"),
+        false,
+        Parsing::default(),
+    )
+    .expect("with the guard off, an unseen line applies");
 }
 
 /// Insert anchors are checked too: inserting beside an unseen line still means
@@ -226,8 +372,16 @@ fn the_guard_covers_insert_anchors_not_only_ranges() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1, 2]));
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT >4:\n+X"), true, None)
-        .expect_err("line 4 was never displayed");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT >4:\n+X"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("line 4 was never displayed");
 }
 
 /// File-level ops have no line anchors, so the guard has nothing to judge and
@@ -237,8 +391,16 @@ fn file_level_ops_are_not_blocked_by_the_guard() {
     let store = SnapshotStore::new();
     let tag = store.record(PATH, TEXT, Some(&[1]));
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("MV other.rs"), true, None)
-        .expect("a move anchors no lines");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("MV other.rs"),
+        true,
+        Parsing::default(),
+    )
+    .expect("a move anchors no lines");
 }
 
 // ─── no-op detection ─────────────────────────────────────────────────────────
@@ -250,11 +412,22 @@ fn file_level_ops_are_not_blocked_by_the_guard() {
 fn a_patch_that_changes_nothing_is_refused() {
     let (store, tag) = store_with_full_read();
 
-    let error = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 2.=2:\n+two"), true, None)
-        .expect_err("the body is byte-identical");
+    let error = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+two"),
+        true,
+        Parsing::default(),
+    )
+    .expect_err("the body is byte-identical");
 
     assert!(matches!(error, RejectReason::NoOp), "got {error:?}");
-    assert!(error.message(PATH).contains("re-read"), "must suggest a way out");
+    assert!(
+        error.message(PATH).contains("re-read"),
+        "must suggest a way out"
+    );
 }
 
 /// A move that changes no content is still a change, so it must not be
@@ -263,8 +436,16 @@ fn a_patch_that_changes_nothing_is_refused() {
 fn a_move_alone_is_not_a_no_op() {
     let (store, tag) = store_with_full_read();
 
-    prepare(&store, PATH, TEXT, Some(&tag), &ops("MV other.rs"), true, None)
-        .expect("relocating a file is a change");
+    prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("MV other.rs"),
+        true,
+        Parsing::default(),
+    )
+    .expect("relocating a file is a change");
 }
 
 // ─── chaining ────────────────────────────────────────────────────────────────
@@ -275,11 +456,22 @@ fn a_move_alone_is_not_a_no_op() {
 fn the_result_carries_a_tag_for_the_next_edit() {
     let (store, tag) = store_with_full_read();
 
-    let first = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 2.=2:\n+TWO"), true, None)
-        .expect("first edit");
+    let first = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+TWO"),
+        true,
+        Parsing::default(),
+    )
+    .expect("first edit");
 
     assert_eq!(first.new_tag, compute_file_hash(&first.after));
-    assert_ne!(first.new_tag, tag, "content changed, so the tag must change");
+    assert_ne!(
+        first.new_tag, tag,
+        "content changed, so the tag must change"
+    );
 }
 
 /// Recording the post-edit content with no provenance is what lets a chain
@@ -288,8 +480,16 @@ fn the_result_carries_a_tag_for_the_next_edit() {
 fn a_chained_edit_applies_against_the_new_tag() {
     let (store, tag) = store_with_full_read();
 
-    let first = prepare(&store, PATH, TEXT, Some(&tag), &ops("PUT 2.=2:\n+TWO"), true, None)
-        .expect("first edit");
+    let first = prepare(
+        &store,
+        PATH,
+        TEXT,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+TWO"),
+        true,
+        Parsing::default(),
+    )
+    .expect("first edit");
     store.record(PATH, &first.after, None);
 
     prepare(
@@ -299,19 +499,14 @@ fn a_chained_edit_applies_against_the_new_tag() {
         Some(&first.new_tag),
         &ops("PUT 3.=3:\n+THREE"),
         true,
-        None,
+        Parsing::default(),
     )
     .expect("the second edit anchors against the first edit's tag");
 }
 
 // ─── multi-section preflight ─────────────────────────────────────────────────
 
-fn section<'a>(
-    path: &'a str,
-    text: &'a str,
-    tag: &'a str,
-    ops: &'a [Op],
-) -> SectionInput<'a> {
+fn section<'a>(path: &'a str, text: &'a str, tag: &'a str, ops: &'a [Op]) -> SectionInput<'a> {
     SectionInput {
         path,
         current_text: text,
@@ -342,7 +537,7 @@ fn one_failing_section_prevents_every_section_from_being_prepared() {
             section("b.txt", b, "FFFF", &bad),
         ],
         true,
-        None,
+        Parsing::default(),
     )
     .expect_err("the second section must fail");
 
@@ -374,7 +569,7 @@ fn every_section_validating_yields_one_prepared_result_each() {
             section("b.txt", b, &tag_b, &ops_b),
         ],
         true,
-        None,
+        Parsing::default(),
     )
     .expect("both sections validate");
 
@@ -403,7 +598,7 @@ fn two_sections_targeting_one_file_are_refused() {
             section("a.txt", text, &tag, &second),
         ],
         true,
-        None,
+        Parsing::default(),
     )
     .expect_err("one file, two sections");
 
@@ -439,7 +634,7 @@ fn the_duplicate_check_runs_before_any_section_is_prepared() {
             section("a.txt", text, &tag, &other),
         ],
         true,
-        None,
+        Parsing::default(),
     )
     .expect_err("must refuse");
 
@@ -461,8 +656,13 @@ fn a_section_failure_names_the_file_it_came_from() {
     store.record("a.txt", text, Some(&[1, 2]));
     let bad = ops("PUT 1.=1:\n+ONE");
 
-    let error = preflight(&store, &[section("a.txt", text, "FFFF", &bad)], true, None)
-        .expect_err("unknown tag");
+    let error = preflight(
+        &store,
+        &[section("a.txt", text, "FFFF", &bad)],
+        true,
+        Parsing::default(),
+    )
+    .expect_err("unknown tag");
 
     assert!(error.message().contains("a.txt"), "{}", error.message());
 }
@@ -470,7 +670,11 @@ fn a_section_failure_names_the_file_it_came_from() {
 #[test]
 fn an_empty_patch_preflights_to_no_prepared_sections() {
     let store = SnapshotStore::new();
-    assert!(preflight(&store, &[], true, None).expect("nothing to do").is_empty());
+    assert!(
+        preflight(&store, &[], true, Parsing::default())
+            .expect("nothing to do")
+            .is_empty()
+    );
 }
 
 // Recovery and repair have to compose. Each was verified alone, and the seam
@@ -496,7 +700,7 @@ fn a_drifted_edit_is_both_relocated_and_repaired() {
         Some(&tag),
         &ops("PUT 2.=2:\n+function f() {\n+fresh();\n+}"),
         false,
-        None,
+        Parsing::default(),
     )
     .expect("the anchors are provable, so this recovers");
 
@@ -512,7 +716,10 @@ fn a_drifted_edit_is_both_relocated_and_repaired() {
         prepared.warnings
     );
     assert!(
-        prepared.warnings.iter().any(|w| w.contains("boundary echo")),
+        prepared
+            .warnings
+            .iter()
+            .any(|w| w.contains("boundary echo")),
         "{:?}",
         prepared.warnings
     );
@@ -540,14 +747,40 @@ fn a_drifted_append_goes_through_the_same_pipeline() {
         Some(&tag),
         &ops("PUT >$:\n+four"),
         false,
-        None,
+        Parsing::default(),
     )
     .expect("appending does not depend on line numbers");
 
     assert_eq!(prepared.after, "one\ntwo\nthree\nfour\n");
     assert!(
-        prepared.warnings.iter().any(|w| w.contains("stale snapshot tag")),
+        prepared
+            .warnings
+            .iter()
+            .any(|w| w.contains("stale snapshot tag")),
         "{:?}",
         prepared.warnings
     );
+}
+
+#[test]
+fn a_multi_line_refusal_keeps_its_own_closing_advice() {
+    // A block anchor's refusal names the enclosing block and the exact header
+    // to retry, then shows a context preview. Appending the generic "check the
+    // line numbers" both contradicts that instruction and lands after the
+    // preview, where it reads as another line of the file.
+    let detailed = RejectReason::Unapplicable {
+        detail: "`PUT 6*:` could not resolve a block. Use `PUT 5*:`.\n\n 5:fn b() {\n*6:\tx();"
+            .to_string(),
+    };
+    let message = detailed.message("s.rs");
+    assert!(
+        !message.contains("Check the line numbers"),
+        "generic advice must not follow a preview: {message}"
+    );
+
+    // A one-line refusal still gets it, because it has no advice of its own.
+    let plain = RejectReason::Unapplicable {
+        detail: "Line 99 does not exist (file has 2 lines).".to_string(),
+    };
+    assert!(plain.message("s.rs").contains("Check the line numbers"));
 }

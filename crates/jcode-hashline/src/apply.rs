@@ -112,6 +112,17 @@ pub fn apply_ops(text: &str, ops: &[Op]) -> Result<ApplyResult, String> {
                     insert_after[*line].extend(body.iter().cloned());
                 }
                 Anchor::Bof => insert_before[1].extend(body.iter().cloned()),
+                // Unreachable by contract: `prepare` resolves every block
+                // anchor into a range before anything else runs. Reported
+                // rather than ignored, because a block that reached the applier
+                // means the resolution step was skipped, and silently dropping
+                // the op would lose an edit the model believes it made.
+                Anchor::Block(line) => {
+                    return Err(format!(
+                        "Internal error: the block anchor on line {line} was never \
+                         resolved to a line range."
+                    ));
+                }
                 Anchor::Eof => {
                     // Append *before* the phantom, so the file keeps exactly
                     // one trailing newline instead of gaining a blank line
@@ -201,7 +212,11 @@ fn clamp_range(
         return Ok((0, 0));
     }
     // A range ending at the phantom ends at the last real line instead.
-    let end = if phantom > 0 && end >= phantom { phantom - 1 } else { end };
+    let end = if phantom > 0 && end >= phantom {
+        phantom - 1
+    } else {
+        end
+    };
     Ok((start, end))
 }
 
@@ -217,7 +232,11 @@ fn validate_anchor(line: usize, line_count: usize) -> Result<(), String> {
 }
 
 fn real_line_count(line_count: usize, phantom: usize) -> usize {
-    if phantom > 0 { line_count - 1 } else { line_count }
+    if phantom > 0 {
+        line_count - 1
+    } else {
+        line_count
+    }
 }
 
 #[cfg(test)]

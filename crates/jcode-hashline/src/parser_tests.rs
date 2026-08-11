@@ -26,7 +26,10 @@ fn put(anchor: Anchor, rows: &[&str]) -> Op {
 fn a_range_replacement_carries_its_body_rows_in_order() {
     assert_eq!(
         ops("PUT 2.=2:\n+before\n+after"),
-        vec![put(Anchor::Range { start: 2, end: 2 }, &["before", "after"])]
+        vec![put(
+            Anchor::Range { start: 2, end: 2 },
+            &["before", "after"]
+        )]
     );
 }
 
@@ -42,10 +45,7 @@ fn a_bare_cut_deletes_one_line() {
 
 #[test]
 fn gap_locators_insert_before_and_after() {
-    assert_eq!(
-        ops("PUT <2:\n+x"),
-        vec![put(Anchor::Before(2), &["x"])]
-    );
+    assert_eq!(ops("PUT <2:\n+x"), vec![put(Anchor::Before(2), &["x"])]);
     assert_eq!(ops("PUT >2:\n+x"), vec![put(Anchor::After(2), &["x"])]);
 }
 
@@ -109,7 +109,10 @@ fn every_common_range_separator_reaches_the_same_range() {
 fn a_bare_body_row_is_auto_prefixed_with_a_warning() {
     let parsed = parse_ops("PUT 2.=2:\nraw").expect("must recover");
 
-    assert_eq!(parsed.ops, vec![put(Anchor::Range { start: 2, end: 2 }, &["raw"])]);
+    assert_eq!(
+        parsed.ops,
+        vec![put(Anchor::Range { start: 2, end: 2 }, &["raw"])]
+    );
     assert!(
         parsed.warnings.iter().any(|w| w.contains("Auto-prefixed")),
         "the recovery must be reported: {:?}",
@@ -139,7 +142,10 @@ fn an_empty_replacement_body_is_read_as_a_deletion() {
 
     assert_eq!(parsed.ops, vec![Op::Cut { start: 2, end: 3 }]);
     assert!(
-        parsed.warnings.iter().any(|w| w.contains("empty `PUT` body")),
+        parsed
+            .warnings
+            .iter()
+            .any(|w| w.contains("empty `PUT` body")),
         "the reinterpretation must be reported: {:?}",
         parsed.warnings
     );
@@ -151,7 +157,10 @@ fn an_empty_replacement_body_is_read_as_a_deletion() {
 fn read_metadata_rows_are_dropped_from_a_body() {
     assert_eq!(
         ops("PUT 2.=2:\n+kept\n…\n+also kept"),
-        vec![put(Anchor::Range { start: 2, end: 2 }, &["kept", "also kept"])]
+        vec![put(
+            Anchor::Range { start: 2, end: 2 },
+            &["kept", "also kept"]
+        )]
     );
 }
 
@@ -159,7 +168,10 @@ fn read_metadata_rows_are_dropped_from_a_body() {
 fn a_plus_alone_is_a_blank_line() {
     assert_eq!(
         ops("PUT 1.=1:\n+\n+after blank"),
-        vec![put(Anchor::Range { start: 1, end: 1 }, &["", "after blank"])]
+        vec![put(
+            Anchor::Range { start: 1, end: 1 },
+            &["", "after blank"]
+        )]
     );
 }
 
@@ -169,7 +181,10 @@ fn a_plus_alone_is_a_blank_line() {
 fn a_doubled_sigil_writes_one_literal_sigil() {
     assert_eq!(
         ops("PUT 1.=1:\n+- item\n++ item"),
-        vec![put(Anchor::Range { start: 1, end: 1 }, &["- item", "+ item"])]
+        vec![put(
+            Anchor::Range { start: 1, end: 1 },
+            &["- item", "+ item"]
+        )]
     );
 }
 
@@ -217,17 +232,17 @@ fn zero_and_leading_zero_line_numbers_are_not_ranges() {
     assert!(parse_ops("CUT 01").is_err());
 }
 
-/// v1 does not implement block ops (`N*`) or clipboard registers (`@name`).
-/// They must be refused rather than silently reinterpreted as a line range,
-/// which would edit the wrong lines.
+/// Clipboard registers (`@name`) and the after-block form (`>N*`) are not
+/// implemented. They must be refused rather than silently reinterpreted as a
+/// line range, which would edit the wrong lines.
 ///
 /// The message matters as much as the refusal. Without a dedicated one these
 /// fall through to "no preceding hunk header", which tells a model its syntax
 /// was unrecognized rather than that the feature does not exist yet — so it
 /// retries the same thing instead of choosing a different op.
 #[test]
-fn unimplemented_block_and_register_forms_are_refused_by_name() {
-    for header in ["PUT 2*:\n+x", "CUT 2*", "PUT >20 @fn", "CUT 5.=9 @fn"] {
+fn unimplemented_register_and_after_block_forms_are_refused_by_name() {
+    for header in ["PUT >2*:\n+x", "PUT >20 @fn", "CUT 5.=9 @fn"] {
         let error = parse_ops(header)
             .expect_err(&format!("{header:?} must be refused while unimplemented"));
         assert!(
@@ -236,6 +251,40 @@ fn unimplemented_block_and_register_forms_are_refused_by_name() {
              is unrecognized; got: {error}"
         );
     }
+}
+
+// ─── block anchors ───────────────────────────────────────────────────────────
+
+/// `PUT N*:` and `CUT N*` survive parsing as a deferred anchor, because the
+/// parser has neither the file nor its language and so cannot know where the
+/// block ends. `crate::blocks::resolve` turns them into ranges later.
+#[test]
+fn a_block_anchor_parses_into_a_deferred_anchor() {
+    assert_eq!(
+        ops("PUT 2*:\n+A\n+B"),
+        vec![put(Anchor::Block(2), &["A", "B"])]
+    );
+    assert_eq!(ops("CUT 7*"), vec![put(Anchor::Block(7), &[])]);
+}
+
+/// The `*` is what distinguishes a block from a range, and the separator
+/// leniency makes that easy to blur: `2-3` is a range however it is spelled,
+/// and only a bare `N*` is a block.
+#[test]
+fn a_plain_range_is_never_read_as_a_block() {
+    assert_eq!(
+        ops("PUT 2-3:\n+A"),
+        vec![put(Anchor::Range { start: 2, end: 3 }, &["A"])]
+    );
+}
+
+/// An empty `PUT N*:` body means deletion, exactly as it does for a range. The
+/// range form rewrites to `CUT` at parse time, but a block cannot: its extent
+/// is unknown until resolution, so the deletion is expressed as a block anchor
+/// with no payload and becomes a `CUT` once the span is known.
+#[test]
+fn an_empty_block_body_is_a_deletion() {
+    assert_eq!(ops("PUT 2*:"), vec![put(Anchor::Block(2), &[])]);
 }
 
 // ─── multiple hunks ──────────────────────────────────────────────────────────

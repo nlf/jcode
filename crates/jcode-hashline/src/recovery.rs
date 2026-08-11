@@ -337,6 +337,15 @@ fn anchor_lines(ops: &[Op]) -> BTreeSet<usize> {
                 Anchor::Before(line) | Anchor::After(line) => {
                     lines.insert(*line);
                 }
+                // Blocks are resolved to ranges before recovery is reached, so
+                // this is unreachable in the pipeline. Treated as the anchor
+                // line anyway: that is the line the model named, and it is the
+                // conservative answer if a future caller ever runs recovery
+                // first, since demanding proof for a line is stricter than
+                // exempting it.
+                Anchor::Block(line) => {
+                    lines.insert(*line);
+                }
                 // Head and tail do not name a line, so there is nothing to
                 // prove and nothing to relocate.
                 Anchor::Bof | Anchor::Eof => {}
@@ -359,10 +368,7 @@ struct Neighbours {
     after: Option<usize>,
 }
 
-fn anchor_neighbours(
-    anchors: &BTreeSet<usize>,
-    line_count: usize,
-) -> HashMap<usize, Neighbours> {
+fn anchor_neighbours(anchors: &BTreeSet<usize>, line_count: usize) -> HashMap<usize, Neighbours> {
     let sorted: Vec<usize> = anchors.iter().copied().collect();
     let mut neighbours = HashMap::new();
     let mut index = 0;
@@ -471,6 +477,11 @@ fn remap_ops(previous: &str, current: &str, ops: &[Op]) -> Option<Remapped> {
                     }
                     Anchor::Before(line) => Anchor::Before(map_line(*line, &mut offsets)?),
                     Anchor::After(line) => Anchor::After(map_line(*line, &mut offsets)?),
+                    // Unreachable: blocks resolve to ranges before recovery.
+                    // Remapped like any other anchor rather than refused, so
+                    // that if it ever does arrive it moves with the file
+                    // instead of pointing at whatever now occupies that line.
+                    Anchor::Block(line) => Anchor::Block(map_line(*line, &mut offsets)?),
                     Anchor::Bof => Anchor::Bof,
                     Anchor::Eof => Anchor::Eof,
                 };
@@ -512,8 +523,7 @@ fn loose_context_holds(
     let offset = mapped as isize - line as isize;
     let follows = |neighbour: Option<usize>| {
         neighbour.is_some_and(|neighbour| {
-            line_map.get(&neighbour).copied()
-                == usize::try_from(neighbour as isize + offset).ok()
+            line_map.get(&neighbour).copied() == usize::try_from(neighbour as isize + offset).ok()
         })
     };
     follows(neighbours.after) || follows(neighbours.before)

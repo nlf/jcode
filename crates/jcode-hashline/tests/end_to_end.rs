@@ -15,8 +15,8 @@
 //! 4. The result carries a fresh tag so the next edit needs no re-read.
 
 use jcode_hashline::{
-    apply_ops, compute_file_hash, format_hashline_header, format_numbered_lines, parse_ops,
-    preflight, prepare, split_sections, RejectReason, SectionInput, SnapshotStore,
+    Parsing, RejectReason, SectionInput, SnapshotStore, apply_ops, compute_file_hash,
+    format_hashline_header, format_numbered_lines, parse_ops, preflight, prepare, split_sections,
 };
 
 const SOURCE: &str = "fn main() {\n    let x = 1;\n    println!(\"{x}\");\n}\n";
@@ -49,7 +49,7 @@ fn run_patch(store: &SnapshotStore, current: &str, patch: &str) -> Result<String
         section.file_hash.as_deref(),
         &parsed.ops,
         true,
-        None,
+        Parsing::default(),
     )?;
     Ok(prepared.after)
 }
@@ -97,10 +97,7 @@ fn a_second_edit_chains_off_the_first_without_a_re_read() {
     )
     .expect("second edit must apply against the first edit's tag");
 
-    assert_eq!(
-        second,
-        "fn main() {\n    let x = 42;\n    dbg!(x);\n}\n"
-    );
+    assert_eq!(second, "fn main() {\n    let x = 42;\n    dbg!(x);\n}\n");
 }
 
 /// The guarantee that distinguishes hashline from a line-number editor: an edit
@@ -174,8 +171,7 @@ fn a_patch_whose_body_echoes_read_output_still_lands_clean_content() {
     let result = run_patch(&store, SOURCE, &patch).expect("both recoveries must fire");
 
     assert_eq!(
-        result,
-        "fn main() {\n    let x = 99;\n    println!(\"{x}\");\n}\n",
+        result, "fn main() {\n    let x = 99;\n    println!(\"{x}\");\n}\n",
         "the line number must not become file content"
     );
 }
@@ -195,13 +191,12 @@ fn a_partial_read_only_authorizes_the_lines_it_displayed() {
     );
     assert!(allowed.is_ok(), "line 2 was displayed");
 
-    let refused = run_patch(
-        &store,
-        SOURCE,
-        &format!("[main.rs#{tag}]\nPUT 4.=4:\n+}}"),
-    )
-    .expect_err("line 4 was never displayed");
-    assert!(matches!(refused, RejectReason::UnseenLines { .. }), "{refused:?}");
+    let refused = run_patch(&store, SOURCE, &format!("[main.rs#{tag}]\nPUT 4.=4:\n+}}"))
+        .expect_err("line 4 was never displayed");
+    assert!(
+        matches!(refused, RejectReason::UnseenLines { .. }),
+        "{refused:?}"
+    );
 }
 
 /// Several hunks in one section anchor against the original file, so a model
@@ -211,9 +206,7 @@ fn multiple_hunks_in_one_section_anchor_against_the_original() {
     let store = SnapshotStore::new();
     let (tag, _) = simulated_read(&store, "main.rs", SOURCE);
 
-    let patch = format!(
-        "[main.rs#{tag}]\nPUT 2.=2:\n+    let x = 7;\nPUT >3:\n+    dbg!(x);"
-    );
+    let patch = format!("[main.rs#{tag}]\nPUT 2.=2:\n+    let x = 7;\nPUT >3:\n+    dbg!(x);");
     let result = run_patch(&store, SOURCE, &patch).expect("both hunks apply");
 
     assert_eq!(
@@ -231,9 +224,7 @@ fn a_two_file_patch_validates_every_section_before_any_would_be_written() {
     let tag_a = store.record("a.txt", a, Some(&[1, 2]));
     let tag_b = store.record("b.txt", b, Some(&[1, 2]));
 
-    let patch = format!(
-        "[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#{tag_b}]\nPUT 1.=1:\n+BETA"
-    );
+    let patch = format!("[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#{tag_b}]\nPUT 1.=1:\n+BETA");
     let sections = split_sections(&patch, None).expect("must split");
     assert_eq!(sections.len(), 2);
 
@@ -254,7 +245,8 @@ fn a_two_file_patch_validates_every_section_before_any_would_be_written() {
         })
         .collect();
 
-    let prepared = preflight(&store, &inputs, true, None).expect("both sections validate");
+    let prepared =
+        preflight(&store, &inputs, true, Parsing::default()).expect("both sections validate");
     assert_eq!(prepared[0].after, "ALPHA\n");
     assert_eq!(prepared[1].after, "BETA\n");
 }
@@ -271,9 +263,7 @@ fn a_bad_section_anywhere_prevents_the_whole_patch() {
     let tag_a = store.record("a.txt", a, Some(&[1, 2]));
 
     // b.txt carries a tag nothing minted.
-    let patch = format!(
-        "[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#FFFF]\nPUT 1.=1:\n+BETA"
-    );
+    let patch = format!("[a.txt#{tag_a}]\nPUT 1.=1:\n+ALPHA\n[b.txt#FFFF]\nPUT 1.=1:\n+BETA");
     let sections = split_sections(&patch, None).expect("must split");
     let parsed: Vec<_> = sections
         .iter()
@@ -292,7 +282,8 @@ fn a_bad_section_anywhere_prevents_the_whole_patch() {
         })
         .collect();
 
-    let error = preflight(&store, &inputs, true, None).expect_err("b.txt is unvalidatable");
+    let error =
+        preflight(&store, &inputs, true, Parsing::default()).expect_err("b.txt is unvalidatable");
     assert!(error.message().contains("b.txt"), "{}", error.message());
 }
 

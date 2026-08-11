@@ -214,12 +214,24 @@ fn drops_a_duplicated_multi_line_closing_block_the_root_tsx_incident() {
 fn drops_a_single_duplicated_structural_closer() {
     // The range ends one line short and the payload restates the `});` that
     // survives just below it.
-    let file = joined(&["it('a', () => {", "\tsetup();", "\trun();", "});", "after();"]);
+    let file = joined(&[
+        "it('a', () => {",
+        "\tsetup();",
+        "\trun();",
+        "});",
+        "after();",
+    ]);
     let (text, warnings) = apply(&file, "PUT 2=3:\n+\tsetup2();\n+\trun2();\n+});");
 
     assert_eq!(
         text,
-        joined(&["it('a', () => {", "\tsetup2();", "\trun2();", "});", "after();"])
+        joined(&[
+            "it('a', () => {",
+            "\tsetup2();",
+            "\trun2();",
+            "});",
+            "after();"
+        ])
     );
     assert!(
         warnings.iter().any(|w| w.contains("delimiter-balance")),
@@ -290,7 +302,14 @@ fn preserves_a_duplicated_opener_that_does_not_account_for_the_imbalance() {
 
     assert_eq!(
         text,
-        joined(&["if (a) {", "if (a) {", "\tif (b) {", "\t\tfoo();", "}", "bar();"])
+        joined(&[
+            "if (a) {",
+            "if (a) {",
+            "\tif (b) {",
+            "\t\tfoo();",
+            "}",
+            "bar();"
+        ])
     );
     assert!(warnings.is_empty(), "{warnings:?}");
 }
@@ -506,9 +525,19 @@ fn repairs_are_confined_to_the_replacement_that_earned_them() {
     let (text, warnings) = apply(&file, &patch);
     assert_eq!(
         text,
-        joined(&["function f() {", "fresh();", "}", "const x = 1;", "const y = 3;"])
+        joined(&[
+            "function f() {",
+            "fresh();",
+            "}",
+            "const x = 1;",
+            "const y = 3;"
+        ])
     );
-    assert_eq!(warnings.len(), 1, "only one hunk was repaired: {warnings:?}");
+    assert_eq!(
+        warnings.len(),
+        1,
+        "only one hunk was repaired: {warnings:?}"
+    );
 }
 
 #[test]
@@ -593,8 +622,11 @@ fn does_not_spare_a_closing_line_the_payload_already_restates() {
     // closer. Keeping the deleted one would put a second `}` outside the
     // payload, which is the opposite of the mistake being repaired.
     let file = joined(&["class Foo {", "\tok();", "\t}", "}"]);
-    let (text, warnings) =
-        apply_with_veto(&file, "PUT 1=4:\n+class Foo {\n+\tok();\n+}", brackets_balance);
+    let (text, warnings) = apply_with_veto(
+        &file,
+        "PUT 1=4:\n+class Foo {\n+\tok();\n+}",
+        brackets_balance,
+    );
 
     assert_eq!(text, joined(&["class Foo {", "\tok();", "}"]));
     assert_eq!(text.lines().filter(|l| *l == "}").count(), 1);
@@ -671,11 +703,8 @@ fn a_spare_that_does_not_fix_the_file_is_not_applied() {
     let file = joined(&["fn a() {", "\tone();", "}"]);
     // The payload opens two more blocks than it closes, so keeping the `}`
     // cannot balance the file.
-    let (text, warnings) = apply_with_veto(
-        &file,
-        "PUT 2=3:\n+\tif x {\n+\t\tif y {",
-        brackets_balance,
-    );
+    let (text, warnings) =
+        apply_with_veto(&file, "PUT 2=3:\n+\tif x {\n+\t\tif y {", brackets_balance);
 
     assert_eq!(text, joined(&["fn a() {", "\tif x {", "\t\tif y {"]));
     assert!(warnings.is_empty(), "{warnings:?}");
@@ -693,7 +722,10 @@ fn a_closer_whose_opener_another_hunk_deleted_is_not_kept() {
         brackets_balance,
     );
 
-    assert_eq!(text, joined(&["// opener removed", "\tfresh();", "after();"]));
+    assert_eq!(
+        text,
+        joined(&["// opener removed", "\tfresh();", "after();"])
+    );
     assert!(
         !warnings.iter().any(|w| w.contains("dropped closing line")),
         "{warnings:?}"
@@ -937,7 +969,10 @@ fn a_leading_spare_is_refused_when_the_payload_claims_to_be_inside() {
     let outcome = repair_boundaries_with(&mut ops, &lines, true);
 
     assert!(
-        !outcome.warnings.iter().any(|w| w.contains("leading line(s)")),
+        !outcome
+            .warnings
+            .iter()
+            .any(|w| w.contains("leading line(s)")),
         "{:?}",
         outcome.warnings
     );

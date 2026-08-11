@@ -119,16 +119,27 @@ impl RejectReason {
                          before retrying.",
                     );
                 } else {
-                    message.push_str(
-                        "\nThose lines now count as seen: retry with the same header.",
-                    );
+                    message
+                        .push_str("\nThose lines now count as seen: retry with the same header.");
                 }
                 message
             }
-            Self::Unapplicable { detail } => format!(
-                "Edit rejected for {path}: {detail} Check the line numbers against \
-                 your last read of this file."
-            ),
+            // The generic advice is appended only when the detail does not end
+            // in a sentence of its own. A block anchor's refusal already names
+            // the enclosing block and the exact header to retry, and often ends
+            // with a context preview, so gluing "check the line numbers" onto
+            // it both contradicts the specific instruction above and lands
+            // after the preview, where it reads as part of the file.
+            Self::Unapplicable { detail } => {
+                if detail.contains('\n') {
+                    format!("Edit rejected for {path}: {detail}")
+                } else {
+                    format!(
+                        "Edit rejected for {path}: {detail} Check the line numbers against \
+                         your last read of this file."
+                    )
+                }
+            }
             Self::NoOp => format!(
                 "Edit produced no change to {path}. The body is byte-identical to what \
                  is already there; re-read the file before issuing another edit."
@@ -163,6 +174,30 @@ pub struct Prepared {
 /// `jcode_ast::parses_cleanly`.
 pub type SyntaxCheck<'a> = &'a dyn Fn(&str, &str) -> bool;
 
+/// The parser-shaped questions this crate cannot answer for itself.
+///
+/// Grouped into one struct rather than passed as separate arguments so that
+/// adding the next one does not touch every call site. A caller with no parser
+/// passes `None` and loses only the features that need one: closer spares stay
+/// unavailable and block anchors are refused by name.
+#[derive(Clone, Copy, Default)]
+pub struct Parsing<'a> {
+    /// See [`SyntaxCheck`].
+    pub syntax: Option<SyntaxCheck<'a>>,
+    /// See [`crate::blocks::BlockResolver`].
+    pub blocks: Option<crate::blocks::BlockResolver<'a>>,
+}
+
+impl<'a> Parsing<'a> {
+    /// Just the syntax probe, for callers that have no block resolver.
+    pub fn with_syntax(syntax: SyntaxCheck<'a>) -> Self {
+        Self {
+            syntax: Some(syntax),
+            blocks: None,
+        }
+    }
+}
+
 /// Repair a payload's edges and apply it, in that order.
 ///
 /// **Every path that writes goes through here.** An earlier version of this
@@ -177,11 +212,11 @@ fn repair_and_apply(
     path: &str,
     current_text: &str,
     ops: &[Op],
-    syntax: Option<SyntaxCheck<'_>>,
+    parsing: Parsing<'_>,
 ) -> Result<(crate::apply::ApplyResult, Vec<String>, Vec<Op>), RejectReason> {
     let file_lines: Vec<&str> = current_text.split('\n').collect();
     let mut ops = ops.to_vec();
-    let repaired = match syntax {
+    let repaired = match parsing.syntax {
         Some(parses) => crate::repair::repair_with_syntax_veto(
             &mut ops,
             &file_lines,
@@ -212,8 +247,9 @@ fn repair_and_apply(
 /// fact well-informed about. It is exposed as a config key for anyone who wants
 /// the stricter behaviour.
 ///
-/// `syntax` unlocks the repairs that must be shown to work rather than argued
-/// for. Passing `None` is safe and simply leaves those repairs unavailable.
+/// `parsing` unlocks what needs a parser: the repairs that must be shown to
+/// work rather than argued for, and block anchors. A default `Parsing` is safe
+/// and simply leaves both unavailable, the latter refused by name.
 pub fn prepare(
     store: &SnapshotStore,
     path: &str,
@@ -221,9 +257,22 @@ pub fn prepare(
     expected_tag: Option<&str>,
     ops: &[Op],
     enforce_seen_lines: bool,
-    syntax: Option<SyntaxCheck<'_>>,
+    parsing: Parsing<'_>,
 ) -> Result<Prepared, RejectReason> {
     let actual_tag = compute_file_hash(current_text);
+
+    // Block anchors resolve first, against the file as it is now, so everything
+    // downstream sees concrete ranges. Doing it here rather than per-branch is
+    // what keeps drift handling, repair and recovery ignorant of blocks: by the
+    // time any of them run, `PUT 5*:` has become `PUT 5.=9:`.
+    //
+    // Against the *current* text even when the tag is stale, because that is
+    // the file the edit will land in. Resolving against the snapshot the model
+    // read would name a block by coordinates that no longer hold.
+    let mut ops = ops.to_vec();
+    crate::blocks::resolve(&mut ops, path, current_text, parsing.blocks)
+        .map_err(|detail| RejectReason::Unapplicable { detail })?;
+    let ops = &ops[..];
 
     if let Some(expected) = expected_tag
         && expected != actual_tag
@@ -236,8 +285,7 @@ pub fn prepare(
         // anchored has to earn it: recovery proves every anchor still names an
         // unchanged line before replaying.
         if !crate::recovery::has_anchor_scoped_op(ops) {
-            let (applied, mut warnings, _) =
-                repair_and_apply(path, current_text, ops, syntax)?;
+            let (applied, mut warnings, _) = repair_and_apply(path, current_text, ops, parsing)?;
             if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
                 return Err(RejectReason::NoOp);
             }
@@ -261,7 +309,7 @@ pub fn prepare(
             crate::recovery::recover_ops(store, path, current_text, expected, ops)
         {
             let (applied, mut warnings, _) =
-                repair_and_apply(path, current_text, &remapped.ops, syntax)?;
+                repair_and_apply(path, current_text, &remapped.ops, parsing)?;
             if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
                 return Err(RejectReason::NoOp);
             }
@@ -305,11 +353,9 @@ pub fn prepare(
     // a rejection discards the applied text either way. Doing it this way is
     // what lets every path share one `repair_and_apply` instead of keeping a
     // second copy here, which is how the drift paths came to skip repair.
-    let (applied, repair_warnings, ops) = repair_and_apply(path, current_text, ops, syntax)?;
+    let (applied, repair_warnings, ops) = repair_and_apply(path, current_text, ops, parsing)?;
 
-    if enforce_seen_lines
-        && let Some(expected) = expected_tag
-    {
+    if enforce_seen_lines && let Some(expected) = expected_tag {
         assert_seen_lines(store, path, expected, current_text, &ops)?;
     }
 
@@ -337,6 +383,14 @@ fn anchor_lines(ops: &[Op]) -> Vec<usize> {
             Op::Put { anchor, .. } => match anchor {
                 Anchor::Range { start, end } => lines.extend(*start..=*end),
                 Anchor::Before(line) | Anchor::After(line) => {
+                    lines.insert(*line);
+                }
+                // The anchor line is what the model actually pointed at, and it
+                // has to have seen that much. The rest of the block it resolves
+                // to is not required: naming a function by its first line is the
+                // entire point, and demanding the model have read to the closing
+                // brace would defeat it.
+                Anchor::Block(line) => {
                     lines.insert(*line);
                 }
                 Anchor::Bof | Anchor::Eof => {}
@@ -461,7 +515,7 @@ pub fn preflight(
     store: &SnapshotStore,
     sections: &[SectionInput<'_>],
     enforce_seen_lines: bool,
-    syntax: Option<SyntaxCheck<'_>>,
+    parsing: Parsing<'_>,
 ) -> Result<Vec<Prepared>, PreflightError> {
     let mut seen_paths: Vec<&str> = Vec::new();
     for section in sections {
@@ -482,7 +536,7 @@ pub fn preflight(
             section.expected_tag,
             section.ops,
             enforce_seen_lines,
-            syntax,
+            parsing,
         )
         .map_err(|reason| PreflightError::Section {
             path: section.path.to_string(),

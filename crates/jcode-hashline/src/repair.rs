@@ -310,8 +310,8 @@ pub fn repair_boundaries_with(
             );
             let body = payload(ops, group);
             let payload_opens = compute_balance(body).covers(spare.balance.negated());
-            let claims_inside = body_target_indent(body)
-                .is_some_and(|indent| is_deeper(&indent, kept_indent));
+            let claims_inside =
+                body_target_indent(body).is_some_and(|indent| is_deeper(&indent, kept_indent));
             if !payload_opens && !claims_inside {
                 outcome.ambiguity = Some(Ambiguity {
                     message: format!(
@@ -539,6 +539,12 @@ impl Projection {
                         inserted.entry(*line).or_default().extend(body.clone());
                     }
                     Anchor::Bof => inserted.entry(1).or_default().extend(body.clone()),
+                    // Unreachable: blocks resolve to ranges before repair. An
+                    // unresolved one is left out of the projection rather than
+                    // guessed at, since its extent is precisely what is not
+                    // known yet, and inventing one would let a spare reason
+                    // about lines this op may not touch.
+                    Anchor::Block(_) => {}
                     Anchor::Eof => {}
                 },
                 Op::Rem | Op::Mv { .. } => {}
@@ -556,7 +562,13 @@ impl Projection {
                 projected.extend(rows.clone());
             }
             if !self.deleted.contains(&candidate) {
-                projected.push(file_lines.get(candidate - 1).copied().unwrap_or("").to_string());
+                projected.push(
+                    file_lines
+                        .get(candidate - 1)
+                        .copied()
+                        .unwrap_or("")
+                        .to_string(),
+                );
             }
         }
         compute_balance(&projected)
@@ -769,7 +781,10 @@ fn find_prefix_closer_spare(
     }
 
     // And an opener must actually survive above for these to close.
-    if !projection.balance_above(group.start_line, file_lines).covers(needed) {
+    if !projection
+        .balance_above(group.start_line, file_lines)
+        .covers(needed)
+    {
         return None;
     }
 
@@ -855,7 +870,10 @@ fn deleted_prefix_balance(group: &Group, file_lines: &[&str], projection: &Proje
     let mut line = group.start_line;
     while line > 1 && projection.deleted.contains(&(line - 1)) {
         line -= 1;
-        deleted.insert(0, file_lines.get(line - 1).copied().unwrap_or("").to_string());
+        deleted.insert(
+            0,
+            file_lines.get(line - 1).copied().unwrap_or("").to_string(),
+        );
         if let Some(rows) = projection.inserted.get(&line) {
             let mut rows = rows.clone();
             rows.extend(inserted);
@@ -884,7 +902,11 @@ fn payload_mut<'a>(ops: &'a mut [Op], group: &Group) -> &'a mut Vec<String> {
 fn range_lines<'a>(group: &Group, file_lines: &'a [&'a str]) -> &'a [&'a str] {
     let start = group.start_line.saturating_sub(1);
     let end = group.end_line.min(file_lines.len());
-    if start >= end { &[] } else { &file_lines[start..end] }
+    if start >= end {
+        &[]
+    } else {
+        &file_lines[start..end]
+    }
 }
 
 /// Try each boundary rule in turn, and stop at the first that fires.
@@ -898,8 +920,8 @@ fn repair_group(ops: &mut [Op], group: &Group, file_lines: &[&str]) -> Option<St
         return Some(warning);
     }
 
-    let delta = compute_balance(payload(ops, group))
-        .minus(compute_balance(range_lines(group, file_lines)));
+    let delta =
+        compute_balance(payload(ops, group)).minus(compute_balance(range_lines(group, file_lines)));
 
     // A balanced payload cannot be explained by a duplicated bracket, so the
     // remaining rules have nothing to prove and are skipped. omp forks hard
@@ -933,7 +955,9 @@ fn leading_echo(payload: &[String], group: &Group, file_lines: &[&str]) -> usize
 
 /// How many trailing payload rows exactly repeat the lines below the range.
 fn trailing_echo(payload: &[String], group: &Group, file_lines: &[&str]) -> usize {
-    let limit = payload.len().min(file_lines.len().saturating_sub(group.end_line));
+    let limit = payload
+        .len()
+        .min(file_lines.len().saturating_sub(group.end_line));
     let mut best = 0;
     for count in 1..=limit {
         let below = &file_lines[group.end_line..group.end_line + count];
@@ -965,7 +989,8 @@ fn repair_two_sided_echo(ops: &mut [Op], group: &Group, file_lines: &[&str]) -> 
         return None;
     }
 
-    let dropped = compute_balance(&body[..leading]).plus(compute_balance(&body[body.len() - trailing..]));
+    let dropped =
+        compute_balance(&body[..leading]).plus(compute_balance(&body[body.len() - trailing..]));
     if !dropped.is_zero() {
         // The echo carries brackets, so removing it changes the balance. That
         // is only safe when the change is exactly the imbalance the payload
@@ -1002,14 +1027,14 @@ fn repair_duplicate_suffix(
     delta: Balance,
 ) -> Option<String> {
     let body = payload(ops, group);
-    let limit = body.len().min(file_lines.len().saturating_sub(group.end_line));
+    let limit = body
+        .len()
+        .min(file_lines.len().saturating_sub(group.end_line));
     let mut best = 0;
     for count in 1..=limit {
         let below = &file_lines[group.end_line..group.end_line + count];
         let tail = &body[body.len() - count..];
-        if tail.iter().zip(below).all(|(row, line)| row == line)
-            && compute_balance(tail) == delta
-        {
+        if tail.iter().zip(below).all(|(row, line)| row == line) && compute_balance(tail) == delta {
             best = count;
         }
     }
@@ -1044,7 +1069,10 @@ fn repair_duplicate_prefix(
     let mut best = 0;
     for count in 1..=limit {
         let above = &file_lines[group.start_line - 1 - count..group.start_line - 1];
-        if body[..count].iter().zip(above).all(|(row, line)| row == line)
+        if body[..count]
+            .iter()
+            .zip(above)
+            .all(|(row, line)| row == line)
             && compute_balance(&body[..count]) == delta
         {
             best = count;

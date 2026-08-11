@@ -19,7 +19,7 @@ pub use matching::{
 
 pub use ast_grep_language::SupportLang;
 pub use rewrite::{plan, PendingFile, RewriteOptions, RewritePlan};
-pub use syntax::parses_cleanly;
+pub use syntax::{block_at, parses_cleanly, BlockSpan};
 pub use search::{
     search, targets_for, FileMatches, SearchFailure, SearchOptions, SearchResult,
     DEFAULT_FILE_LIMIT, MULTI_FILE_PER_FILE_MATCHES,
