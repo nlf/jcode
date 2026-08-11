@@ -16,6 +16,25 @@ impl Agent {
     const SEQUENTIAL_TOOL_ROUNDS_BEFORE_BATCH_NUDGE: u32 = 3;
     const BATCH_NUDGE: &str = "<system-reminder>Several tool calls have been made one at a time. If the next independent operations can run concurrently, use the batch tool instead of making more sequential calls. Keep sequential calls when one result is required to decide the next operation.</system-reminder>";
 
+    /// Tool calls allowed between `todo` writes before the first stale-list
+    /// nudge.
+    ///
+    /// Measured rather than guessed. A 541-call session in this repo wrote
+    /// todos twice: once at call 8, then not again for 525 calls, by which
+    /// point seven finished items were still open and the user had to ask. Real
+    /// single-task stretches in the same session ran well under this, so 12
+    /// clears healthy work while catching the failure by a wide margin.
+    const TOOL_CALLS_BEFORE_STALE_TODO_NUDGE: u32 = 12;
+
+    /// Cap on the backoff interval between repeat nudges.
+    ///
+    /// A flat threshold would have fired ~40 times in the session above, which
+    /// turns the nudge into wallpaper the model learns to skip. The interval
+    /// doubles after each unheeded nudge, so a model that genuinely has nothing
+    /// to record is asked progressively less often, while one that starts
+    /// tracking again resets to the tight interval.
+    const MAX_STALE_TODO_NUDGE_INTERVAL: u32 = 96;
+
     fn update_sequential_tool_rounds(current: u32, tool_count: usize, used_batch: bool) -> u32 {
         if tool_count == 1 && !used_batch {
             current.saturating_add(1)
@@ -26,6 +45,61 @@ impl Agent {
 
     fn should_inject_batch_nudge(pending: bool, batch_available: bool) -> bool {
         pending && batch_available
+    }
+
+    /// Interval that must elapse before the `nudges`-th stale-list nudge.
+    ///
+    /// Doubles per nudge already sent, capped, so repeat nudges back off.
+    fn stale_todo_nudge_interval(nudges_sent: u32) -> u32 {
+        Self::TOOL_CALLS_BEFORE_STALE_TODO_NUDGE
+            .saturating_mul(1u32 << nudges_sent.min(5))
+            .min(Self::MAX_STALE_TODO_NUDGE_INTERVAL)
+    }
+
+    /// Whether the tool calls just executed should reset the stale-todo
+    /// counter. A `todo` write is the signal the list is current; a `todo`
+    /// *read* is not, but the tool does not distinguish them at this layer and
+    /// a read is a deliberate act of attention, so both reset.
+    fn tool_calls_touch_todo(names: &[String]) -> bool {
+        names.iter().any(|name| name == "todo")
+    }
+
+    /// Whether enough tool calls have gone by, on their own, to be due a nudge.
+    ///
+    /// Split from the availability guards so the caller can check the cheap
+    /// arithmetic first and only touch the filesystem when it matters. Keeping
+    /// the interval maths in one function is deliberate: a second copy at the
+    /// call site is exactly how a threshold and its guard drift apart.
+    ///
+    /// The interval is measured **from the last nudge**, not from the last todo
+    /// write. Measuring from the write looks equivalent and is not: the counter
+    /// keeps climbing after a nudge, so the condition stays true and re-fires on
+    /// every subsequent call. Replayed against a real 541-call session that way
+    /// produced 155 nudges, worse than no backoff at all.
+    fn stale_todo_nudge_is_due(
+        calls_since_todo: u32,
+        last_nudge_at: u32,
+        nudges_sent: u32,
+    ) -> bool {
+        calls_since_todo
+            >= last_nudge_at.saturating_add(Self::stale_todo_nudge_interval(nudges_sent))
+    }
+
+    /// Whether to interrupt with the stale-list nudge now.
+    ///
+    /// Deliberately does *not* require an `in_progress` item. The worse failure
+    /// is working on something never marked started at all, and staying quiet
+    /// for it would bless exactly the state we most want corrected.
+    fn should_inject_stale_todo_nudge(
+        calls_since_todo: u32,
+        last_nudge_at: u32,
+        nudges_sent: u32,
+        todo_available: bool,
+        has_todos: bool,
+    ) -> bool {
+        todo_available
+            && has_todos
+            && Self::stale_todo_nudge_is_due(calls_since_todo, last_nudge_at, nudges_sent)
     }
 
     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
@@ -48,6 +122,14 @@ impl Agent {
         let mut fable_guardrail_reconsiderations = 0u32;
         let mut sequential_single_tool_rounds = 0u32;
         let mut batch_nudge_pending = false;
+        // Tool calls executed since the model last touched the `todo` tool, and
+        // how many stale-list nudges this turn has already sent (which sets the
+        // backoff interval). Both are per turn-loop: a fresh user turn starts
+        // the model on a clean slate rather than inheriting a grudge.
+        let mut tool_calls_since_todo = 0u32;
+        let mut stale_todo_nudges_sent = 0u32;
+        let mut stale_todo_last_nudge_at = 0u32;
+        let mut stale_todo_nudge_pending = false;
 
         loop {
             // Do not start another provider request once a cancel has been
@@ -121,6 +203,27 @@ impl Agent {
                 messages_with_memory.push(Message::user(Self::BATCH_NUDGE));
                 batch_nudge_pending = false;
                 sequential_single_tool_rounds = 0;
+            }
+            if stale_todo_nudge_pending {
+                // Built from the list as it stands right now, so it names what
+                // is actually stale rather than what was stale when the counter
+                // tripped.
+                let todos = crate::todo::load_todos(&self.session.id).unwrap_or_default();
+                let nudge =
+                    crate::todo::build_stale_todo_list_message(&todos, tool_calls_since_todo);
+                logging::info(&format!(
+                    "Stale todo list nudge injected ({} tool calls since last todo write, nudge #{})",
+                    tool_calls_since_todo,
+                    stale_todo_nudges_sent + 1
+                ));
+                messages_with_memory.push(Message::user(&nudge));
+                stale_todo_nudge_pending = false;
+                stale_todo_nudges_sent = stale_todo_nudges_sent.saturating_add(1);
+                // The next nudge is due a backed-off interval after *this* one.
+                // Measuring from the last todo write instead leaves the
+                // condition permanently true once crossed, which re-fires every
+                // call.
+                stale_todo_last_nudge_at = tool_calls_since_todo;
             }
 
             logging::info(&format!(
@@ -911,6 +1014,51 @@ impl Agent {
                 batch_nudge_pending = true;
             }
 
+            // A `todo` call inside a `batch` still counts as touching the list,
+            // so the names collected here include the batch's sub-tool names.
+            // Missing that would nudge a model that had just written its todos,
+            // which is the fastest way to teach it to ignore the nudge.
+            let mut executed_tool_names: Vec<String> =
+                tool_calls.iter().map(|tc| tc.name.clone()).collect();
+            for tc in tool_calls.iter().filter(|tc| tc.name == "batch") {
+                if let Some(calls) = tc.input.get("tool_calls").and_then(|v| v.as_array()) {
+                    for call in calls {
+                        if let Some(name) = call.get("tool").and_then(|v| v.as_str()) {
+                            executed_tool_names.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            if Self::tool_calls_touch_todo(&executed_tool_names) {
+                tool_calls_since_todo = 0;
+                stale_todo_nudges_sent = 0;
+                stale_todo_last_nudge_at = 0;
+                stale_todo_nudge_pending = false;
+            } else {
+                tool_calls_since_todo =
+                    tool_calls_since_todo.saturating_add(executed_tool_names.len() as u32);
+                // The list check reads the file, so it runs only once the counter
+                // is actually due rather than on every tool round. `todos_exist`
+                // would be cheaper but is the wrong question: 4 of 75 todo files
+                // on this machine hold an empty list, and nudging about a list
+                // with nothing in it names nothing and asks for nothing.
+                if Self::stale_todo_nudge_is_due(
+                    tool_calls_since_todo,
+                    stale_todo_last_nudge_at,
+                    stale_todo_nudges_sent,
+                ) && Self::should_inject_stale_todo_nudge(
+                    tool_calls_since_todo,
+                    stale_todo_last_nudge_at,
+                    stale_todo_nudges_sent,
+                    tools.iter().any(|tool| tool.name == "todo"),
+                    crate::todo::load_todos(&self.session.id)
+                        .map(|todos| !todos.is_empty())
+                        .unwrap_or(false),
+                ) {
+                    stale_todo_nudge_pending = true;
+                }
+            }
+
             // Execute tools and add results
             let mut tool_results_dirty = false;
             for tc in tool_calls {
@@ -1201,6 +1349,92 @@ mod tests {
             timestamp: None,
             tool_duration_ms: Some(1),
         }
+    }
+
+    /// The threshold is the whole design: too low and it fires during healthy
+    /// single-task work, too high and it never catches the failure. Pinned
+    /// against both ends of the measured session.
+    #[test]
+    fn stale_todo_nudge_clears_healthy_work_and_catches_a_real_stall() {
+        // A dozen calls of legitimate single-task work: silent.
+        assert!(!Agent::should_inject_stale_todo_nudge(11, 0, 0, true, true));
+        // The measured failure was 525 calls without a write; the first nudge
+        // lands two orders of magnitude before that.
+        assert!(Agent::should_inject_stale_todo_nudge(12, 0, 0, true, true));
+        assert!(Agent::should_inject_stale_todo_nudge(525, 0, 0, true, true));
+    }
+
+    /// Firing every 12 calls forever would have produced ~45 nudges in the
+    /// measured session, which is how a nudge becomes wallpaper. Each unheeded
+    /// nudge doubles the interval, up to a cap.
+    #[test]
+    fn repeat_stale_todo_nudges_back_off_and_then_hold_at_the_cap() {
+        assert_eq!(Agent::stale_todo_nudge_interval(0), 12);
+        assert_eq!(Agent::stale_todo_nudge_interval(1), 24);
+        assert_eq!(Agent::stale_todo_nudge_interval(2), 48);
+        assert_eq!(Agent::stale_todo_nudge_interval(3), 96);
+        // Capped, and no overflow however many nudges have gone unheeded.
+        assert_eq!(Agent::stale_todo_nudge_interval(4), 96);
+        assert_eq!(Agent::stale_todo_nudge_interval(u32::MAX), 96);
+    }
+
+    /// The bug this pins was live and invisible: with the interval measured
+    /// from the last todo *write*, the condition stays true once crossed and
+    /// re-fires on every subsequent call. Replaying a real 541-call session
+    /// gave 155 nudges rather than 13. Backoff only works measured from the
+    /// last nudge.
+    #[test]
+    fn a_nudge_that_went_unheeded_does_not_re_fire_on_the_very_next_call() {
+        // First nudge fires at 12.
+        assert!(Agent::should_inject_stale_todo_nudge(12, 0, 0, true, true));
+        // One more call, still no todo write: must stay quiet, not re-fire.
+        assert!(!Agent::should_inject_stale_todo_nudge(
+            13, 12, 1, true, true
+        ));
+        assert!(!Agent::should_inject_stale_todo_nudge(
+            35, 12, 1, true, true
+        ));
+        // Due again a doubled interval after the last nudge, not after the write.
+        assert!(Agent::should_inject_stale_todo_nudge(36, 12, 1, true, true));
+    }
+
+    /// Two ways to nudge into the void: no `todo` tool advertised, so the model
+    /// cannot comply, and no list at all, where there is nothing to be stale.
+    #[test]
+    fn stale_todo_nudge_stays_quiet_without_a_todo_tool_or_a_list() {
+        assert!(!Agent::should_inject_stale_todo_nudge(
+            500, 0, 0, false, true
+        ));
+        assert!(!Agent::should_inject_stale_todo_nudge(
+            500, 0, 0, true, false
+        ));
+    }
+
+    /// nlf's call: an untracked-work session is exactly the state to correct,
+    /// so the decision must not depend on an item being `in_progress`. This
+    /// pins the absence of that condition, which is otherwise invisible.
+    #[test]
+    fn stale_todo_nudge_does_not_require_an_in_progress_item() {
+        // The signature carries no in-progress input at all; a list of purely
+        // pending items still nudges.
+        assert!(Agent::should_inject_stale_todo_nudge(12, 0, 0, true, true));
+    }
+
+    /// A `todo` written inside a `batch` must reset the counter, or the model
+    /// gets nudged immediately after doing the right thing.
+    #[test]
+    fn a_todo_call_resets_the_counter_however_it_was_made() {
+        assert!(Agent::tool_calls_touch_todo(&["todo".to_string()]));
+        assert!(Agent::tool_calls_touch_todo(&[
+            "read".to_string(),
+            "todo".to_string(),
+        ]));
+        assert!(!Agent::tool_calls_touch_todo(&[
+            "read".to_string(),
+            "bash".to_string(),
+        ]));
+        // Not fooled by a name that merely contains "todo".
+        assert!(!Agent::tool_calls_touch_todo(&["todo_read".to_string()]));
     }
 
     #[test]

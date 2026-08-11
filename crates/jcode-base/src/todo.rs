@@ -811,6 +811,75 @@ pub fn build_auto_poke_message(incomplete_count: usize) -> String {
     )
 }
 
+/// Header for the mid-turn nudge sent when many tool calls have gone by without
+/// a `todo` write.
+///
+/// Distinct from [`build_auto_poke_message`], which fires when the model
+/// *stops* with incomplete todos. That one cannot catch a list going stale
+/// during a long turn, which is the case this exists for: a 541-call session
+/// wrote todos twice, then left seven items open until the user pointed it out.
+///
+/// Worded as an instruction about the list's accuracy rather than a restatement
+/// of "use the todo tool", which the system prompt already says and which was
+/// observably ignored.
+///
+/// Registered in [`is_auto_poke_message`] defensively rather than because it is
+/// reachable today: the turn loop pushes this onto the outgoing message list
+/// only, so it is never persisted to the session and the renderer never sees
+/// it. Recorded here so the registration does not read as coverage it does not
+/// have -- if this ever becomes persisted, the classification is already right.
+pub const TODO_STALE_LIST_CONTINUATION_MESSAGE: &str = "[automated todo check - not a user message] The todo list has not been updated for a while. Bring it in line with what has actually happened: mark finished items completed, mark what you are working on now in_progress, and add anything you have taken on that is not listed. Do not reply conversationally or wait for the user; update the list and carry on.";
+
+/// Build the mid-turn stale-list nudge, naming the current state of the list so
+/// the model does not have to re-read it to know what is out of date.
+///
+/// `calls_since_write` is the number of tool calls since the last `todo` write,
+/// used only to say how long it has been; the threshold decision belongs to the
+/// caller.
+pub fn build_stale_todo_list_message(todos: &[TodoItem], calls_since_write: u32) -> String {
+    let mut message = String::from(TODO_STALE_LIST_CONTINUATION_MESSAGE);
+    message.push_str(&format!(
+        "\n- {} tool calls have run since the list was last written.",
+        calls_since_write
+    ));
+
+    if todos.is_empty() {
+        // Unreachable from the turn loop, which requires a non-empty list
+        // before it nudges at all: a nudge about an empty list names nothing.
+        // Kept because this is a public builder and the branch is the only
+        // sensible thing to say, not because it is a live safeguard.
+        message.push_str(
+            "\n- The list is empty. If this turn is doing multi-step work, write the steps down now.",
+        );
+        return message;
+    }
+
+    let in_progress: Vec<&TodoItem> = todos
+        .iter()
+        .filter(|todo| todo.status.eq_ignore_ascii_case("in_progress"))
+        .collect();
+    let pending: Vec<&TodoItem> = todos
+        .iter()
+        .filter(|todo| todo.status.eq_ignore_ascii_case("pending"))
+        .collect();
+
+    append_named_todos(&mut message, "Still marked in progress:", &in_progress);
+    append_named_todos(&mut message, "Still marked pending:", &pending);
+
+    if in_progress.is_empty() && !pending.is_empty() {
+        message.push_str(
+            "\n- Nothing is marked in progress. If you are working on one of these, mark it in_progress now.",
+        );
+    }
+    if in_progress.is_empty() && pending.is_empty() {
+        message.push_str(
+            "\n- Every item is closed. If this turn has taken on new work, add it to the list.",
+        );
+    }
+
+    message
+}
+
 /// Longest list of named todos a gate continuation will spell out, so a big
 /// plan cannot turn one nudge into a wall of text.
 const GATE_NAMED_TODO_LIMIT: usize = 6;
@@ -916,6 +985,7 @@ pub fn is_auto_poke_message(message: &str) -> bool {
         || trimmed.starts_with(LEGACY_TODO_CONFIDENCE_SUMMARY_PREFIX)
         || trimmed.starts_with(TODO_GATE_DIGEST_PREFIX)
         || trimmed.starts_with(TODO_LONG_SESSION_REVIEW_MESSAGE)
+        || trimmed.starts_with(TODO_STALE_LIST_CONTINUATION_MESSAGE)
 }
 
 /// Short, user-facing stand-in for a synthetic auto-poke/gate continuation.
@@ -945,6 +1015,9 @@ pub fn auto_poke_display_summary(message: &str) -> Option<&'static str> {
     }
     if trimmed.starts_with(TODO_LONG_SESSION_REVIEW_MESSAGE) {
         return Some("🔍 Rechecking the plan and assessments after extended work...");
+    }
+    if trimmed.starts_with(TODO_STALE_LIST_CONTINUATION_MESSAGE) {
+        return Some("🔍 Bringing the todo list back in line with the work...");
     }
     if trimmed.starts_with(TODO_OWNERSHIP_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_OWNERSHIP_CONTINUATION_MESSAGE)
@@ -1793,6 +1866,57 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The stale-list nudge exists to be actionable without a re-read, so it
+    /// must name what is still open and say which way each item should move.
+    #[test]
+    fn stale_list_message_names_the_open_items_and_the_gap() {
+        let todos = vec![
+            todo("port the parser", "in_progress", Some("hashline")),
+            todo("wire up recovery", "pending", Some("hashline")),
+            todo("land the tests", "completed", Some("hashline")),
+        ];
+        let message = build_stale_todo_list_message(&todos, 42);
+
+        assert!(message.starts_with(TODO_STALE_LIST_CONTINUATION_MESSAGE));
+        assert!(message.contains("42 tool calls"));
+        assert!(message.contains("\"port the parser\""));
+        assert!(message.contains("\"wire up recovery\""));
+        // A finished item is not what the nudge is asking about.
+        assert!(!message.contains("\"land the tests\""));
+        // It is a continuation, not a question for the user.
+        assert!(is_auto_poke_message(&message));
+        assert!(auto_poke_display_summary(&message).is_some());
+    }
+
+    /// nlf's call: the nudge fires even with nothing in progress, because
+    /// "working untracked" is the failure it is trying to catch, not just
+    /// "finished but unmarked". Silence here would bless the worse state.
+    #[test]
+    fn stale_list_message_calls_out_that_nothing_is_in_progress() {
+        let todos = vec![
+            todo("port the parser", "pending", None),
+            todo("wire up recovery", "pending", None),
+        ];
+        let message = build_stale_todo_list_message(&todos, 12);
+        assert!(message.contains("Nothing is marked in progress"));
+        assert!(message.contains("\"port the parser\""));
+    }
+
+    /// An empty list and a fully-closed list are different situations and need
+    /// different instructions; both would otherwise get a nudge naming nothing.
+    #[test]
+    fn stale_list_message_handles_empty_and_fully_closed_lists() {
+        let empty = build_stale_todo_list_message(&[], 20);
+        assert!(empty.contains("The list is empty"));
+        assert!(!empty.contains("Nothing is marked in progress"));
+
+        let closed = vec![todo("port the parser", "completed", None)];
+        let message = build_stale_todo_list_message(&closed, 20);
+        assert!(message.contains("Every item is closed"));
+        assert!(!message.contains("Still marked in progress"));
+        assert!(!message.contains("Still marked pending"));
     }
 
     /// The model must be told which items it should recheck, otherwise the
