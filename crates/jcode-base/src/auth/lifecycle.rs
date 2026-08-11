@@ -874,6 +874,9 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
         "copilot" => Some("copilot"),
         "gemini" => Some("gemini"),
         "antigravity" => Some("antigravity"),
+        // Grok Build is a separate identity from `xai`: it delegates token
+        // ownership to the installed Grok CLI and never reads XAI_API_KEY.
+        "grok-build" => Some("grok-build"),
         _ => None,
     }
 }
