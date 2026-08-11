@@ -163,6 +163,37 @@ pub struct Prepared {
 /// `jcode_ast::parses_cleanly`.
 pub type SyntaxCheck<'a> = &'a dyn Fn(&str, &str) -> bool;
 
+/// Repair a payload's edges and apply it, in that order.
+///
+/// **Every path that writes goes through here.** An earlier version of this
+/// file repaired in one place and called the applier directly in two others,
+/// so an edit that drifted got recovery but no repair: a payload restating its
+/// neighbours was relocated onto the right lines and then duplicated them,
+/// which is precisely the corruption the repair layer exists to prevent. omp
+/// has no such split because their recovery calls `applyEdits`, the repairing
+/// applier, rather than the raw splice. One function is the fix; two would
+/// diverge again.
+fn repair_and_apply(
+    path: &str,
+    current_text: &str,
+    ops: &[Op],
+    syntax: Option<SyntaxCheck<'_>>,
+) -> Result<(crate::apply::ApplyResult, Vec<String>, Vec<Op>), RejectReason> {
+    let file_lines: Vec<&str> = current_text.split('\n').collect();
+    let mut ops = ops.to_vec();
+    let repaired = match syntax {
+        Some(parses) => crate::repair::repair_with_syntax_veto(
+            &mut ops,
+            &file_lines,
+            |candidate| parses(path, candidate),
+            |candidate| apply_ops(current_text, candidate).ok().map(|out| out.text),
+        ),
+        None => crate::repair::repair_boundaries(&mut ops, &file_lines),
+    };
+    let applied = apply_ops(current_text, &ops).map_err(unapplicable)?;
+    Ok((applied, repaired.warnings, ops))
+}
+
 /// Validate and apply a section in memory.
 ///
 /// `enforce_seen_lines` mirrors omp's `enforceSeenLines`, which ships **off**
@@ -197,10 +228,12 @@ pub fn prepare(
         // anchored has to earn it: recovery proves every anchor still names an
         // unchanged line before replaying.
         if !crate::recovery::has_anchor_scoped_op(ops) {
-            let applied = apply_ops(current_text, ops).map_err(unapplicable)?;
+            let (applied, mut warnings, _) =
+                repair_and_apply(path, current_text, ops, syntax)?;
             if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
                 return Err(RejectReason::NoOp);
             }
+            warnings.insert(0, crate::recovery::HEADTAIL_DRIFT_WARNING.to_string());
             return Ok(Prepared {
                 path: path.to_string(),
                 before: current_text.to_string(),
@@ -208,21 +241,32 @@ pub fn prepare(
                 after: applied.text,
                 move_dest: applied.move_dest,
                 removed: applied.removed,
-                warnings: vec![crate::recovery::HEADTAIL_DRIFT_WARNING.to_string()],
+                warnings,
             });
         }
 
-        if let Some(recovered) =
-            crate::recovery::try_recover(store, path, current_text, expected, ops)
+        // Recovery rewrites the anchors into current coordinates; the payload
+        // still has to be repaired against the file it is actually landing in,
+        // which is why the remapped ops go back through the same pipeline
+        // rather than being applied directly.
+        if let Some(remapped) =
+            crate::recovery::recover_ops(store, path, current_text, expected, ops)
         {
+            let (applied, mut warnings, _) =
+                repair_and_apply(path, current_text, &remapped.ops, syntax)?;
+            if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
+                return Err(RejectReason::NoOp);
+            }
+            let mut all = remapped.warnings;
+            all.append(&mut warnings);
             return Ok(Prepared {
                 path: path.to_string(),
                 before: current_text.to_string(),
-                new_tag: compute_file_hash(&recovered.text),
-                after: recovered.text,
-                move_dest: recovered.move_dest,
-                removed: recovered.removed,
-                warnings: recovered.warnings,
+                new_tag: compute_file_hash(&applied.text),
+                after: applied.text,
+                move_dest: applied.move_dest,
+                removed: applied.removed,
+                warnings: all,
             });
         }
 

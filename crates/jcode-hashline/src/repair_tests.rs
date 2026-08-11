@@ -522,6 +522,29 @@ fn an_insertion_is_never_boundary_repaired() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
+#[test]
+fn an_insertion_that_looks_like_a_duplicated_closer_still_lands_whole() {
+    // The case that actually distinguishes an insertion from a replacement,
+    // and the one the test above does not reach.
+    //
+    // The payload ends with a `}` that also exists just below the insertion
+    // point, and the delimiter counts line up exactly as they would for a
+    // duplicated-suffix mistake. Treating the insertion as a one-line range
+    // would strip that `}` and silently drop a line the model asked for. It
+    // is not a mistake: an insertion adds content, so nothing it contains can
+    // be an accidental restatement of the range it is replacing, because
+    // there is no such range.
+    let file = joined(&["if (x) {", "body();", "}"]);
+    let (text, warnings) = apply(&file, "PUT >2:\n+extra();\n+}");
+
+    assert_eq!(
+        text,
+        joined(&["if (x) {", "body();", "extra();", "}", "}"]),
+        "every payload line of an insertion must land"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
 // Closer spares. These are the rules that claim a bracket is syntax rather
 // than text, so each is gated on a parse check: the authored edit must break
 // the file and the repaired one must fix it. The tests come in pairs, because

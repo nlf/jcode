@@ -21,6 +21,8 @@
 //! withhold permission to repair; it can never demand one.
 
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::{Mutex, OnceLock};
 
 use ast_grep_core::tree_sitter::StrDoc;
@@ -37,11 +39,28 @@ use crate::matching::language_for_path;
 /// handful of parses.
 const CACHE_CAPACITY: usize = 256;
 
-type Cache = HashMap<(String, String), bool>;
+/// A cache key: the language, plus a hash and length of the text.
+///
+/// **Not the text itself.** Keying on the content made every entry as large as
+/// the file it described, and 256 entries of ordinary source came to well over
+/// a hundred megabytes held live for the sake of skipping a few parses. A
+/// 64-bit hash beside the length is enough to tell candidates apart, and the
+/// cost of the rare collision is bounded: two different texts would have to
+/// agree on both, and the worst outcome is one wrong verdict on a repair that
+/// is checked again by the applier.
+type CacheKey = (&'static str, u64, usize);
+
+type Cache = HashMap<CacheKey, bool>;
 
 fn cache() -> &'static Mutex<Cache> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn text_hash(text: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// True when `text` parses without a syntax error, under the language `path`
@@ -54,7 +73,7 @@ pub fn parses_cleanly(path: &str, text: &str) -> bool {
         return false;
     };
 
-    let key = (language_key(language), text.to_string());
+    let key = (language_key(language), text_hash(text), text.len());
     if let Ok(cache) = cache().lock()
         && let Some(cached) = cache.get(&key)
     {
@@ -69,7 +88,7 @@ pub fn parses_cleanly(path: &str, text: &str) -> bool {
         // are interchangeable, and the working set of a repair pass is a few
         // versions of one file.
         if cache.len() >= CACHE_CAPACITY
-            && let Some(victim) = cache.keys().next().cloned()
+            && let Some(victim) = cache.keys().next().copied()
         {
             cache.remove(&victim);
         }
@@ -79,8 +98,20 @@ pub fn parses_cleanly(path: &str, text: &str) -> bool {
     parsed
 }
 
-fn language_key(language: SupportLang) -> String {
-    format!("{language:?}")
+/// A stable name for a language, usable as a `'static` key.
+fn language_key(language: SupportLang) -> &'static str {
+    // `SupportLang` is a fixed enum, so leaking one string per variant is
+    // bounded by the number of languages and happens at most once each.
+    static NAMES: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+    let rendered = format!("{language:?}");
+    let mut names = names.lock().expect("language name table poisoned");
+    if let Some(name) = names.get(&rendered) {
+        return name;
+    }
+    let leaked: &'static str = Box::leak(rendered.clone().into_boxed_str());
+    names.insert(rendered, leaked);
+    leaked
 }
 
 /// Walk the tree looking for a node tree-sitter flagged as broken.

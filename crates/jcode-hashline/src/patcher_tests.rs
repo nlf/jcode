@@ -472,3 +472,82 @@ fn an_empty_patch_preflights_to_no_prepared_sections() {
     let store = SnapshotStore::new();
     assert!(preflight(&store, &[], true, None).expect("nothing to do").is_empty());
 }
+
+// Recovery and repair have to compose. Each was verified alone, and the seam
+// between them was not: recovery relocated the anchors and then applied
+// directly, so a drifted edit got its line numbers fixed and its duplicated
+// neighbours left in. These pin the composition in both drift paths.
+
+#[test]
+fn a_drifted_edit_is_both_relocated_and_repaired() {
+    // Another agent inserted a line at the top, so the anchors have moved. The
+    // payload also restates the signature and closing brace around its range,
+    // the ordinary boundary-echo mistake. Fixing only the anchors would place
+    // the edit correctly and still duplicate both neighbours.
+    let store = SnapshotStore::new();
+    let original = "function f() {\nold();\n}\n";
+    let tag = store.record(PATH, original, None);
+    let current = "// added by someone else\nfunction f() {\nold();\n}\n";
+
+    let prepared = prepare(
+        &store,
+        PATH,
+        current,
+        Some(&tag),
+        &ops("PUT 2.=2:\n+function f() {\n+fresh();\n+}"),
+        false,
+        None,
+    )
+    .expect("the anchors are provable, so this recovers");
+
+    assert_eq!(
+        prepared.after, "// added by someone else\nfunction f() {\nfresh();\n}\n",
+        "the signature and brace must not be duplicated by a recovered edit"
+    );
+    // Both layers report, so the model learns the tag was stale *and* that its
+    // payload restated lines it should not have.
+    assert!(
+        prepared.warnings.iter().any(|w| w.contains("Recovered")),
+        "{:?}",
+        prepared.warnings
+    );
+    assert!(
+        prepared.warnings.iter().any(|w| w.contains("boundary echo")),
+        "{:?}",
+        prepared.warnings
+    );
+}
+
+#[test]
+fn a_drifted_append_goes_through_the_same_pipeline() {
+    // The position-stable path: `PUT >$:` cannot be moved by drift, so it
+    // applies with a warning rather than going through recovery.
+    //
+    // Recorded as a regression guard rather than counted as evidence: it
+    // passes against the old code too, because repair only ever touches a
+    // replacement's range and a head/tail insert has none. What it pins is
+    // that routing this path through the shared pipeline did not change its
+    // behaviour or lose its warning.
+    let store = SnapshotStore::new();
+    let original = "one\ntwo\n";
+    let tag = store.record(PATH, original, None);
+    let current = "one\ntwo\nthree\n";
+
+    let prepared = prepare(
+        &store,
+        PATH,
+        current,
+        Some(&tag),
+        &ops("PUT >$:\n+four"),
+        false,
+        None,
+    )
+    .expect("appending does not depend on line numbers");
+
+    assert_eq!(prepared.after, "one\ntwo\nthree\nfour\n");
+    assert!(
+        prepared.warnings.iter().any(|w| w.contains("stale snapshot tag")),
+        "{:?}",
+        prepared.warnings
+    );
+}

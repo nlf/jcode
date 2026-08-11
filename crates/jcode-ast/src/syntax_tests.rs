@@ -89,3 +89,32 @@ fn one_text_can_be_valid_in_one_language_and_not_another() {
     assert!(parses_cleanly("a.rs", source));
     assert!(!parses_cleanly("a.py", source));
 }
+
+#[test]
+fn the_cache_does_not_retain_the_text_it_was_asked_about() {
+    // The cache exists to skip repeated parses of the same candidate during a
+    // repair pass. Keying it on the content itself made each entry as large as
+    // the file it described: 256 entries of ordinary source held over a
+    // hundred megabytes, live, for the sake of a few parses. Confirmed by
+    // reverting the key and watching this report 148,498,578 bytes.
+    //
+    // Measured rather than asserted structurally, since the point is the bytes
+    // and not the type. The files here are large but syntactically trivial, so
+    // the test spends its time on the thing being measured rather than on
+    // tree-sitter.
+    let big = "const x = 1;\n".repeat(4_000);
+    for index in 0..CACHE_CAPACITY {
+        let _ = parses_cleanly("f.js", &format!("// {index}\n{big}"));
+    }
+
+    let held: usize = cache()
+        .lock()
+        .expect("cache")
+        .keys()
+        .map(|(language, _, _)| language.len() + std::mem::size_of::<CacheKey>())
+        .sum();
+    assert!(
+        held < 64 * 1024,
+        "the cache should stay small regardless of file size, held {held} bytes"
+    );
+}

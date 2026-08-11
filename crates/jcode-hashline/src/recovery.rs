@@ -94,18 +94,30 @@ pub fn has_anchor_scoped_op(ops: &[Op]) -> bool {
     })
 }
 
-/// Try to rescue `ops` against a file that no longer hashes to `expected_tag`.
+/// Anchors rewritten into the current file's coordinates, ready to apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredOps {
+    pub ops: Vec<Op>,
+    pub warnings: Vec<String>,
+}
+
+/// Rescue `ops` against a file that no longer hashes to `expected_tag`, by
+/// proving every anchor still names an unchanged line and rewriting it.
 ///
-/// Returns `None` when the anchors cannot be proven, which is not an error
-/// condition so much as a refusal: the caller then reports the stale tag and
-/// the model re-reads.
-pub fn try_recover(
+/// Returns the *operations*, not the applied text, because the caller still
+/// has to repair the payload's edges against the file it is landing in. An
+/// earlier version applied here and skipped that, which meant a drifted edit
+/// got its anchors fixed and its duplicated neighbours left in.
+///
+/// `None` is a refusal rather than an error: the anchors could not be proven,
+/// so the caller reports the stale tag and the model re-reads.
+pub fn recover_ops(
     store: &SnapshotStore,
     path: &str,
     current_text: &str,
     expected_tag: &str,
     ops: &[Op],
-) -> Option<Recovered> {
+) -> Option<RecoveredOps> {
     // On a 16-bit tag collision this is the most recently recorded of the
     // colliding versions. Recovery does not try the others: the anchors still
     // have to be proven against whichever text it picks, so a wrong guess
@@ -131,11 +143,11 @@ pub fn try_recover(
     };
 
     let remapped = remap_ops(&snapshot.text, current_text, ops)?;
-    let applied = apply_ops(current_text, &remapped.ops).ok()?;
 
     // A recovery that changes nothing is a failure, not a success. Reporting it
     // as a no-op would tell the model its edit was redundant, when what
     // actually happened is that we could not place it.
+    let applied = apply_ops(current_text, &remapped.ops).ok()?;
     if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
         return None;
     }
@@ -146,12 +158,31 @@ pub fn try_recover(
         RECOVERY_LINE_REMAP_WARNING
     };
 
+    Some(RecoveredOps {
+        ops: remapped.ops,
+        warnings: vec![warning.to_string()],
+    })
+}
+
+/// Rescue `ops` and apply them, without repairing the payload.
+///
+/// Retained for tests that assert on recovery in isolation. Production goes
+/// through [`recover_ops`] so the result is repaired as well as relocated.
+pub fn try_recover(
+    store: &SnapshotStore,
+    path: &str,
+    current_text: &str,
+    expected_tag: &str,
+    ops: &[Op],
+) -> Option<Recovered> {
+    let recovered = recover_ops(store, path, current_text, expected_tag, ops)?;
+    let applied = apply_ops(current_text, &recovered.ops).ok()?;
     Some(Recovered {
         text: applied.text,
         first_changed_line: applied.first_changed_line,
         move_dest: applied.move_dest,
         removed: applied.removed,
-        warnings: vec![warning.to_string()],
+        warnings: recovered.warnings,
     })
 }
 

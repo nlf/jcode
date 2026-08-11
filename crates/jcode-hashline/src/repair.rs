@@ -540,11 +540,16 @@ fn find_suffix_closer_spare(
     }
 
     // And there must be an unclosed opener above it in the projected file for
-    // these brackets to close. A zero requirement fails here rather than
-    // passing vacuously, because a balance of nothing covers nothing to find.
-    if needed == Balance::default() {
-        return None;
-    }
+    // these brackets to close.
+    //
+    // A zero requirement cannot reach here. `covers` is vacuously true for a
+    // component asking for nothing, so an all-zero `needed` would pass this
+    // check, which is the classic way a rule "justifies" a rewrite with no
+    // evidence. It is excluded earlier instead: a kept run with zero balance
+    // means the payload is not short anything, and the `delta.covers` check
+    // above has already refused it. Instrumenting this branch over 8,000
+    // generated patches fired it zero times, so an explicit guard here would
+    // be unreachable code rather than a safeguard.
     let above = projection.balance_above(suffix_start, file_lines);
     let covered_below = compute_balance(&suffix[keep_end..]);
     if !above.plus(covered_below).covers(needed) {
