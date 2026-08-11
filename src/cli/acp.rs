@@ -1387,21 +1387,6 @@ fn session_config_options(state: &SessionUiState) -> Vec<Value> {
     options
 }
 
-fn legacy_models(state: &SessionUiState) -> Option<Value> {
-    let current = state.model.as_deref()?;
-    let mut models = state.available_models.clone();
-    if !models.iter().any(|candidate| candidate == current) {
-        models.insert(0, current.to_string());
-    }
-    Some(json!({
-        "availableModels": models
-            .into_iter()
-            .map(|model| json!({ "modelId": model, "name": model }))
-            .collect::<Vec<_>>(),
-        "currentModelId": current,
-    }))
-}
-
 async fn wait_for_model_changed(session: &DaemonSession, request_id: u64) -> Result<()> {
     loop {
         match session.read_event().await? {
@@ -2172,7 +2157,7 @@ mod tests {
             ..SessionUiState::default()
         };
         assert_eq!(
-            legacy_models(&state),
+            session_models(&state),
             Some(json!({
                 "availableModels": [
                     { "modelId": "provider:new", "name": "provider:new" },

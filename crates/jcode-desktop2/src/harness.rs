@@ -82,8 +82,12 @@ pub enum HarnessUpdate {
     /// status line is hidden once a session is attached, which is exactly when
     /// a failure matters most.
     Failed(String),
+    /// The runtime transport disappeared and the worker is reconnecting.
+    /// Unlike `Failed`, this is not a failed model turn and must not leave an
+    /// error card in the conversation.
+    ConnectionLost(String),
     /// The daemon's current session list, for the session strip.
-    Sessions(Vec<crate::strip::Entry>),
+    Sessions(Vec<crate::strip::Panel>),
     /// The tail of another session's conversation, for the overview's preview.
     Peek {
         session_id: String,
@@ -136,6 +140,11 @@ impl CommandSender {
             tx,
             new_requested: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_requested_for_test(&self) -> bool {
+        self.new_requested.load(Ordering::Acquire)
     }
 
     pub fn send(&self, command: Command) -> Result<(), std::sync::mpsc::SendError<Command>> {
@@ -269,7 +278,7 @@ pub fn spawn(
             if uptime.is_some() {
                 backoff = RECONNECT_BACKOFF;
             }
-            ui.send(HarnessUpdate::Failed(describe_disconnect(
+            ui.send(HarnessUpdate::ConnectionLost(describe_disconnect(
                 stage,
                 &error,
                 uptime,
@@ -485,14 +494,23 @@ fn run(
         }
     });
 
-    // Session-list polling is independent of the command worker. It may retain
-    // the old client briefly during a new-session handoff, but the replacement
-    // connection is separate and does not wait for this poller to retire.
+    // Session-list polling is independent of the command worker. Give it its
+    // own connection as well as its own thread: the bridge serves requests on
+    // one connection in order, so a list read on a clone of the live client can
+    // otherwise sit in front of a user message (or its streamed events). This
+    // is the same isolation used for transcript previews above.
     std::thread::spawn({
-        let client = client.clone();
         let ui = ui.clone();
         let poll_new_requested = Arc::clone(&new_requested);
         move || {
+            let Ok(client) = JcodeClient::connect(ConnectOptions {
+                client_name: concat!("jcode-desktop2-sessions/", env!("CARGO_PKG_VERSION"))
+                    .to_string(),
+                ensure_runtime: false,
+                ..Default::default()
+            }) else {
+                return;
+            };
             while !client.is_closed() && !poll_new_requested.load(Ordering::Acquire) {
                 match client.list_sessions() {
                     Ok(sessions) => ui.send(HarnessUpdate::Sessions(
@@ -636,6 +654,17 @@ fn run(
                 percent,
                 done,
             }),
+            ApiEvent::Error { message, .. }
+                if message.eq_ignore_ascii_case("daemon connection closed") =>
+            {
+                // The bridge sends this immediately before closing the API
+                // stream. Let the outer retry loop report it once as a
+                // recoverable transport interruption, rather than first
+                // recording a failed turn and then recording a disconnect.
+                return Err(
+                    std::io::Error::new(std::io::ErrorKind::ConnectionReset, message).into(),
+                );
+            }
             ApiEvent::Error { message, .. } => {
                 // A failed request is also the end of the turn it belonged to:
                 // the daemon sends `error` *instead of* `done`, so without this
@@ -676,8 +705,8 @@ mod command_sender_tests {
 }
 
 /// A session-list entry, sized for the overview.
-fn to_entry(session: jcode_sdk::SessionInfo) -> crate::strip::Entry {
-    crate::strip::Entry {
+fn to_entry(session: jcode_sdk::SessionInfo) -> crate::strip::Panel {
+    crate::strip::Panel {
         session_id: session.session_id,
         title: session.title,
         working_dir: session.working_dir,

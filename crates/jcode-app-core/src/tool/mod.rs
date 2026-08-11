@@ -60,6 +60,10 @@ pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> boo
     allowed.contains(name) || (allowed.contains("mcp") && name.starts_with("mcp__"))
 }
 
+pub(crate) fn tool_name_is_disabled(disabled: &HashSet<String>, name: &str) -> bool {
+    disabled.contains(name) || (disabled.contains("mcp") && name.starts_with("mcp__"))
+}
+
 use std::sync::{LazyLock, RwLock as StdRwLock};
 use tokio::sync::RwLock;
 
@@ -684,7 +688,7 @@ impl Registry {
             {
                 return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
             }
-            if policy.disabled_tools.contains(resolved_name) {
+            if tool_name_is_disabled(&policy.disabled_tools, resolved_name) {
                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
             }
         }
@@ -1282,7 +1286,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 
 #[cfg(test)]
 mod mcp_allow_list_tests {
-    use super::tool_name_is_allowed;
+    use super::{tool_name_is_allowed, tool_name_is_disabled};
     use std::collections::HashSet;
 
     #[test]
@@ -1298,6 +1302,19 @@ mod mcp_allow_list_tests {
         assert!(tool_name_is_allowed(&allowed, "read"));
         assert!(!tool_name_is_allowed(&allowed, "mcpish"));
         assert!(!tool_name_is_allowed(&allowed, "bash"));
+    }
+
+    #[test]
+    fn disabling_mcp_also_disables_dynamic_server_tools() {
+        let disabled = HashSet::from(["mcp".to_string()]);
+
+        assert!(tool_name_is_disabled(&disabled, "mcp"));
+        assert!(tool_name_is_disabled(
+            &disabled,
+            "mcp__filesystem__read_file"
+        ));
+        assert!(!tool_name_is_disabled(&disabled, "mcpish"));
+        assert!(!tool_name_is_disabled(&disabled, "bash"));
     }
 }
 
