@@ -211,6 +211,20 @@ pub fn repair_boundaries_with(
     apply_spares: bool,
 ) -> RepairOutcome {
     let mut outcome = RepairOutcome::default();
+    // Only ranges that actually name lines in this file become groups.
+    //
+    // Every rule below indexes `file_lines` around a group's boundaries
+    // directly, on the assumption that those boundaries exist. Nothing
+    // upstream guarantees it: the parser accepts any line number a model
+    // writes, and the applier is what rejects an out-of-range one, which
+    // happens *after* this runs. So `PUT 99=99:` on a three-line file used to
+    // panic here rather than reaching the applier's error message.
+    //
+    // Filtering rather than validating is deliberate. An impossible range is
+    // not a repair problem, and refusing it here would mean inventing a second
+    // error for something the applier already reports well. Skipping it leaves
+    // that message intact and simply declines to guess at boundaries that do
+    // not exist.
     let groups: Vec<Group> = ops
         .iter()
         .enumerate()
@@ -218,7 +232,7 @@ pub fn repair_boundaries_with(
             Op::Put {
                 anchor: Anchor::Range { start, end },
                 ..
-            } => Some(Group {
+            } if *start >= 1 && *start <= *end && *end <= file_lines.len() => Some(Group {
                 op_index,
                 start_line: *start,
                 end_line: *end,

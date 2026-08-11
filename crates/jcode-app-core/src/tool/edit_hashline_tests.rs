@@ -862,3 +862,39 @@ async fn a_brace_in_prose_is_never_restored_by_a_repair() {
         "no brace may be resurrected in a file the parser cannot vouch for"
     );
 }
+
+/// A line number past the end of the file must be an error the model can act
+/// on, not a crash. The repair layer runs before anything validates a model's
+/// arithmetic, and it used to index the file around the range directly, so
+/// this panicked inside the tool.
+#[tokio::test]
+async fn an_anchor_past_the_end_of_the_file_is_refused_not_a_crash() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("s.js");
+    std::fs::write(&path, "const a = 1;\nconst b = 2;\n").expect("write");
+    let tag = read_tag(temp.path(), "hl-oob", "s.js").await;
+
+    let error = EditTool::new()
+        .execute(
+            json!({
+                "file_path": "s.js",
+                "input": format!("[s.js#{tag}]\nPUT 99.=99:\n+const c = 3;"),
+            }),
+            ctx(temp.path().to_path_buf(), "hl-oob"),
+        )
+        .await
+        .expect_err("line 99 does not exist");
+
+    // The message has to name the problem, since the model's next move is to
+    // fix the number rather than re-read.
+    let text = error.to_string();
+    assert!(
+        text.contains("99") && text.to_lowercase().contains("line"),
+        "the error should name the bad line: {text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read back"),
+        "const a = 1;\nconst b = 2;\n",
+        "a refused edit must not write"
+    );
+}

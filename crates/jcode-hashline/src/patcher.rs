@@ -286,32 +286,24 @@ pub fn prepare(
         });
     }
 
-    // Repair the payload's edges before anything reads it. This has to happen
-    // ahead of the seen-line guard and the apply, because a repair changes
-    // which lines the edit actually writes, and a guard run against the
-    // unrepaired payload would be judging an edit that is not the one applied.
-    let file_lines: Vec<&str> = current_text.split('\n').collect();
-    let mut ops = ops.to_vec();
-    let repaired = match syntax {
-        Some(parses) => crate::repair::repair_with_syntax_veto(
-            &mut ops,
-            &file_lines,
-            |candidate| parses(path, candidate),
-            |candidate| apply_ops(current_text, candidate).ok().map(|out| out.text),
-        ),
-        None => crate::repair::repair_boundaries(&mut ops, &file_lines),
-    };
-    let ops = ops.as_slice();
+    // Repair the payload's edges, then apply. The seen-line guard runs against
+    // the *repaired* ops, because a repair changes which lines the edit
+    // actually writes and a guard judging the unrepaired payload would be
+    // judging a different edit than the one that lands.
+    //
+    // The guard is checked after the apply rather than between the two steps.
+    // That is not a reordering of anything observable: applying is a pure
+    // function over text, and the guard's only effect is to return an error, so
+    // a rejection discards the applied text either way. Doing it this way is
+    // what lets every path share one `repair_and_apply` instead of keeping a
+    // second copy here, which is how the drift paths came to skip repair.
+    let (applied, repair_warnings, ops) = repair_and_apply(path, current_text, ops, syntax)?;
 
-    // The guard runs only when the tag matches: only then do anchor line
-    // numbers index the content the store recorded.
     if enforce_seen_lines
         && let Some(expected) = expected_tag
     {
-        assert_seen_lines(store, path, expected, current_text, ops)?;
+        assert_seen_lines(store, path, expected, current_text, &ops)?;
     }
-
-    let applied = apply_ops(current_text, ops).map_err(unapplicable)?;
 
     if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
         return Err(RejectReason::NoOp);
@@ -324,7 +316,7 @@ pub fn prepare(
         after: applied.text,
         move_dest: applied.move_dest,
         removed: applied.removed,
-        warnings: repaired.warnings,
+        warnings: repair_warnings,
     })
 }
 

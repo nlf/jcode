@@ -733,3 +733,68 @@ fn without_a_veto_no_closer_is_ever_spared() {
     assert!(!text.contains("};"), "{text}");
     assert!(warnings.is_empty(), "{warnings:?}");
 }
+
+#[test]
+fn a_range_naming_lines_the_file_does_not_have_is_left_for_the_applier() {
+    // The repair rules index the file around a range's boundaries directly, so
+    // a range past the end used to panic here rather than reaching the
+    // applier. The parser accepts any number a model writes, and the applier
+    // is what rejects an impossible one, but that check runs *after* this.
+    //
+    // The payload must survive untouched, so the applier can produce its own
+    // message about the line number rather than being handed a payload this
+    // layer quietly rewrote.
+    let file = joined(&["a", "b", "c"]);
+    let mut ops = parse_ops("PUT 99=99:\n+X").expect("parses").ops;
+    let lines: Vec<&str> = file.split('\n').collect();
+
+    let outcome = repair_boundaries(&mut ops, &lines);
+
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    assert_eq!(
+        ops,
+        parse_ops("PUT 99=99:\n+X").expect("parses").ops,
+        "an unreachable range must pass through untouched"
+    );
+}
+
+#[test]
+fn no_op_shape_can_panic_the_repair_layer() {
+    // A guard against the class rather than the one case. Every combination of
+    // op form and boundary is run against files that are empty, unterminated,
+    // and short, including line numbers far past the end. Repair is reached
+    // before anything validates a model's arithmetic, so it has to be total.
+    let files = ["", "\n", "a", "a\n", "a\nb", "a\nb\n", "{\n}\n"];
+    let anchors = [0usize, 1, 2, 3, 99];
+    let mut checked = 0;
+
+    std::panic::set_hook(Box::new(|_| {}));
+    for text in files {
+        let lines: Vec<&str> = text.split('\n').collect();
+        for start in anchors {
+            for end in anchors {
+                for form in [
+                    format!("PUT {start}={end}:\n+Z"),
+                    format!("CUT {start}={end}"),
+                    format!("PUT >{start}:\n+Z"),
+                    format!("PUT <{start}:\n+Z"),
+                ] {
+                    let Ok(parsed) = parse_ops(&form) else {
+                        continue;
+                    };
+                    checked += 1;
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut ops = parsed.ops.clone();
+                        repair_boundaries_with(&mut ops, &lines, true);
+                    }));
+                    assert!(
+                        outcome.is_ok(),
+                        "repair panicked on text={text:?} patch={form:?}"
+                    );
+                }
+            }
+        }
+    }
+    let _ = std::panic::take_hook();
+    assert!(checked > 300, "the sweep should be broad, ran {checked}");
+}
