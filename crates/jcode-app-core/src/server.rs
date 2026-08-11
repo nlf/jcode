@@ -125,6 +125,31 @@ pub(super) async fn remove_session_entry<T>(
     removed
 }
 
+/// Reconcile the on-disk presence registry against the sessions this daemon
+/// actually hosts, dropping markers it owns for sessions that are gone.
+///
+/// `session_presence` keeps an entry while its recorded PID is running. Every
+/// server-owned session records the daemon's PID, so that check cannot tell a
+/// live session from a marker orphaned by a lifecycle path that removed the
+/// session without unregistering it: both look alive for as long as the daemon
+/// does, and `jcode menubar` counts both. The live session map is the authority
+/// on what this daemon hosts, so reconciling against it makes a leaked marker
+/// self-healing rather than permanent.
+pub(super) async fn reconcile_owned_session_presence<T>(
+    sessions: &Arc<RwLock<HashMap<String, T>>>,
+) -> Vec<String> {
+    let live: Vec<String> = sessions.read().await.keys().cloned().collect();
+    let removed = crate::storage::reconcile_owned_presence(std::process::id(), &live);
+    if !removed.is_empty() {
+        crate::logging::info(&format!(
+            "Reconciled {} orphaned session presence marker(s): {:?}",
+            removed.len(),
+            removed
+        ));
+    }
+    removed
+}
+
 const SERVER_NAME_ENV: &str = "JCODE_SERVER_NAME";
 const SERVER_DISPLAY_NAME_ENV: &str = "JCODE_SERVER_DISPLAY_NAME";
 const MAX_CONFIGURED_SERVER_NAME_LEN: usize = 64;
@@ -632,6 +657,9 @@ mod queue_tests;
 
 #[cfg(test)]
 mod file_activity_tests;
+
+#[cfg(test)]
+mod presence_reconcile_tests;
 
 /// Idle timeout for the shared server when no clients are connected (5 minutes)
 const IDLE_TIMEOUT_SECS: u64 = 300;
@@ -1400,6 +1428,12 @@ impl Server {
                     &gc_soft_interrupt_queues,
                 )
                 .await;
+                // Drop presence markers for sessions this daemon no longer
+                // hosts. Server-owned sessions all record the daemon PID, so a
+                // marker orphaned by any lifecycle gap would otherwise look
+                // alive until the daemon exits and be counted by the menu bar
+                // indicator forever.
+                reconcile_owned_session_presence(&gc_sessions).await;
             }
         });
 

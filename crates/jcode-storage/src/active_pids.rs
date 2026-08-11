@@ -266,6 +266,46 @@ pub fn user_session_counts() -> SessionCounts {
     }
 }
 
+/// Drop presence markers attributed to *this* process for sessions it no longer
+/// owns, and report the session IDs that were removed.
+///
+/// The liveness check in [`session_presence`] asks only whether the recorded PID
+/// is running. That is the right question for a session with its own process,
+/// but every session hosted by the shared daemon records the daemon's PID. A
+/// marker orphaned by any gap in a lifecycle path therefore stays "alive" for as
+/// long as the daemon runs, and presence UIs count a session that no longer
+/// exists. Since the daemon is the authority on which sessions it hosts, it can
+/// reconcile the registry against that truth rather than relying on every
+/// lifecycle path being perfect.
+///
+/// Only entries recording `owner_pid` are considered, so markers belonging to
+/// other live jcode processes are never touched.
+pub fn reconcile_owned_presence(owner_pid: u32, live_session_ids: &[String]) -> Vec<String> {
+    let Some(dir) = active_pids_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    let mut removed = Vec::new();
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let session_id = entry.file_name().to_string_lossy().to_string();
+        if live_session_ids.iter().any(|live| live == &session_id) {
+            continue;
+        }
+        let owned = std::fs::read_to_string(entry.path())
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u32>().ok())
+            .is_some_and(|pid| pid == owner_pid);
+        if owned {
+            unregister_active_pid(&session_id);
+            removed.push(session_id);
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,6 +427,48 @@ mod tests {
         set_session_internal("session_worker", true);
         unregister_active_pid("session_worker");
         assert!(!session_is_internal("session_worker"));
+
+        jcode_core::env::remove_var("JCODE_HOME");
+    }
+
+    /// A shared-PID daemon cannot use liveness to tell a hosted session from a
+    /// marker orphaned by a lifecycle gap, so it reconciles against the set of
+    /// sessions it actually hosts.
+    #[test]
+    fn reconcile_owned_presence_drops_only_unhosted_markers_for_this_owner() {
+        let _guard = lock_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        jcode_core::env::set_var("JCODE_HOME", temp.path());
+
+        let owner = std::process::id();
+        let other_owner = if owner == 1 { 2 } else { 1 };
+
+        register_active_pid("hosted", owner);
+        register_active_pid("orphaned", owner);
+        mark_streaming("orphaned");
+        register_active_pid("other_process", other_owner);
+
+        assert_eq!(session_counts().total, 3);
+
+        let removed = reconcile_owned_presence(owner, &["hosted".to_string()]);
+        assert_eq!(removed, vec!["orphaned".to_string()]);
+
+        let ids: Vec<String> = session_presence()
+            .into_iter()
+            .map(|presence| presence.session_id)
+            .collect();
+        assert!(ids.contains(&"hosted".to_string()));
+        assert!(!ids.contains(&"orphaned".to_string()));
+        assert!(
+            ids.contains(&"other_process".to_string()),
+            "another owner's marker must be left alone"
+        );
+        // Unregistering clears the streaming marker too, so the count cannot
+        // stay stuck on a phantom streaming session.
+        assert_eq!(session_counts().streaming, 0);
+
+        // Idempotent: a second pass has nothing left to do.
+        assert!(reconcile_owned_presence(owner, &["hosted".to_string()]).is_empty());
 
         jcode_core::env::remove_var("JCODE_HOME");
     }
