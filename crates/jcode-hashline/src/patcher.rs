@@ -296,7 +296,7 @@ pub fn prepare(
     } else {
         None
     };
-    crate::blocks::resolve(
+    let block_expanded = crate::blocks::resolve(
         &mut ops,
         path,
         resolve_against.as_deref().unwrap_or(current_text),
@@ -387,7 +387,7 @@ pub fn prepare(
     let (applied, repair_warnings, ops) = repair_and_apply(path, current_text, ops, parsing)?;
 
     if enforce_seen_lines && let Some(expected) = expected_tag {
-        assert_seen_lines(store, path, expected, current_text, &ops)?;
+        assert_seen_lines(store, path, expected, current_text, &ops, &block_expanded)?;
     }
 
     if !applied.removed && applied.text == current_text && applied.move_dest.is_none() {
@@ -405,8 +405,20 @@ pub fn prepare(
     })
 }
 
-/// Every line an operation touches.
-fn anchor_lines(ops: &[Op]) -> Vec<usize> {
+/// Every line an operation touches, less those a block anchor expanded into.
+///
+/// `exempt` carries the lines a resolver added beyond the anchor the model
+/// wrote. They are dropped here because the model never named them: `PUT 5*:`
+/// says "the block starting at line 5", and requiring it to have read as far as
+/// the closing brace would defeat the one thing block anchors are for.
+///
+/// The `Anchor::Block` arm below says the same, and is unreachable, because
+/// resolution has already turned every block into a range by the time this
+/// runs. It was written first and quietly did nothing: the guard saw the
+/// resolved range and refused edits for lines the model had no reason to read.
+/// The arm is kept for the case where a caller resolves later than `prepare`
+/// does, and the exemption is what actually enforces the rule.
+fn anchor_lines(ops: &[Op], exempt: &[usize]) -> Vec<usize> {
     let mut lines = BTreeSet::new();
     for op in ops {
         match op {
@@ -417,10 +429,7 @@ fn anchor_lines(ops: &[Op]) -> Vec<usize> {
                     lines.insert(*line);
                 }
                 // The anchor line is what the model actually pointed at, and it
-                // has to have seen that much. The rest of the block it resolves
-                // to is not required: naming a function by its first line is the
-                // entire point, and demanding the model have read to the closing
-                // brace would defeat it.
+                // has to have seen that much.
                 Anchor::Block(line) => {
                     lines.insert(*line);
                 }
@@ -428,6 +437,9 @@ fn anchor_lines(ops: &[Op]) -> Vec<usize> {
             },
             Op::Rem | Op::Mv { .. } => {}
         }
+    }
+    for line in exempt {
+        lines.remove(line);
     }
     lines.into_iter().collect()
 }
@@ -443,6 +455,7 @@ fn assert_seen_lines(
     expected_tag: &str,
     current_text: &str,
     ops: &[Op],
+    exempt: &[usize],
 ) -> Result<(), RejectReason> {
     let Some(snapshot) = store.by_content(path, current_text) else {
         // No provenance recorded: the guard cannot judge, so it stands aside.
@@ -455,7 +468,7 @@ fn assert_seen_lines(
         return Ok(());
     }
 
-    let unseen: Vec<usize> = anchor_lines(ops)
+    let unseen: Vec<usize> = anchor_lines(ops, exempt)
         .into_iter()
         .filter(|line| !seen.contains(line))
         .collect();

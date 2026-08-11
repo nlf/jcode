@@ -979,3 +979,72 @@ fn a_landing_shift_composes_with_recovery() {
         recovered.warnings
     );
 }
+
+
+
+
+#[test]
+fn a_block_anchor_only_requires_the_line_the_model_named_to_be_seen() {
+    // The point of `PUT 5*:` is that the model does not have to count to the
+    // closing brace, so it does not have to have *read* that far either. With
+    // seen-line enforcement on, judging the resolved range refuses the edit for
+    // lines the model had no reason to look at, which takes the feature away
+    // from exactly the callers strict enough to turn the guard on.
+    //
+    // `enforce_seen_lines` ships off, so this was latent rather than live. It
+    // is a documented config key, which makes it real enough to fix.
+    let text = "alpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let store = SnapshotStore::new();
+    // A read that displayed only line 2: the line the model names.
+    let tag = store.record(PATH, text, Some(&[2usize]));
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    let prepared = prepare(
+        &store,
+        PATH,
+        text,
+        Some(&tag),
+        &ops("PUT 2*:\n+fn target() {\n+\tCHANGED();\n+}"),
+        true,
+        parsing,
+    )
+    .expect("the anchor line was seen, which is all a block anchor needs");
+
+    assert_eq!(prepared.after, "alpha\nfn target() {\n\tCHANGED();\n}\nomega\n");
+}
+
+#[test]
+fn an_unseen_block_anchor_is_still_refused() {
+    // The exemption covers the lines a resolver added, never the one the model
+    // wrote. Without this the block form would be a way around the guard
+    // entirely: name any line as a block and the check no longer applies.
+    let text = "alpha\nfn target() {\n\tbody();\n}\nomega\n";
+    let store = SnapshotStore::new();
+    // A read that displayed line 5 only. Line 2 was never shown.
+    let tag = store.record(PATH, text, Some(&[5usize]));
+    let parsing = Parsing {
+        syntax: None,
+        blocks: Some(&stub_blocks),
+    };
+
+    let error = prepare(
+        &store,
+        PATH,
+        text,
+        Some(&tag),
+        &ops("PUT 2*:\n+fn target() {\n+\tCHANGED();\n+}"),
+        true,
+        parsing,
+    )
+    .expect_err("the anchor itself was never displayed");
+
+    let message = error.message(PATH);
+    assert!(message.contains("never displayed"), "{message}");
+    assert!(
+        message.contains('2'),
+        "the anchor line is the one to complain about: {message}"
+    );
+}

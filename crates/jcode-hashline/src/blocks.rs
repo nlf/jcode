@@ -47,6 +47,11 @@ const SUGGESTION_SCAN_LIMIT: usize = 64;
 
 /// Resolve every block anchor in `ops` against `text`, in place.
 ///
+/// Returns the lines that were only ever named *by a block*, which the caller
+/// needs for the seen-line guard: a model naming a function by its opening line
+/// has not read to the closing brace, and must not be required to. See
+/// [`crate::patcher::prepare`].
+///
 /// Returns an error naming the offending anchor when one cannot be resolved.
 /// Nothing is written in that case: a block edit that cannot find its block is
 /// refused whole, rather than applied to the line the model happened to name.
@@ -55,11 +60,12 @@ pub fn resolve(
     path: &str,
     text: &str,
     resolver: Option<BlockResolver<'_>>,
-) -> Result<(), String> {
+) -> Result<Vec<usize>, String> {
     if !ops.iter().any(is_block_op) {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let lines: Vec<&str> = text.split('\n').collect();
+    let mut expanded = Vec::new();
 
     for op in ops.iter_mut() {
         let Op::Put {
@@ -82,6 +88,11 @@ pub fn resolve(
 
         match resolver(path, text, line) {
             Some(span) if span.end > span.start => {
+                // Every line past the anchor is one the resolver named, not the
+                // model. Recorded so the seen-line guard can exempt them: the
+                // point of `PUT 5*:` is that the closing brace need not be
+                // counted, or therefore read.
+                expanded.extend((span.start + 1)..=span.end);
                 *op = if deletes {
                     Op::Cut {
                         start: span.start,
@@ -120,7 +131,7 @@ pub fn resolve(
             }
         }
     }
-    Ok(())
+    Ok(expanded)
 }
 
 fn is_block_op(op: &Op) -> bool {
