@@ -798,3 +798,220 @@ fn no_op_shape_can_panic_the_repair_layer() {
     let _ = std::panic::take_hook();
     assert!(checked > 300, "the sweep should be broad, ran {checked}");
 }
+
+// ─── placing a spare ─────────────────────────────────────────────────────────
+//
+// Sparing a closer does not merely keep a line, it decides which side of that
+// line the payload lands on, and both answers produce a file that parses. The
+// syntax veto is therefore no help here: it would accept whichever was tried
+// first. Only the payload can say, and when it does not, the repair is
+// abandoned rather than guessed.
+
+#[test]
+fn a_payload_at_the_closers_own_depth_is_not_moved_inside_the_block() {
+    // The defect these gates were added for. `b();` sits at the same depth as
+    // the `}`, which makes it a sibling of the block: it belongs *after* it.
+    // Sparing the closer puts it inside instead, changing which scope the
+    // statement runs in, and the spared result parses perfectly, so nothing
+    // downstream could have caught it.
+    let file = joined(&["function f() {", "  a();", "}", "after();"]);
+    let (text, warnings) = apply_with_veto(&file, "PUT 2=3:\n+b();", brackets_balance);
+
+    assert_eq!(
+        text,
+        joined(&["function f() {", "b();", "after();"]),
+        "the authored edit must stand rather than a guess about scope"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("dropped closing line")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn an_unplaceable_spare_is_reported_as_ambiguous() {
+    // The model is told what was unclear, because a spare was the only reading
+    // that would have kept this file parsing and the model is better placed
+    // than this layer to say which side it meant.
+    let file = joined(&["function f() {", "  a();", "}", "after();"]);
+    let mut ops = parse_ops("PUT 2=3:\n+b();").expect("parses").ops;
+    let lines: Vec<&str> = file.split('\n').collect();
+
+    let outcome = repair_with_syntax_veto(&mut ops, &lines, brackets_balance, |candidate| {
+        apply_ops(&file, candidate).ok().map(|result| result.text)
+    });
+
+    let ambiguity = outcome.ambiguity.expect("must report the ambiguity");
+    assert!(
+        ambiguity.message.contains("inside that block or after it"),
+        "{}",
+        ambiguity.message
+    );
+}
+
+#[test]
+fn a_payload_carrying_the_openers_itself_is_placed_inside() {
+    // The other half of the gate: an indentation claim is not the only
+    // evidence. This payload re-opens the block the spared closer terminates,
+    // so "inside" is not a guess, and it is the only reading that balances.
+    //
+    // The fixture is tighter than it looks. Sparing one closer adds exactly one
+    // close, so the payload has to be short by exactly that: the range must
+    // open and close its own block (net zero) and the payload re-open one. A
+    // payload that opens a block the range never had cannot be rescued by
+    // keeping a single closer, and the veto correctly refuses it.
+    let file = joined(&["fn a() {", "\tif x {", "\t\ty();", "\t}", "}"]);
+    let (text, warnings) = apply_with_veto(&file, "PUT 2=4:\n+\twhile z {", brackets_balance);
+
+    assert_eq!(
+        text,
+        joined(&["fn a() {", "\twhile z {", "\t}", "}"]),
+        "the closer must be kept below the payload that opens its block"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("dropped closing line")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn an_ambiguous_spare_on_an_already_broken_file_is_not_reported() {
+    // The file did not parse before this edit, so the edit cannot be blamed for
+    // it and an ambiguity notice would attach the complaint to the wrong
+    // change. The parser here rejects everything, which is also what an unknown
+    // language looks like.
+    let file = joined(&["function f() {", "  a();", "}", "after();"]);
+    let mut ops = parse_ops("PUT 2=3:\n+b();").expect("parses").ops;
+    let lines: Vec<&str> = file.split('\n').collect();
+
+    let outcome = repair_with_syntax_veto(
+        &mut ops,
+        &lines,
+        |_| false,
+        |candidate| apply_ops(&file, candidate).ok().map(|result| result.text),
+    );
+
+    assert!(outcome.ambiguity.is_none());
+}
+
+// ─── the leading mirror ──────────────────────────────────────────────────────
+//
+// The same mistake from the other end: the range began one line early, on the
+// `}` that ends the construct above it. Sparing there puts the payload *after*
+// the kept closer rather than before it, so the indentation gate reads the
+// opposite way: at or above the closer's depth is the sibling position being
+// claimed, and deeper would be inside a block the range just closed.
+
+#[test]
+fn spares_a_leading_closing_line_the_range_started_one_line_early() {
+    let file = joined(&["fn a() {", "\tone();", "}", "fn b() {", "\told();", "}"]);
+    let (text, warnings) =
+        apply_with_veto(&file, "PUT 3=5:\n+fn b() {\n+\tfresh();", brackets_balance);
+
+    assert_eq!(
+        text,
+        joined(&["fn a() {", "\tone();", "}", "fn b() {", "\tfresh();", "}"]),
+        "the closer of the block above must survive"
+    );
+    assert!(
+        warnings.iter().any(|w| w.contains("leading line(s)")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_leading_spare_is_refused_when_the_payload_claims_to_be_inside() {
+    // A payload indented deeper than the kept closer would land inside the
+    // block that closer just ended, which is the opposite of what sparing it
+    // claims. Ambiguous, so nothing is rewritten and the model is told.
+    //
+    // The file is bracket-style rather than brace-style so that the *suffix*
+    // rule does not claim this group first: with `fn b() { ... }` below, the
+    // range's trailing `}` is a suffix run too, and the suffix spare returns
+    // before the prefix rule is consulted. Written that way this test passed
+    // with the gate deleted.
+    let file = joined(&["a(", "\tb,", ")", "c();", "d();"]);
+    let mut ops = parse_ops("PUT 3=4:\n+\t\tdeep();").expect("parses").ops;
+    let lines: Vec<&str> = file.split('\n').collect();
+
+    let outcome = repair_boundaries_with(&mut ops, &lines, true);
+
+    assert!(
+        !outcome.warnings.iter().any(|w| w.contains("leading line(s)")),
+        "{:?}",
+        outcome.warnings
+    );
+    let ambiguity = outcome.ambiguity.expect("must report the ambiguity");
+    assert!(
+        ambiguity.message.contains("before or after them"),
+        "{}",
+        ambiguity.message
+    );
+}
+
+#[test]
+fn a_leading_spare_needs_the_payload_to_be_short_the_bracket() {
+    // The payload restates the whole construct, brackets included, so it is not
+    // missing anything and there is nothing to restore. Sparing anyway would
+    // add a closer the model did not ask for.
+    let file = joined(&["fn a() {", "\tone();", "}", "fn b() {", "\told();", "}"]);
+    let (text, warnings) = apply_spares_directly(&file, "PUT 3=5:\n+fn b() {\n+\tx();\n+}");
+
+    assert_eq!(
+        text,
+        joined(&["fn a() {", "\tone();", "fn b() {", "\tx();", "}", "}"]),
+        "a balanced payload must be applied exactly as authored"
+    );
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn a_leading_closer_with_no_surviving_opener_above_is_not_kept() {
+    // The spared closers need a dangling opener above them in the projected
+    // file, and the payload cannot supply one because it lands below them
+    // either way. Here nothing above is open, so the brace closes nothing.
+    let file = joined(&["}", "old();", "more();"]);
+    let (text, warnings) = apply_spares_directly(&file, "PUT 1=2:\n+fresh();");
+
+    assert_eq!(text, joined(&["fresh();", "more();"]));
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+// The remaining two guards are driven at the rule directly rather than through
+// a patch. Through the full pass their groups are claimed by the *suffix*
+// spare first, which sees the same run of closers from the other end and
+// returns before the prefix rule is consulted, so a whole-pass test would pass
+// with either guard deleted. That is exactly the vacuous test this file exists
+// to avoid, and both were written that way first.
+
+fn prefix_spare_of(file: &str, patch: &str, start_line: usize, end_line: usize) -> bool {
+    let lines: Vec<&str> = file.split('\n').collect();
+    let ops = parse_ops(patch).expect("fixture patch parses").ops;
+    let group = Group {
+        op_index: 0,
+        start_line,
+        end_line,
+    };
+    let projection = Projection::build(&ops, std::slice::from_ref(&group), &lines);
+    find_prefix_closer_spare(&ops, &group, &lines, &projection).is_some()
+}
+
+#[test]
+fn a_range_that_is_entirely_closers_gets_no_leading_spare() {
+    // Every line the range covers is a closer, so there is no body being
+    // replaced and no boundary slip to repair. Without this the rule keeps the
+    // very lines the model asked to replace, and the narrowed range inverts.
+    let file = joined(&["fn a() {", "\tif x {", "\t\ty();", "\t}", "}"]);
+
+    assert!(!prefix_spare_of(&file, "PUT 4=5:\n+done();", 4, 5));
+}
+
+#[test]
+fn a_payload_that_opens_with_a_closer_is_left_to_the_echo_rules() {
+    // The payload restates the boundary itself, which is a duplication mistake
+    // with its own reading and its own repair. Sparing on top of it would keep
+    // a closer the payload already carries, producing two.
+    let file = joined(&["a(", "\tb,", ")", "c();", "d();"]);
+
+    assert!(!prefix_spare_of(&file, "PUT 3=4:\n+}", 3, 4));
+}

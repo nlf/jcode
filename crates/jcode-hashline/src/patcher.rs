@@ -191,7 +191,15 @@ fn repair_and_apply(
         None => crate::repair::repair_boundaries(&mut ops, &file_lines),
     };
     let applied = apply_ops(current_text, &ops).map_err(unapplicable)?;
-    Ok((applied, repaired.warnings, ops))
+    // An ambiguity is reported as a warning rather than a rejection. The
+    // authored edit is applied exactly as written, so refusing it would block a
+    // literal edit on a suspicion; saying what was unclear lets the model fix
+    // the boundary on its next turn if the guess was wrong.
+    let mut warnings = repaired.warnings;
+    if let Some(ambiguity) = repaired.ambiguity {
+        warnings.push(ambiguity.message);
+    }
+    Ok((applied, warnings, ops))
 }
 
 /// Validate and apply a section in memory.

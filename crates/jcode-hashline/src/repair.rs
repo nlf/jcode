@@ -194,6 +194,22 @@ pub struct RepairOutcome {
     /// authored one. The caller re-runs with spares enabled only when the
     /// authored result turns out not to parse.
     pub spares_proposed: bool,
+    /// A spare was nominated by the arithmetic but the payload did not say
+    /// which side of the spared closer it belongs on. See [`Ambiguity`].
+    pub ambiguity: Option<Ambiguity>,
+}
+
+/// A spare the arithmetic nominated but could not place.
+///
+/// Sparing a closer decides where the payload lands relative to it, and both
+/// answers produce a file that parses. The syntax veto therefore cannot
+/// arbitrate: it would accept whichever was tried first. When the payload's own
+/// indentation does not settle it, the repair is abandoned and this is
+/// reported, so the model is told what was ambiguous rather than having a coin
+/// flip applied to its file.
+#[derive(Debug, Clone)]
+pub struct Ambiguity {
+    pub message: String,
 }
 
 /// Repair the boundaries of every replacement in `ops`, in place.
@@ -273,20 +289,96 @@ pub fn repair_boundaries_with(
     // other hunks delete and insert.
     let projection = Projection::build(ops, &groups, file_lines);
     for group in unrepaired {
-        let Some(spare) = find_suffix_closer_spare(ops, group, file_lines, &projection) else {
+        if let Some(spare) = find_suffix_closer_spare(ops, group, file_lines, &projection) {
+            outcome.spares_proposed = true;
+            if !apply_spares {
+                continue;
+            }
+            // Sparing a trailing closer re-inserts it *after* the payload,
+            // which claims the payload lives inside the block that closer
+            // terminates. Both readings parse, so the veto cannot choose:
+            // the payload has to say. It does so by carrying the unmatched
+            // opener itself, or by sitting deeper than the closer. At the
+            // closer's own depth the payload is a sibling of the block and
+            // belongs after it, so guessing "inside" silently moves code into
+            // a scope the model did not write it for.
+            let kept_indent = indent_of(
+                file_lines
+                    .get(spare.keep_from - 1)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            let body = payload(ops, group);
+            let payload_opens = compute_balance(body).covers(spare.balance.negated());
+            let claims_inside = body_target_indent(body)
+                .is_some_and(|indent| is_deeper(&indent, kept_indent));
+            if !payload_opens && !claims_inside {
+                outcome.ambiguity = Some(Ambiguity {
+                    message: format!(
+                        "Ambiguous edit at line {}: the range through line {} deletes {} \
+                         closing line(s) the payload never restates, but the payload's \
+                         indentation does not say whether it belongs inside that block or \
+                         after it. Re-issue the range so the payload is the final desired \
+                         content for exactly the lines it replaces, restating any closing \
+                         bracket that should remain.",
+                        group.start_line, group.end_line, spare.count
+                    ),
+                });
+                continue;
+            }
+            narrow_range_end(ops, group, spare.keep_from);
+            outcome.warnings.push(format!(
+                "Auto-repaired a dropped closing line in the replacement at line {}: kept \
+                 {} line(s) the range deleted but the payload never restated, because \
+                 removing them would leave the enclosing block unterminated. Issue the \
+                 payload as the final desired content for the whole range, including any \
+                 closing bracket it ends with.",
+                group.start_line, spare.count
+            ));
+            continue;
+        }
+
+        let Some(spare) = find_prefix_closer_spare(ops, group, file_lines, &projection) else {
             continue;
         };
         outcome.spares_proposed = true;
         if !apply_spares {
             continue;
         }
-        narrow_range_end(ops, group, spare.keep_from);
+        // The mirror judgement. Sparing a *leading* closer puts the payload
+        // after it, which claims the payload sits outside the block that closer
+        // ends. At or above the closer's depth that is a sibling, which is the
+        // claim being made; deeper or incomparable would put the payload inside
+        // a block the range just closed, so refuse rather than guess.
+        let closer_indent = indent_of(
+            file_lines
+                .get(group.start_line - 1)
+                .copied()
+                .unwrap_or_default(),
+        );
+        let Some(payload_indent) = body_target_indent(payload(ops, group)) else {
+            continue;
+        };
+        if !closer_indent.starts_with(&payload_indent) {
+            outcome.ambiguity = Some(Ambiguity {
+                message: format!(
+                    "Ambiguous edit at line {}: the range starts on {} closing line(s) the \
+                     payload never restates, but the payload is indented deeper than they \
+                     are, so it is unclear whether it belongs before or after them. \
+                     Re-issue the range starting below the closing bracket, or restate it \
+                     in the payload.",
+                    group.start_line, spare.count
+                ),
+            });
+            continue;
+        }
+        narrow_range_start(ops, group, group.start_line + spare.count);
         outcome.warnings.push(format!(
-            "Auto-repaired a dropped closing line in the replacement at line {}: kept \
-             {} line(s) the range deleted but the payload never restated, because \
-             removing them would leave the enclosing block unterminated. Issue the \
-             payload as the final desired content for the whole range, including any \
-             closing bracket it ends with.",
+            "Auto-repaired a dropped closing line in the replacement at line {}: kept {} \
+             leading line(s) the range deleted but the payload never restated, because \
+             removing them would leave the block above unterminated; the payload lands \
+             after them. Issue the payload as the final desired content for the whole \
+             range, including any closing bracket it begins with.",
             group.start_line, spare.count
         ));
     }
@@ -361,6 +453,22 @@ pub fn repair_with_syntax_veto(
         return spared;
     }
 
+    // A spare the payload could not place. The authored edit stands, but the
+    // caller is told what was ambiguous, because a spare was the only reading
+    // that would have made this file parse and the model is better placed than
+    // this layer to say which side it meant.
+    //
+    // Only when the file parsed before the edit, mirroring omp. Otherwise the
+    // file was already broken and this edit cannot be blamed for it, so
+    // reporting an ambiguity would be noise attached to the wrong change. The
+    // baseline is joined back from `file_lines`, which is how the caller split
+    // it, so this is the original text rather than an approximation of it.
+    if spared.ambiguity.is_some() && parses(&file_lines.join("\n")) {
+        let mut authored = authored;
+        authored.ambiguity = spared.ambiguity;
+        return authored;
+    }
+
     authored
 }
 
@@ -378,11 +486,28 @@ fn narrow_range_end(ops: &mut [Op], group: &Group, keep_from: usize) {
     }
 }
 
+/// Keep the head of a replacement's range instead of deleting it.
+///
+/// The mirror of [`narrow_range_end`]: the lines before `payload_at` survive
+/// untouched above the new content, which now starts lower down.
+fn narrow_range_start(ops: &mut [Op], group: &Group, payload_at: usize) {
+    if let Op::Put {
+        anchor: Anchor::Range { start, .. },
+        ..
+    } = &mut ops[group.op_index]
+    {
+        *start = payload_at;
+    }
+}
+
 /// A closing run the range would delete and the payload does not put back.
 struct CloserSpare {
     /// First line of the run to keep, 1-indexed.
     keep_from: usize,
     count: usize,
+    /// Net delimiters the kept run carries, used to ask whether the payload
+    /// opens them itself.
+    balance: Balance,
 }
 
 /// What the whole patch does to the file, as far as any one hunk can see.
@@ -573,7 +698,115 @@ fn find_suffix_closer_spare(
     Some(CloserSpare {
         keep_from: suffix_start + keep_start,
         count: keep_end - keep_start,
+        balance: kept_balance,
     })
+}
+
+/// Does the range *start* on closers the payload drops and nothing replaces?
+///
+/// The mirror mistake: the range began one line early, on the `}` that ends the
+/// construct above it. The payload is the new body of what follows, so applying
+/// it literally tears the closing bracket off the previous block.
+///
+/// Same burden of proof as the suffix form, plus one condition it does not
+/// need: the spared closers must have a dangling opener above them in the
+/// projected file. The payload cannot supply it, because the payload lands
+/// *below* the closers either way.
+fn find_prefix_closer_spare(
+    ops: &[Op],
+    group: &Group,
+    file_lines: &[&str],
+    projection: &Projection,
+) -> Option<CloserSpare> {
+    let body = payload(ops, group);
+    if body.is_empty() {
+        return None;
+    }
+    // A payload opening with a closer is restating the boundary itself. That is
+    // an echo, with a different reading and its own rule; leave it alone.
+    if is_structural_closer(&body[0]) {
+        return None;
+    }
+
+    let range_length = group.end_line - group.start_line + 1;
+    let mut prefix_length = 0;
+    while prefix_length < range_length {
+        let line = group.start_line + prefix_length;
+        if !is_structural_closer(file_lines.get(line - 1).copied().unwrap_or("")) {
+            break;
+        }
+        prefix_length += 1;
+    }
+    // A range that is *entirely* closers is not a boundary slip: there would be
+    // no body for the payload to be replacing.
+    if prefix_length == 0 || prefix_length >= range_length {
+        return None;
+    }
+
+    let prefix: Vec<&str> = (group.start_line..group.start_line + prefix_length)
+        .map(|line| file_lines.get(line - 1).copied().unwrap_or(""))
+        .collect();
+    // No zero-balance guard here, unlike the arithmetic elsewhere in this file.
+    // Every line in `prefix` passed `is_structural_closer`, which requires at
+    // least one of `)]}` and permits nothing else, so the run's balance is
+    // strictly negative in some component and `needed` can never be the empty
+    // requirement that `covers` satisfies vacuously. A guard was written here
+    // first and then removed: a sweep over the rule found no input where it
+    // changed the answer, and an unreachable check reads as a safeguard.
+    let balance = compute_balance(&prefix);
+    let needed = balance.negated();
+
+    // The payload must actually be short by these brackets.
+    let delta = compute_balance(body).minus(compute_balance(range_lines(group, file_lines)));
+    if !delta.covers(needed) {
+        return None;
+    }
+
+    // If the deleted run just above took the matching opener with it, the
+    // closer must go too.
+    if deleted_prefix_balance(group, file_lines, projection).covers(needed) {
+        return None;
+    }
+
+    // And an opener must actually survive above for these to close.
+    if !projection.balance_above(group.start_line, file_lines).covers(needed) {
+        return None;
+    }
+
+    Some(CloserSpare {
+        keep_from: group.start_line,
+        count: prefix_length,
+        balance,
+    })
+}
+
+/// The depth an insertion body claims, as its shallowest non-blank row.
+///
+/// `None` when no claim can be read: an empty or all-blank body, a body of pure
+/// closers (which re-balances delimiters rather than living anywhere), or rows
+/// whose indentation styles cannot be compared because one mixes tabs where
+/// another uses spaces.
+fn body_target_indent(rows: &[String]) -> Option<String> {
+    let non_blank: Vec<&String> = rows.iter().filter(|row| has_content(row)).collect();
+    if non_blank.is_empty() {
+        return None;
+    }
+    if non_blank.iter().all(|row| is_structural_closer(row)) {
+        return None;
+    }
+    let mut target = indent_of(non_blank[0]).to_string();
+    for row in &non_blank {
+        let indent = indent_of(row);
+        if indent.starts_with(&target) {
+            continue;
+        }
+        if target.starts_with(indent) {
+            target = indent.to_string();
+        } else {
+            return None;
+        }
+    }
+    Some(target)
 }
 
 /// How many of the suffix's first lines the payload already ends with.
